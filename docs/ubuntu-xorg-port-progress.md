@@ -55,7 +55,7 @@
 | 设计文档 | 完成 | 摄像头后端修订提交 `62dc98a`，用户已批准 |
 | 实施计划 | 完成 | 8 个 TDD 任务已写入，提交 `6bf86ed`，待选择执行方式 |
 | 实现 | 进行中（Task 1–4 完成） | X11 后端纯测试与隔离 Xvfb 集成通过；双摄像头源、平台选择器和平台中立动作单元测试通过；Gemini 335 101 帧、关闭重开实机测试已验证 |
-| 自动化验证 | 进行中 | Task 4：纯测试 48 passed、Xvfb 集成 13 passed、安全集合 98 passed / 14 deselected、Xvfb 完整默认集合 111 passed / 1 deselected |
+| 自动化验证 | 进行中 | Task 4：纯测试 49 passed、Xvfb 集成 14 passed、安全集合 99 passed / 15 deselected、Xvfb 完整默认集合 113 passed / 1 deselected |
 | Gemini 335 实机验收 | 未开始 | 需要连接设备和 Xorg 会话 |
 
 ## 任务进度
@@ -65,7 +65,7 @@
 | Task 1：测试基座与显式摄像头配置 | 完成 | 配置边界的 10 个测试通过 |
 | Task 2：Fail-fast OpenCV/V4L2 与 Orbbec RGB 源 | 完成（有 SDK ABI 偏差） | 33 个 Task 1/2 单元测试通过；Gemini 335 读取 100 帧、关闭、重开后再读 1 帧通过 |
 | Task 3：平台中立动作与显式桌面选择 | 完成 | selector/action 17 个测试通过（含 cleanup/lifecycle 并发回归）；common modules 编译通过；完整默认测试 50 passed / 1 deselected |
-| Task 4：X11/XTest/XFixes 后端 | 完成（formal review 修复） | 纯测试 48 passed；隔离 Xvfb 集成 13 passed；安全集合 98 passed / 14 deselected；Xvfb 完整默认集合 111 passed / 1 deselected |
+| Task 4：X11/XTest/XFixes 后端 | 完成（final safety re-review 修复） | 纯测试 49 passed；隔离 Xvfb 集成 14 passed；安全集合 99 passed / 15 deselected；Xvfb 完整默认集合 113 passed / 1 deselected |
 
 ## 当前工作
 
@@ -133,6 +133,14 @@ Task 4 已完成直接 X11/XTest/XFixes 后端、纯测试和隔离集成测试�
 | 2026-07-25 | formal review 最终 common `py_compile` | exit 0 |
 | 2026-07-25 | formal review 最终 `pytest -m 'not x11' -v` | 98 passed / 14 deselected，0.36s |
 | 2026-07-25 | formal review 最终 `xvfb-run -a ... pytest -v` | 111 passed / 1 deselected，0.60s；完整默认集合仅在隔离 Xvfb 中执行 |
+| 2026-07-25 | final safety gate focused RED | 1 failed；不同 inode 的同名 `Xvfb` 在 UID/display/auth 匹配时被旧 basename 门禁接受 |
+| 2026-07-25 | final safety gate focused GREEN | 受控 proc 3 passed；受控 inode、复制文件拒绝、伪造环境拒绝均通过；真实 `xvfb-run` 正向集合 4 passed |
+| 2026-07-25 | underlying display close focused | 2 passed；release 失败和底层 close 失败均保留原异常与可重试 lifecycle；无需生产改动 |
+| 2026-07-25 | final safety re-review 最终 `tests/test_x11_keymap.py -v` | 49 passed，0.05s |
+| 2026-07-25 | final safety re-review 最终隔离 `tests/test_x11_integration.py -v` | 14 passed，0.21s |
+| 2026-07-25 | final safety re-review common `py_compile` | exit 0 |
+| 2026-07-25 | final safety re-review `pytest -m 'not x11' -v` | 99 passed / 15 deselected，0.37s |
+| 2026-07-25 | final safety re-review `xvfb-run -a ... pytest -v` | 113 passed / 1 deselected，0.59s；完整默认集合仅在隔离 Xvfb 中执行 |
 
 ## 阻塞项
 

@@ -502,6 +502,32 @@ def test_close_release_failure_keeps_lifecycle_retryable(monkeypatch):
     assert x11._root is None
 
 
+def test_close_display_failure_keeps_lifecycle_retryable(monkeypatch):
+    monkeypatch.delenv("XDG_SESSION_TYPE", raising=False)
+    monkeypatch.setenv("DISPLAY", ":94")
+    candidate = FakeLifecycleDisplay()
+    monkeypatch.setattr(x11.xdisplay, "Display", lambda _name: candidate)
+    x11.initialize()
+    successful_close = candidate.close
+    close_error = OSError("display close failed")
+    candidate.close = lambda: (_ for _ in ()).throw(close_error)
+
+    with pytest.raises(OSError) as caught:
+        x11.close()
+
+    assert caught.value is close_error
+    assert x11._display is candidate
+    assert x11._root is candidate.root
+    assert candidate.closed == 0
+
+    candidate.close = successful_close
+    x11.close()
+
+    assert candidate.closed == 1
+    assert x11._display is None
+    assert x11._root is None
+
+
 def test_explicit_shift_release_transfers_to_implicit_user(monkeypatch):
     expected, keymap, events = fake_injection_display(monkeypatch)
     shift_code = expected["shift"][0]

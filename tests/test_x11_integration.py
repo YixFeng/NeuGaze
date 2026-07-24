@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -10,11 +11,22 @@ from my_model_arch.cpu_fast.desktop import x11
 
 
 pytestmark = pytest.mark.x11
+TRUSTED_XVFB = shutil.which("Xvfb")
 
 
-def xvfb_process_matches(display, authority, proc_root=Path("/proc"), uid=None):
+def xvfb_process_matches(
+    display,
+    authority,
+    proc_root=Path("/proc"),
+    uid=None,
+    trusted_executable=None,
+):
     if uid is None:
         uid = os.getuid()
+    if trusted_executable is None:
+        trusted_executable = TRUSTED_XVFB
+    if trusted_executable is None:
+        return False
     try:
         processes = tuple(proc_root.iterdir())
     except OSError:
@@ -30,13 +42,15 @@ def xvfb_process_matches(display, authority, proc_root=Path("/proc"), uid=None):
                 for field in (process / "cmdline").read_bytes().split(b"\0")
                 if field
             ]
-            executable = Path(os.readlink(process / "exe"))
+            executable_matches = os.path.samefile(
+                process / "exe",
+                trusted_executable,
+            )
         except (OSError, UnicodeDecodeError):
             continue
         if (
-            executable.name != "Xvfb"
+            not executable_matches
             or len(arguments) < 2
-            or Path(arguments[0]).name != "Xvfb"
             or arguments[1] != display
             or arguments.count("-auth") != 1
         ):
@@ -106,21 +120,65 @@ def test_xvfb_process_match_requires_exact_controlled_process(
     tmp_path,
 ):
     proc_root, add_process = controlled_proc
+    trusted_xvfb = tmp_path / "trusted" / "Xvfb"
+    trusted_xvfb.parent.mkdir()
+    trusted_xvfb.write_bytes(b"trusted")
     authority = tmp_path / "Xauthority"
     authority.write_bytes(b"test")
     add_process(
         100,
         ["Xvfb", ":77", "-screen", "0", "1280x720x24", "-auth", str(authority)],
+        executable=trusted_xvfb,
     )
 
     assert xvfb_process_matches(
-        ":77", authority, proc_root=proc_root, uid=os.getuid()
+        ":77",
+        authority,
+        proc_root=proc_root,
+        uid=os.getuid(),
+        trusted_executable=trusted_xvfb,
     )
     assert not xvfb_process_matches(
-        ":78", authority, proc_root=proc_root, uid=os.getuid()
+        ":78",
+        authority,
+        proc_root=proc_root,
+        uid=os.getuid(),
+        trusted_executable=trusted_xvfb,
     )
     assert not xvfb_process_matches(
-        ":77", tmp_path / "other-authority", proc_root=proc_root, uid=os.getuid()
+        ":77",
+        tmp_path / "other-authority",
+        proc_root=proc_root,
+        uid=os.getuid(),
+        trusted_executable=trusted_xvfb,
+    )
+
+
+def test_xvfb_process_match_rejects_different_inode_named_xvfb(
+    controlled_proc,
+    tmp_path,
+):
+    proc_root, add_process = controlled_proc
+    trusted_xvfb = tmp_path / "trusted" / "Xvfb"
+    trusted_xvfb.parent.mkdir()
+    trusted_xvfb.write_bytes(b"trusted")
+    copied_xvfb = tmp_path / "copied" / "Xvfb"
+    copied_xvfb.parent.mkdir()
+    copied_xvfb.write_bytes(trusted_xvfb.read_bytes())
+    authority = tmp_path / "Xauthority"
+    authority.write_bytes(b"test")
+    add_process(
+        101,
+        ["Xvfb", ":78", "-auth", str(authority)],
+        executable=copied_xvfb,
+    )
+
+    assert not xvfb_process_matches(
+        ":78",
+        authority,
+        proc_root=proc_root,
+        uid=os.getuid(),
+        trusted_executable=trusted_xvfb,
     )
 
 
