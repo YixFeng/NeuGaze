@@ -42,7 +42,7 @@
 - Orbbec SDK 源码提交：`869ae2d0`
 - Orbbec SDK 系统库：`/usr/local/lib/libOrbbecSDK.so.2.9.3`
 - Orbbec SDK 安装目录：`/opt/OrbbecSDK_v2.9.3`
-- Python Orbbec 绑定：尚未安装
+- Python Orbbec 绑定：`pyorbbecsdk2==2.1.1`（包版本 2.1.1，SDK 版本 API 报告 2.8.6）
 - 仓库初始状态：`main` 与 `origin/main` 同步，开始设计时无本地改动
 
 ## 阶段状态
@@ -54,7 +54,7 @@
 | 设计评审 | 完成 | 用户分三部分批准设计 |
 | 设计文档 | 完成 | 摄像头后端修订提交 `62dc98a`，用户已批准 |
 | 实施计划 | 完成 | 8 个 TDD 任务已写入，提交 `6bf86ed`，待选择执行方式 |
-| 实现 | 进行中（Task 1 完成） | Task 1 测试与显式摄像头配置已验证；其余任务待执行 |
+| 实现 | 进行中（Task 1–2 完成） | 双摄像头源单元测试及 Gemini 335 101 帧、关闭重开实机测试已验证；其余任务待执行 |
 | 自动化验证 | 未开始 | 依设计中的测试矩阵执行 |
 | Gemini 335 实机验收 | 未开始 | 需要连接设备和 Xorg 会话 |
 
@@ -63,10 +63,11 @@
 | 任务 | 状态 | 验证 |
 |---|---|---|
 | Task 1：测试基座与显式摄像头配置 | 完成 | 配置边界的 10 个测试通过 |
+| Task 2：Fail-fast OpenCV/V4L2 与 Orbbec RGB 源 | 完成（有 SDK ABI 偏差） | 33 个 Task 1/2 单元测试通过；Gemini 335 读取 100 帧、关闭、重开后再读 1 帧通过 |
 
 ## 当前工作
 
-Task 1 已完成。下一步执行实施计划的 Task 2；每个任务完成或阻塞后更新本文件。
+Task 2 已完成。下一步执行实施计划的 Task 3；每个任务完成或阻塞后更新本文件。
 
 ## 验证日志
 
@@ -83,7 +84,17 @@ Task 1 已完成。下一步执行实施计划的 Task 2；每个任务完成或
 | 2026-07-24 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /home/yixiao/miniconda3/envs/neugaze/bin/python -m pytest tests/test_camera_config.py -v`（RED） | 预期失败：缺少 `my_model_arch.cpu_fast.camera`，`ModuleNotFoundError` |
 | 2026-07-24 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /home/yixiao/miniconda3/envs/neugaze/bin/python -m pytest tests/test_camera_config.py -v`（GREEN） | 10 passed，0.01s |
 | 2026-07-24 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /home/yixiao/miniconda3/envs/neugaze/bin/python -m pytest -v` | 10 passed，0.01s；系统 ROS pytest 插件自动加载受污染，测试命令必须显式禁用，未安装或隐藏其依赖 |
+| 2026-07-24 | 安装 `opencv-python>=4.10.0.84 pyorbbecsdk2==2.1.1` | 安装成功：`opencv-python==4.11.0.86`、`numpy==1.26.4`、`pyorbbecsdk2==2.1.1`；Orbbec wheel 同时安装其声明依赖 |
+| 2026-07-24 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /home/yixiao/miniconda3/envs/neugaze/bin/python -m pytest tests/test_camera_sources.py -v`（RED） | 预期失败：缺少 `CameraInfo` 等 Task 2 接口，collection `ImportError` |
+| 2026-07-24 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /home/yixiao/miniconda3/envs/neugaze/bin/python -m pytest tests/test_camera_config.py tests/test_camera_sources.py -v`（最终复验） | 33 passed，0.08s |
+| 2026-07-24 | 首次 `tests/test_orbbec_hardware.py --run-orbbec -v` | 失败并保留原始错误：`OBError: NULL pointer passed for argument "deviceMgr"`；定位为枚举时未保留 `Context` 生命周期 |
+| 2026-07-24 | Orbbec Context 生命周期回归测试 | RED：`RuntimeError: device context was destroyed`；最小修复后 GREEN：1 passed |
+| 2026-07-24 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /home/yixiao/miniconda3/envs/neugaze/bin/python -m pytest -v`（最终复验） | 33 passed / 1 deselected，0.08s |
+| 2026-07-24 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /home/yixiao/miniconda3/envs/neugaze/bin/python -m pytest tests/test_orbbec_hardware.py --run-orbbec -v`（最终复验） | 1 passed，8.35s；Gemini 335 读取 100 帧、关闭、重开并再读 1 帧 |
+| 2026-07-24 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /home/yixiao/miniconda3/envs/neugaze/bin/python -m pytest tests/test_orbbec_hardware.py -v` | collection 阶段 1 deselected / 0 selected；未明确传入 `--run-orbbec` 时不触碰硬件 |
+| 2026-07-24 | `pyorbbecsdk.get_version()` 与扩展 `ldd` | 包版本 2.1.1，SDK API 报告 2.8.6；扩展解析到 wheel 内 `pyorbbecsdk/libOrbbecSDK.so.2`，未使用系统 v2.9.3 |
 
 ## 阻塞项
 
-当前无实施阻塞。系统包或 udev 调整若需要 `sudo`，必须先请求用户批准。
+- Orbbec Python wheel 当前加载其内置 SDK 2.8.6，而非设计指定的系统 SDK v2.9.3。实机采集已通过，但 ABI/库来源不符合设计；后续运行时诊断和依赖任务必须显式判定并解决，禁止通过隐式 `LD_LIBRARY_PATH` 改写或静默继续。
+- 系统包或 udev 调整若需要 `sudo`，必须先请求用户批准。
