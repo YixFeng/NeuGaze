@@ -54,8 +54,8 @@
 | 设计评审 | 完成 | 用户分三部分批准设计 |
 | 设计文档 | 完成 | 摄像头后端修订提交 `62dc98a`，用户已批准 |
 | 实施计划 | 完成 | 8 个 TDD 任务已写入，提交 `6bf86ed`，待选择执行方式 |
-| 实现 | 进行中（Task 1–3 完成） | 双摄像头源、平台选择器和平台中立动作单元测试通过；Gemini 335 101 帧、关闭重开实机测试已验证；其余任务待执行 |
-| 自动化验证 | 未开始 | 依设计中的测试矩阵执行 |
+| 实现 | 进行中（Task 1–4 完成） | X11 后端纯测试与隔离 Xvfb 集成通过；双摄像头源、平台选择器和平台中立动作单元测试通过；Gemini 335 101 帧、关闭重开实机测试已验证 |
+| 自动化验证 | 进行中 | Task 4：纯测试 42 passed、Xvfb 集成 11 passed、安全集合 92 passed / 12 deselected、Xvfb 完整默认集合 103 passed / 1 deselected |
 | Gemini 335 实机验收 | 未开始 | 需要连接设备和 Xorg 会话 |
 
 ## 任务进度
@@ -65,10 +65,11 @@
 | Task 1：测试基座与显式摄像头配置 | 完成 | 配置边界的 10 个测试通过 |
 | Task 2：Fail-fast OpenCV/V4L2 与 Orbbec RGB 源 | 完成（有 SDK ABI 偏差） | 33 个 Task 1/2 单元测试通过；Gemini 335 读取 100 帧、关闭、重开后再读 1 帧通过 |
 | Task 3：平台中立动作与显式桌面选择 | 完成 | selector/action 17 个测试通过（含 cleanup/lifecycle 并发回归）；common modules 编译通过；完整默认测试 50 passed / 1 deselected |
+| Task 4：X11/XTest/XFixes 后端 | 完成 | 纯测试 42 passed；隔离 Xvfb 集成 11 passed；安全集合 92 passed / 12 deselected；Xvfb 完整默认集合 103 passed / 1 deselected |
 
 ## 当前工作
 
-Task 3 已完成。Linux selector 在首次桌面操作前不导入尚未实现的 X11 后端；下一步执行实施计划的 Task 4，添加并验证 X11 后端。
+Task 4 已完成直接 X11/XTest/XFixes 后端、纯测试和隔离集成测试；所有注入测试仅在 `xvfb-run` 隔离显示中执行，未触碰实时 `DISPLAY=:1`。下一步执行实施计划 Task 5，将摄像头与桌面边界接入生产管线。
 
 ## 验证日志
 
@@ -102,6 +103,25 @@ Task 3 已完成。Linux selector 在首次桌面操作前不导入尚未实现�
 | 2026-07-24 | selector/action review 修复后 focused GREEN | 17 passed，0.24s；另验证 import/close 失败保留原异常与可重试状态 |
 | 2026-07-24 | review 修复后 common modules `py_compile` | exit 0 |
 | 2026-07-24 | review 修复后完整默认测试 | 50 passed / 1 deselected，0.30s |
+| 2026-07-24 | `tests/test_x11_keymap.py -v`（RED） | 预期失败：缺少 `desktop.x11`，collection `ImportError` |
+| 2026-07-24 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /home/yixiao/miniconda3/envs/neugaze/bin/python -m pytest tests/test_x11_keymap.py -v`（GREEN） | 39 passed，0.02s；覆盖 Shift level、按键状态位、XFixes Alpha、未知键、生命周期和持有输入清理 |
+| 2026-07-24 | X11 新文件 `py_compile` 与 `tests/test_x11_integration.py -m x11 --collect-only -q` | 编译 exit 0；7 tests collected，未连接显示服务器 |
+| 2026-07-24 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /home/yixiao/miniconda3/envs/neugaze/bin/python -m pytest -m 'not x11' -v` | 89 passed / 8 deselected，0.34s；显式排除 X11 集成，未触碰实时显示 |
+| 2026-07-24 | `command -v xvfb-run` | exit 1，无输出；未执行 X11 注入集成，Task 4 保持阻塞且未提交 |
+| 2026-07-25 | `command -v Xvfb && command -v xvfb-run` | `/usr/bin/Xvfb` 与 `/usr/bin/xvfb-run` 均存在 |
+| 2026-07-25 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 xvfb-run -a /home/yixiao/miniconda3/envs/neugaze/bin/python -m pytest tests/test_x11_integration.py -m x11 -v` | 7 passed，0.21s；初始化/关闭、绝对/相对指针、按键状态、1/2/3/8/9 按钮、轮盘、未知键与 Wayland 拒绝均通过 |
+| 2026-07-25 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /home/yixiao/miniconda3/envs/neugaze/bin/python -m pytest tests/test_x11_keymap.py -v` | 39 passed，0.02s |
+| 2026-07-25 | X11 后端、selector、Win32 后端、平台中立动作与两个 X11 测试文件 `py_compile` | exit 0 |
+| 2026-07-25 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /home/yixiao/miniconda3/envs/neugaze/bin/python -m pytest -m 'not x11' -v` | 89 passed / 8 deselected，0.35s |
+| 2026-07-25 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 xvfb-run -a /home/yixiao/miniconda3/envs/neugaze/bin/python -m pytest -v` | 96 passed / 1 deselected，0.52s；首次完整默认集合在隔离 Xvfb 中执行 |
+| 2026-07-25 | Task 4 独立 review | 发现并修复：集成测试仅拒绝字面 `:1`、隐式 Shift 所有权重叠错误、按钮 2/3 覆盖缺失；生命周期测试改为 `finally` 关闭 |
+| 2026-07-25 | Shift 所有权 focused RED | 2 failed；复现重叠 Shift 提前释放和预先按住 Shift 被错误释放 |
+| 2026-07-25 | Shift 所有权 focused GREEN | 2 passed，0.02s；随后增加显式持有 Shift 回归覆盖 |
+| 2026-07-25 | 最终 `tests/test_x11_keymap.py -v` | 42 passed，0.02s |
+| 2026-07-25 | 最终隔离 `tests/test_x11_integration.py -m x11 -v` | 11 passed，0.20s；增加 Xvfb Xauthority 身份门禁、实时显示别名拒绝及按钮 2/3 事件覆盖 |
+| 2026-07-25 | 最终 common `py_compile` | exit 0 |
+| 2026-07-25 | 最终 `pytest -m 'not x11' -v` | 92 passed / 12 deselected，0.38s |
+| 2026-07-25 | 最终 `xvfb-run -a ... pytest -v` | 103 passed / 1 deselected，0.52s；完整默认集合仅在隔离 Xvfb 中执行 |
 
 ## 阻塞项
 
