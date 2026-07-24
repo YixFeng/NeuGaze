@@ -259,49 +259,4 @@ def combine_dicts(dict1, dict2):
 
 
 
-# 以下提供一些控制鼠标移动的函数
-
-# 检测鼠标可见状态
-import ctypes
-from ctypes import wintypes
-
-# 加载 kernel32 和 user32 DLL
-kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
-user32 = ctypes.WinDLL('user32', use_last_error=True)
-
-# 定义 GetLastError 函数原型
-GetLastError = kernel32.GetLastError
-GetLastError.restype = wintypes.DWORD
-
-class CURSORINFO(ctypes.Structure):
-    _fields_ = [
-        ("cbSize", wintypes.DWORD),
-        ("flags", wintypes.DWORD),
-        ("hCursor", wintypes.HANDLE),  # 使用 HANDLE 代替 HCURSOR
-        ("ptScreenPos", wintypes.POINT),
-    ]
-
-# 设置函数参数类型和返回类型
-GetCursorInfo = user32.GetCursorInfo
-GetCursorInfo.argtypes = [ctypes.POINTER(CURSORINFO)]
-GetCursorInfo.restype = wintypes.BOOL
-
-
-def is_cursor_visible_func():
-
-    # 创建 CURSORINFO 实例并初始化 cbSize
-    cursor_info = CURSORINFO()
-    cursor_info.cbSize = ctypes.sizeof(CURSORINFO)  # 确保这是正确的结构大小
-    # 调用 GetCursorInfo 函数
-    if not GetCursorInfo(ctypes.byref(cursor_info)):
-        error_code = GetLastError()
-        print(f"Failed to get cursor info. Error code: {error_code}")
-        return True
-    else:
-        # 如果 flags 为 0，则光标被隐藏；非 0 则光标可见
-        is_cursor_visible = cursor_info.flags != 0
-        # print(f"Is cursor visible: {is_cursor_visible}")
-        # print(f"Cursor position: ({cursor_info.ptScreenPos.x}, {cursor_info.ptScreenPos.y})")
-        return is_cursor_visible
-
 # 这个函数输入是屏幕尺寸，鼠标移动参考位置，视点估计位置，控制不动区大小，移动倍数。

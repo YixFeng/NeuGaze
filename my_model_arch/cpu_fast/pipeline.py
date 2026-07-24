@@ -12,9 +12,9 @@
 
 import os
 import pathlib
+import sys
 from typing import Union
 import cv2
-import ctypes
 import numpy as np
 import math
 import torch
@@ -33,20 +33,19 @@ from .vis import render
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.svm import SVR
-from .gaze_show_utils import GazeOverlay, DEFAULT_GAZE_CONFIG
 from .results import GazeResultContainer, IntegratedGazeResultContainer,AllResultContainer
 from .vis import popout_fading_window
 import datetime
 import jsonlines
-from .utils import rotation_matrix_to_angles, StateRecordDict, combine_dicts, is_cursor_visible_func
+from .utils import rotation_matrix_to_angles, StateRecordDict, combine_dicts
 from .utils import (generate_calibration_points, generate_random_calibration_points, GazeKalmanFilter,
                     plot_points, crop_center_rectangle, getArch, read_jsonlines)
 from .expression_evaluator import ExpressionEvaluator
-import pyautogui as pg
+from . import desktop
+from .camera import camera_config_from_mapping, open_camera
 import threading
 import tkinter as tk
-import keyboard
-from .keyboard_utils import Action,OpType,KEY_MAP
+from .keyboard_utils import Action, OpType
 import ncnn
 import torch.nn as nn
 import torchvision.transforms as transforms
@@ -60,14 +59,10 @@ import os
 import pathlib
 from typing import Union
 from datetime import datetime
-import ctypes
     
 
 
 
-
-pg.PAUSE = 0.002
-pg.FAILSAFE = False
 mediapipe_desired_points = [
     70, 63, 105, 66, 107,  # 左边眉毛上面
     46, 53, 52, 65, 55,  # 左边眉毛下面
@@ -199,6 +194,10 @@ class IntegratedRegressionMediaPipeline:
             arch: str = 'ResNet50',
             device: str = torch.device('cuda'),
             cam_id: int = 0,
+            camera_backend=None,
+            camera_width=None,
+            camera_height=None,
+            camera_fps=None,
             num_points=20,
             screen_size=[None,None],
             every_point_has_n_images=15,
@@ -226,6 +225,17 @@ class IntegratedRegressionMediaPipeline:
         self.regression_model_type = regression_model_type
         self.calibrate_num_points = num_points
         self.cam_id = cam_id
+        self.camera_config = camera_config_from_mapping(
+            {
+                "camera_backend": camera_backend,
+                "cam_id": cam_id,
+                "camera_width": camera_width,
+                "camera_height": camera_height,
+                "camera_fps": camera_fps,
+            },
+            sys.platform,
+        )
+        self.camera = None
         self.start_with_calibration=start_with_calibration
         self.is_calibrating=start_with_calibration
         self.end_calibration_signal=False
@@ -285,11 +295,6 @@ class IntegratedRegressionMediaPipeline:
 
         self.quit = False
 
-        self.user32 = ctypes.windll.user32
-        self.SWP_NOMOVE = 0x0002
-        self.SWP_NOSIZE = 0x0001
-        self.HWND_TOPMOST = -1
-        self.HWND_NOTOPMOST = -2
         self.mediapipe = self.get_mediapipe()
         self.orig_head_angles = None
 
@@ -317,12 +322,6 @@ class IntegratedRegressionMediaPipeline:
             self.model = torch.export.load(self.weights).module()
         else:
             raise ValueError('Unsupported weights file type')
-
-    def set_window_topmost(self, hwnd, topmost):
-        if topmost:
-            self.user32.SetWindowPos(hwnd, self.HWND_TOPMOST, 0, 0, 0, 0, self.SWP_NOMOVE | self.SWP_NOSIZE)
-        else:
-            self.user32.SetWindowPos(hwnd, self.HWND_NOTOPMOST, 0, 0, 0, 0, self.SWP_NOMOVE | self.SWP_NOSIZE)
 
     def step(self, frame: np.ndarray):
         with self.lock:
@@ -557,7 +556,7 @@ class IntegratedRegressionMediaPipeline:
                 print("用户要求退出，停止校准...")
                 break
                 
-            if keyboard.is_pressed('esc') and keyboard.is_pressed('q'):
+            if desktop.are_keys_down(("esc", "q")):
                 print("\n用户按下 ESC+Q，退出校准...")
                 self.quit = True
                 break
@@ -701,7 +700,7 @@ class IntegratedRegressionMediaPipeline:
         self.shrink_point(screen_height, screen_width, point, 1)
         while valid_photos_taken < every_point_has_n_images:
             # 检查退出条件
-            if keyboard.is_pressed('esc') and keyboard.is_pressed('q'):
+            if desktop.are_keys_down(("esc", "q")):
                 print("\n用户按下 ESC+Q，退出校准...")
                 self.quit = True
                 return point_data
@@ -720,64 +719,59 @@ class IntegratedRegressionMediaPipeline:
                 continue
             
             # 2. 眼睛张开，获取数据并保存
-            try:
-                results = self.get_results_from_capture(cap)
-                if results is None:
-                    continue
-                
-                results_dict = self.results_to_data_dict(results)
-                
-                # 保存图像和数据
-                image_path = path1 + f'images/{point_idx}_{valid_photos_taken}.png'
-                os.makedirs(os.path.dirname(image_path), exist_ok=True)
-                cv2.imwrite(image_path, self.frame)
-                
-                results_dict['target_point'] = point
-                results_dict['label'] = point
-                results_dict['image_path'] = image_path
-                self.data_list.append(results_dict.copy())
-                point_data.append(results_dict.copy())
-                valid_photos_taken += 1
-                
-                print(f"收集数据: {valid_photos_taken}/{every_point_has_n_images}")
-                
-                # 增量训练
-                if len(self.data_list) % 5 == 0:
-                    try:
-                        self.train_regression()
-                        print(f"模型训练更新: {len(self.data_list)} 样本")
-                    except Exception as e:
-                        print(f"训练失败: {e}")
-                
-                # 5. 显示预测结果（如果有模型）
-                if point_idx > 0 and hasattr(self, 'regression_model') and self.regression_model:
-                    try:
-                        predicted_position = self.regression_model.predict(
-                            X=self.data_dict_list_preparation_for_training_and_evaluation([results_dict])
-                        )
-                        if predicted_position is not None and len(predicted_position) > 0:
-                            pred_x, pred_y = int(predicted_position[0][0]), int(predicted_position[0][1])
-                            pred_x = max(0, min(screen_width - 1, pred_x))
-                            pred_y = max(0, min(screen_height - 1, pred_y))
-                            
-                            # 绘制预测点
-                            cv2.circle(img, (pred_x, pred_y), 2, (0, 50, 50), -1)
-                            cv2.putText(img, "Predicted", (pred_x + 15, pred_y), 
-                                       cv2.FONT_HERSHEY_SIMPLEX, 0.5,  (0, 50, 50), 1)
-                            
-                            # 显示误差
-                            distance = np.sqrt((pred_x - point[0])**2 + (pred_y - point[1])**2)
-                            cv2.putText(img, f"Error: {distance:.1f}px", (pred_x + 15, pred_y + 20), 
-                                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 50, 50), 1)
-                    except Exception as e:
-                        print(f"预测错误: {e}")
-                
-                time.sleep(1.0 / images_freq)  # 控制采样频率
-                
-            except Exception as e:
-                print(f"数据收集错误: {e}")
+            results = self.get_results_from_capture(cap)
+            if results is None:
                 continue
-            
+                
+            results_dict = self.results_to_data_dict(results)
+                
+            # 保存图像和数据
+            image_path = path1 + f'images/{point_idx}_{valid_photos_taken}.png'
+            os.makedirs(os.path.dirname(image_path), exist_ok=True)
+            cv2.imwrite(image_path, self.frame)
+                
+            results_dict['target_point'] = point
+            results_dict['label'] = point
+            results_dict['image_path'] = image_path
+            self.data_list.append(results_dict.copy())
+            point_data.append(results_dict.copy())
+            valid_photos_taken += 1
+                
+            print(f"收集数据: {valid_photos_taken}/{every_point_has_n_images}")
+                
+            # 增量训练
+            if len(self.data_list) % 5 == 0:
+                try:
+                    self.train_regression()
+                    print(f"模型训练更新: {len(self.data_list)} 样本")
+                except Exception as e:
+                    print(f"训练失败: {e}")
+                
+            # 5. 显示预测结果（如果有模型）
+            if point_idx > 0 and hasattr(self, 'regression_model') and self.regression_model:
+                try:
+                    predicted_position = self.regression_model.predict(
+                        X=self.data_dict_list_preparation_for_training_and_evaluation([results_dict])
+                    )
+                    if predicted_position is not None and len(predicted_position) > 0:
+                        pred_x, pred_y = int(predicted_position[0][0]), int(predicted_position[0][1])
+                        pred_x = max(0, min(screen_width - 1, pred_x))
+                        pred_y = max(0, min(screen_height - 1, pred_y))
+                            
+                        # 绘制预测点
+                        cv2.circle(img, (pred_x, pred_y), 2, (0, 50, 50), -1)
+                        cv2.putText(img, "Predicted", (pred_x + 15, pred_y),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5,  (0, 50, 50), 1)
+                            
+                        # 显示误差
+                        distance = np.sqrt((pred_x - point[0])**2 + (pred_y - point[1])**2)
+                        cv2.putText(img, f"Error: {distance:.1f}px", (pred_x + 15, pred_y + 20),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 50, 50), 1)
+                except Exception as e:
+                    print(f"预测错误: {e}")
+                
+            time.sleep(1.0 / images_freq)  # 控制采样频率
+                
             # 6. 绘制界面
             # 绘制目标点
             point_size=np.random.randint(20, 40)
@@ -1149,27 +1143,15 @@ class IntegratedRegressionMediaPipeline:
             return X, y
         return X
 
-    def cap_read_img(self, cap):
-        # 如果大于之前的milliseconds，就读取，否则不读取
-        milliseconds = int(time.time()*1000)
-        # print(f'milliseconds:{milliseconds}')
-        if len(self.milliseconds_list) == 0 or milliseconds > self.milliseconds_list[-1]:
-            ret, frame = cap.read()
-            self.milliseconds = milliseconds
-            self.milliseconds_list.append(milliseconds)
-            self.milliseconds_list=self.milliseconds_list[-10:]
-            self.frame = frame
-        else:
-            self.frame = None
+    def cap_read_img(self):
+        self.frame = self.camera.read()
 
     def get_results_from_capture(self, cap: cv2.VideoCapture):
         count = 0
         while 1:
             t00 = time.time()
-            self.cap_read_img(cap)
+            self.cap_read_img()
             frame = self.frame
-            if frame is None:
-                continue
             if self.frame_size is None:
                 self.frame_size = frame.shape[:2]
             t0 = time.time()
@@ -1251,13 +1233,7 @@ class IntegratedRegressionMediaPipeline:
         self.regression_model.fit(X, y)
 
     def get_screen_resolution(self):
-        from win32.lib import win32con
-        from win32 import win32gui, win32print
-
-        hDC = win32gui.GetDC(0)
-        width = win32print.GetDeviceCaps(hDC, win32con.DESKTOPHORZRES)
-        height = win32print.GetDeviceCaps(hDC, win32con.DESKTOPVERTRES)
-        return width, height
+        return desktop.get_screen_size()
 
     def call_after_each_eval_loop(self):
         # can be used for multiprocessing processes
@@ -1288,102 +1264,125 @@ class IntegratedRegressionMediaPipeline:
 
     
     
-    def start_service(self, cam_id=0):
-
+    def start_service(self):
+        if self.camera is not None:
+            raise RuntimeError("camera service is already started")
         self.screen_size = self.get_screen_resolution()
         self.mid_point = (self.screen_size[0] // 2, self.screen_size[1] // 2)
-        # print(self.screen_size)
-        # exit()
-        if self.cam_id is None:
-            self.cam_id = cam_id
-        self.cap = cv2.VideoCapture(self.cam_id)
-        self.milliseconds = int(time.time()*1000)
+        self.camera = open_camera(self.camera_config, sys.platform)
+
+    def _close_camera(self):
+        if self.camera is None:
+            return
+        camera = self.camera
+        self.camera = None
+        camera.close()
 
     def start_calibration(self):
-        if not hasattr(self, 'cap'):
-            self.start_service()
-        self.setup_window()
-        cv2.waitKey(2000)
-        self.calibrate(self.cap)  # 您可以根据需要调整点的数量
-        self.is_calibrating = False
-        self.destroy_window()
+        try:
+            if self.camera is None:
+                self.start_service()
+            self.setup_window()
+            cv2.waitKey(2000)
+            self.calibrate(self.camera)
+            self.is_calibrating = False
+            self.destroy_window()
+            self._close_camera()
+        except BaseException as error:
+            self.quit_pipeline(error)
         return True
 
     def end_calibration(self):
         self.end_calibration_signal = True
 
     def start_evaluation(self):
-        if not hasattr(self, 'cap'):
-            self.start_service()
-        self.end_calibration_signal = False
-        count = 0
-        tl = []
-        self.call_before_while_loop()
-        while True:
-            t_start = time.time()
-            if self.render_in_eval and len(self.open_windows) == 0:
-                self.setup_window()
-            self.evaluate(self.cap)
-            cv2.waitKey(1)
-            # 暂时的保护措施，强制退出
-            # if keyboard.is_pressed('esc+q'):
-            #     self.quit = True
-            #     break
-            # 如果监测到需要结束的信号，就结束，这个是从软件层面结束的
-            if self.end_calibration_signal:
-                break
-            # 计算FPS
-            t_end = time.time()
-            count += 1
-            tl.append(t_end - t_start)
-            used = 60
-            used_tl = tl[-used:]
-            per_duration = sum(used_tl) / len(used_tl)
-            FPS = 1 / per_duration
-            self.FPS=FPS
-            # print(f'FPS: {FPS:.2f} duration: {per_duration:.2f}')
-            self.call_after_each_eval_loop()
-        self.call_after_while_loop()
-        if hasattr(self, 'cap'):
-            if self.cap is not None:
-                self.cap.release()
-        self.destroy_window()
-        # quit()
-
-    def quit_pipeline(self):
-        """退出pipeline服务"""
         try:
-            # 1. 先设置退出标志，确保所有循环都能退出
-            self.quit = True
-            self.end_calibration_signal = True
-            
-            # 2. 停止所有服务
-            if hasattr(self, 'gaze_overlay') and self.gaze_overlay:
-                self.gaze_overlay.stop()  # 关闭凝视点显示
-            if hasattr(self, 'gaze_mouse_controller'):
-                self.gaze_mouse_controller.stop()  # 停止鼠标控制
-            if hasattr(self, 'wheel'):
-                self.wheel.should_run = False  # 停止轮盘
-            
-            # 3. 等待评估循环结束
-            time.sleep(0.1)  # 给循环一点时间退出
-            
-            # 4. 释放摄像头资源
-            if hasattr(self, 'cap') and self.cap is not None:
-                self.cap.release()
-                self.cap = None
-                cv2.destroyAllWindows()
-            
-            # 5. 清理其他资源
-            if hasattr(self, 'gaze_thread'):
-                self.gaze_thread = None
-            
-        except Exception as e:
-            error_msg = f"Error in quit_pipeline:\n{str(e)}\n\nTraceback:\n"
-            import traceback
-            error_msg += "".join(traceback.format_exc())
-            print(error_msg)
-            raise  # 重新抛出异常，让上层也能看到完整的错误信息
+            if self.camera is None:
+                self.start_service()
+            self.end_calibration_signal = False
+            count = 0
+            tl = []
+            self.call_before_while_loop()
+            while True:
+                t_start = time.time()
+                if self.render_in_eval and len(self.open_windows) == 0:
+                    self.setup_window()
+                self.evaluate(self.camera)
+                cv2.waitKey(1)
+                if self.end_calibration_signal:
+                    break
+                t_end = time.time()
+                count += 1
+                tl.append(t_end - t_start)
+                used_tl = tl[-60:]
+                per_duration = sum(used_tl) / len(used_tl)
+                self.FPS = 1 / per_duration
+                self.call_after_each_eval_loop()
+            self.call_after_while_loop()
+        except BaseException as error:
+            self.quit_pipeline(error)
+        else:
+            self.quit_pipeline()
+
+    def quit_pipeline(self, primary_error: BaseException | None = None):
+        """Stop pipeline-owned resources without closing the shared desktop."""
+        primary_traceback = (
+            primary_error.__traceback__ if primary_error is not None else None
+        )
+        self.quit = True
+        self.end_calibration_signal = True
+        if hasattr(self, "wheel"):
+            self.wheel.should_run = False
+
+        cleanup_errors = []
+
+        def cleanup(operation, callback):
+            try:
+                callback()
+            except BaseException as error:
+                cleanup_errors.append((operation, error))
+
+        action_thread = getattr(self, "_action_thread", None)
+        if (
+            action_thread is not None
+            and action_thread is not threading.current_thread()
+        ):
+            cleanup("action_worker.join", action_thread.join)
+
+        action_worker_error = getattr(self, "_action_worker_error", None)
+        if action_worker_error is not None:
+            _, worker_error, worker_traceback = action_worker_error
+            if primary_error is None:
+                primary_error = worker_error
+                primary_traceback = worker_traceback
+            elif worker_error is not primary_error:
+                cleanup_errors.append(("action worker", worker_error))
+
+        cleanup("desktop.release_all", desktop.release_all)
+        if hasattr(self, "gaze_mouse_controller"):
+            cleanup(
+                "gaze_mouse_controller.stop",
+                self.gaze_mouse_controller.stop,
+            )
+        cleanup("camera.close", self._close_camera)
+        cleanup("destroy_window", self.destroy_window)
+        if hasattr(self, "gaze_overlay") and self.gaze_overlay:
+            cleanup("gaze_overlay.stop", self.gaze_overlay.stop)
+        if hasattr(self, "gaze_thread"):
+            self.gaze_thread = None
+
+        if primary_error is not None:
+            for operation, error in cleanup_errors:
+                primary_error.add_note(
+                    f"{operation} failed with "
+                    f"{type(error).__name__}: {error}"
+                )
+            raise primary_error.with_traceback(primary_traceback)
+        if cleanup_errors:
+            raise BaseExceptionGroup(
+                "pipeline cleanup failed",
+                [error for _, error in cleanup_errors],
+            )
 
     def enter_calibration(self):
         self.is_calibrating = True
@@ -1407,70 +1406,54 @@ class IntegratedRegressionMediaPipeline:
             return True
         
         return False
-    def demo(self, cam_id=0):
-
-        self.screen_size = self.get_screen_resolution()
-        self.mid_point = (self.screen_size[0] // 2, self.screen_size[1] // 2)
-        # print(self.screen_size)
-        # exit()
-        if self.cam_id is None:
-            self.cam_id = cam_id
-        cap = cv2.VideoCapture(self.cam_id)
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1080)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-        self.milliseconds = int(time.time()*1000)
-        is_calibrating = self.start_with_calibration
-        is_testing=False
-        count = 0
-        tl = []
-        self.call_before_while_loop()
-        while True:
-            t_start = time.time()
-            if is_calibrating:
-                print("start calibrating")
-                self.setup_window()
-                cv2.waitKey(2000)
-                self.calibrate(cap,test_mode=is_testing)  # 您可以根据需要调整点的数量
-                is_calibrating = False
-                is_testing = False
-                self.destroy_window()
-
-            else:
-                # print("start evaluating")
-
-                if self.render_in_eval and len(self.open_windows) == 0:
+    def demo(self):
+        try:
+            if self.camera is None:
+                self.start_service()
+            is_calibrating = self.start_with_calibration
+            is_testing = False
+            count = 0
+            tl = []
+            self.call_before_while_loop()
+            while True:
+                t_start = time.time()
+                if is_calibrating:
+                    print("start calibrating")
                     self.setup_window()
-                self.evaluate(cap)
-                # is_calibrating = True
-                # is_evaluating = False
-            cv2.waitKey(1)
-            # 暂时的保护措施，强制退出
-            if keyboard.is_pressed('esc+q'):
-                self.quit = True
-                break
-            elif keyboard.is_pressed('esc+r'):
-                # 进入校准
-                is_calibrating = True
-            elif keyboard.is_pressed('esc+t'):
-                # 进入校准
-                is_calibrating = True
-                is_testing = True
+                    cv2.waitKey(2000)
+                    self.calibrate(self.camera, test_mode=is_testing)
+                    is_calibrating = False
+                    is_testing = False
+                    self.destroy_window()
+                else:
+                    if self.render_in_eval and len(self.open_windows) == 0:
+                        self.setup_window()
+                    self.evaluate(self.camera)
+                cv2.waitKey(1)
+                if desktop.are_keys_down(("esc", "q")):
+                    self.quit = True
+                    break
+                if desktop.are_keys_down(("esc", "r")):
+                    is_calibrating = True
+                elif desktop.are_keys_down(("esc", "t")):
+                    is_calibrating = True
+                    is_testing = True
 
-            # 计算FPS
-            t_end = time.time()
-            count += 1
-            tl.append(t_end - t_start)
-            used = 60
-            used_tl = tl[-used:]
-            per_duration = sum(used_tl) / len(used_tl)
-            FPS = 1 / per_duration
-            self.FPS=FPS
-            print(f'FPS: {FPS:.2f} duration: {per_duration:.2f}')
-            self.call_after_each_eval_loop()
-        self.call_after_while_loop()
-        cap.release()
-        self.destroy_window()
-        quit()
+                t_end = time.time()
+                count += 1
+                tl.append(t_end - t_start)
+                used_tl = tl[-60:]
+                per_duration = sum(used_tl) / len(used_tl)
+                self.FPS = 1 / per_duration
+                print(
+                    f"FPS: {self.FPS:.2f} duration: {per_duration:.2f}"
+                )
+                self.call_after_each_eval_loop()
+            self.call_after_while_loop()
+        except BaseException as error:
+            self.quit_pipeline(error)
+        else:
+            self.quit_pipeline()
 
     def save_model(self, model_save_path=None):
         if model_save_path is None:
@@ -2174,7 +2157,7 @@ class BindKeys(IntegratedRegressionMediaPipeline):
         # print(predicted_position)
         if predicted_position is not None:
             x, y = predicted_position
-            mx, my = pg.position()
+            mx, my = desktop.get_pointer_position()
             rel_x = x - mx
             rel_y = y - my
             self.mouse_dict = {
@@ -2265,7 +2248,10 @@ class RealAction(BindKeys):
         self.head_angles_scale = head_angles_scale
         
         self.show_gaze = show_gaze
-        self.gaze_config = gaze_config or DEFAULT_GAZE_CONFIG
+        if gaze_config is None:
+            from .gaze_show_utils import DEFAULT_GAZE_CONFIG
+            gaze_config = DEFAULT_GAZE_CONFIG
+        self.gaze_config = gaze_config
         self.gaze_overlay = None
         self.gaze_thread = None
         self.gaze_running = False
@@ -2296,6 +2282,8 @@ class RealAction(BindKeys):
         threading.Thread(target=self.wheel.run_sector_wheel,daemon=True).start()
         self.action_queue = []
         self.loop_queue = []  # this is used for control the speed of taking real actions
+        self._action_thread = None
+        self._action_worker_error = None
         self.lock_eye_controlled_mouse_move_until_time = time.time()
         self.lock_eye_controlled_mouse_move_with_head_until_time = time.time()
 
@@ -2313,6 +2301,7 @@ class RealAction(BindKeys):
         """启动凝视点显示线程"""
         self.show_gaze = True
 
+        from .gaze_show_utils import GazeOverlay
         self.gaze_overlay = GazeOverlay(**self.gaze_config)
         self.gaze_overlay.start()
         self.gaze_running = True
@@ -2443,15 +2432,20 @@ class RealAction(BindKeys):
 
     def call_before_while_loop(self):
         super().call_before_while_loop()
-        # start checking action queue
-        Thread(target=self.loop_key,daemon=True).start()
+        self.raise_action_worker_if_failed()
+        if (
+            self._action_thread is not None
+            and self._action_thread.is_alive()
+        ):
+            raise RuntimeError("action worker is already running")
+        self._action_thread = Thread(target=self.loop_key, daemon=True)
+        self._action_thread.start()
         if self.show_gaze:
             self.start_gaze_display()
-        # Thread(target=self.loop_mouse).start()
-        self.gaze_mouse_controller.update_screen_size(self.screen_size[0], self.screen_size[1])
+        self.gaze_mouse_controller.update_screen_size(
+            self.screen_size[0], self.screen_size[1]
+        )
         self.gaze_mouse_controller.start()
-        
-        # self.keyboard_controller.start()
 
     def set_mouse_control(self,mouse_control):
         self.mouse_control = mouse_control
@@ -2461,7 +2455,7 @@ class RealAction(BindKeys):
         while 1:
             t0 = time.time()
             time.sleep(0.1)
-            self.is_mouse_visible = is_cursor_visible_func()
+            self.is_mouse_visible = desktop.is_cursor_visible()
             # print(f'visible:{self.is_mouse_visible}')
             # 鼠标位移操作
             # 这个需要放在action queue之前，因为后面有个continue的操作，会跳过鼠标
@@ -2500,18 +2494,22 @@ class RealAction(BindKeys):
                             if rel_y != 0 or rel_x != 0:
                                 # mx=self.mouse_dict['mx']
                                 # my=self.mouse_dict['my']
-                                mx, my = pg.position()
+                                mx, my = desktop.get_pointer_position()
                                 x = rel_x + mx
                                 y = rel_y + my
                                 x = np.clip(a=x, a_min=0, a_max=self.screen_size[0])
                                 y = np.clip(a=y, a_min=0, a_max=self.screen_size[1])
-                                Thread(target=pg.moveTo, args=(int(x), int(y),), kwargs={"_pause": False},daemon=True).start()
+                                desktop.move_pointer(
+                                    int(x), int(y), relative=False
+                                )
                                 # pg.moveRel(xOffset=mx+rel_x,yOffset=rel_y)
                                 self.lock_eye_controlled_mouse_move_with_head_until_time = time.time() + 2
                             else:
                                 if time.time() > self.lock_eye_controlled_mouse_move_with_head_until_time:
                                     if old_x != x or old_y != y:
-                                        Thread(target=pg.moveTo, args=(int(x), int(y),),daemon=True).start()
+                                        desktop.move_pointer(
+                                            int(x), int(y), relative=False
+                                        )
                                     old_x, old_y = x, y
                         else:
                             # 轮盘显示时用头部角度控制
@@ -2524,7 +2522,9 @@ class RealAction(BindKeys):
                             x = np.clip(a=x, a_min=0, a_max=self.screen_size[0])
                             y = np.clip(a=y, a_min=0, a_max=self.screen_size[1])
                             if old_x != x or old_y != y:
-                                Thread(target=pg.moveTo, args=(int(x), int(y),),daemon=True).start()
+                                desktop.move_pointer(
+                                    int(x), int(y), relative=False
+                                )
                             old_x, old_y = x, y
 
                     else:
@@ -2561,117 +2561,94 @@ class RealAction(BindKeys):
             if self.quit:
                 quit()
 
+    def _execute_action(self, action):
+        if action is None or action.keyname is None:
+            return
+
+        action_key = str(action.keyname)
+        print(f"action_key:{action_key} type:{type(action_key)}")
+        if desktop.supports_key(action_key):
+            action.execute()
+            return
+
+        if len(action_key) != 1 and "+" in action_key:
+            pressed_keys = []
+            try:
+                for key in action_key.split("+"):
+                    desktop.key_down(key)
+                    pressed_keys.append(key)
+            except BaseException as error:
+                for key in reversed(pressed_keys):
+                    try:
+                        desktop.key_up(key)
+                    except BaseException as cleanup_error:
+                        error.add_note(
+                            f"desktop.key_up({key!r}) failed with "
+                            f"{type(cleanup_error).__name__}: "
+                            f"{cleanup_error}"
+                        )
+                raise
+
+            cleanup_errors = []
+            for key in reversed(pressed_keys):
+                try:
+                    desktop.key_up(key)
+                except BaseException as error:
+                    cleanup_errors.append(error)
+            if cleanup_errors:
+                raise BaseExceptionGroup(
+                    "hotkey release failed",
+                    cleanup_errors,
+                )
+            return
+
+        if action_key in self.sys_mode_list:
+            self.sys_mode = action_key
+            return
+
+        if action_key in ("scroll_down", "scroll_up"):
+            current_time = time.time()
+            if (
+                current_time - self.last_scroll_time
+                >= self.scroll_throttle_interval
+            ):
+                desktop.scroll(
+                    int(
+                        np.sign(self.head_angles["roll"])
+                        * (
+                            np.abs(self.head_angles["roll"])
+                            - self.head_angles_scale["roll"]
+                        )
+                        * self.scroll_coef
+                    )
+                )
+                self.last_scroll_time = current_time
+
     def loop_key(self):
-        while 1:
-            time.sleep(0.01)
-
-            # 如果经过了一次loop才会执行下面的动作
-            # 否则就直接跳过，继续sleep
-            if len(self.loop_queue) > 0:
+        try:
+            while not self.quit:
+                time.sleep(0.01)
+                if self.quit:
+                    break
+                if not self.loop_queue:
+                    continue
                 self.loop_queue.pop(0)
-            else:
-                continue
-            # print(f'len(self.action_queue):{len(self.action_queue)}')
-            # 查询队列里面的需要执行的操作
-            if len(self.action_queue) > 0:
-                action = self.action_queue.pop(0)
-                if action is None:
+                if not self.action_queue:
                     continue
-                # print(f'action:{action}')
-                action_key = str(action.keyname)
-                if action_key is None:
-                    continue
-            else:
-                continue
-            # print(self.action_queue)
-            # 判断是不是键盘的，
-            # 如果不是，就去控制鼠标
-            # 键盘控制
-            print(f'action_key:{action_key} type:{type(action_key)}')
-            if action_key in KEY_MAP:
-                threading.Thread(target=action.execute,daemon=True).start()
-            # if action_key in pg.KEY_NAMES:
-                # if self.sys_mode == 'game' and action_key in ['w', 'a', 's', 'd']:
-                #     # 只有游戏模式且是WASD才会有这个。
-                #     presses, interval = m
-                # else:
-                #     presses, interval = 1, 0
-                # 如果鼠标可见就不按
-                # 如果鼠标不可见就按
-                # if self.is_mouse_visible:
-                #     threading.Thread(target=action.execute).start()
-                    # if self.sys_mode == 'type':
-                    #     # 这里有普通键和粘黏键的区别
-                    #     # self.is_key_down
-                    #     # self.down_keys_list
-                    #     # 如果is_key_down是True，就keyDown
-                    #     # 如果is_key_down是False且down_keys_list不是空的，就反向释放。
-                    #     # 如果is_key_down是False且down_keys_list是空的，就press
-                    #     if self.is_key_down:
-                    #         threading.Thread(target=pg.keyDown, args=(action_key,)).start()
-                    #         self.down_keys_list.append(action_key)
-                    #     else:
-                    #         down_keys_list = self.down_keys_list
-                    #         if len(down_keys_list) != 0:
-                    #             for i, key in enumerate(down_keys_list[::-1]):
-                    #                 threading.Thread(target=pg.keyUp, args=(key,)).start()
-                    #             self.down_keys_list = []
-                    #         else:
-                    #             threading.Thread(target=pg.press, args=(action_key,)).start()
+                self._execute_action(self.action_queue.pop(0))
+        except BaseException:
+            self._action_worker_error = sys.exc_info()
+            self.quit = True
 
-                    #     # pg.press
-                    #     # pg.keyUp
-                    #     # pg.keyDown
-                    #     threading.Thread(target=press_with_keyup, args=(action_key, presses, interval, None, 1)).start()
-                # else:
-                #     threading.Thread(target=action.execute).start()
-                # threading.Thread(target=pg.press, args=(action_key, presses,interval, None, 1)).start()
-                # pg.press(action_key)
-            # elif 'click' not in action_key.split("_") and action_key.split("_")[0] in pg.KEY_NAMES:
-            #     # print(f'action_key:{action_key}')
-            #     # 这个也是控制键盘的，是用来释放按键的
-            #     # 保证不会妨碍click
-            #     # print(f'action_key:{action_key}')
-            #     # pg.keyUp(action_key)
-            #     threading.Thread(target=pg.keyUp, args=(action_key.split("_")[0],)).start()
-            # 粘黏键
-            elif len(action_key) != 1 and '+' in action_key:
-                # 这就是粘粘键，中间会有一个+
-                pg.hotkey(*action_key.split('+'))
-            # 模式切换操作
-            elif action_key in self.sys_mode_list:
-                self.sys_mode = action_key
-            # 如果是点击操作
-            # elif (action_key.startswith('left_click')
-            #       or action_key.startswith('mid_click')
-            #       or action_key.startswith('right_click')):
-            #     button = action_key.split('_')[0]
-            #     # print(f'action_key: {action_key}, button: {button}')
-            #     if button == 'mid':
-            #         # 只有middle,没有mid
-            #         button = 'middle'
-            #     if action_key.endswith('down'):
-            #         # print('mousedown')
-            #         threading.Thread(target=pg.mouseDown, kwargs={'button': button}).start()
-            #         # pg.mouseDown(button=button)
-            #     elif action_key.endswith('up'):
-            #         # print('mouseup')
-            #         threading.Thread(target=pg.mouseUp, kwargs={'button': button}).start()
-            #         # pg.mouseUp(button=button)
-            # 滚轮操作
-            elif action_key in ['scroll_down', 'scroll_up']:
-                # 添加时间节流判断
-                current_time = time.time()
-                if current_time - self.last_scroll_time >= self.scroll_throttle_interval:
-                    threading.Thread(target=pg.scroll, args=(int(np.sign(self.head_angles['roll']) * (np.abs(self.head_angles['roll'])-self.head_angles_scale['roll']) * self.scroll_coef),),daemon=True).start()
-                    self.last_scroll_time = current_time
-                # pg.scroll(int(self.head_angles['roll'] * 5))
-
-            # 因为是线程不会在主线程退出时退出，为了安全，需要设置主进程退出后退出
-            if self.quit:
-                quit()
+    def raise_action_worker_if_failed(self):
+        if self._action_worker_error is None:
+            return
+        _, error, traceback = self._action_worker_error
+        raise error.with_traceback(traceback)
 
     def call_after_each_eval_loop(self):
+        self.raise_action_worker_if_failed()
+        self.gaze_mouse_controller.raise_if_failed()
         t0 = time.time()
         super().call_after_each_eval_loop()
         t1 = time.time()
@@ -2976,7 +2953,9 @@ class ObserverWithSectorWheel:
                             # 这是激活的情况，只有在原来就隐藏的时候才会调出来，所以不用担心重复调用
                             # open
                             # 调出来之后，先让鼠标回到中心，因为游戏中的鼠标并不在中心位置，而是在不确定的位置，这样就不容易去选了。
-                            pg.moveTo(*self.subject.mid_point)
+                            desktop.move_pointer(
+                                *self.subject.mid_point, relative=False
+                            )
                             self.sector_wheel.update_categories(new_categories,
                                                                 layout_type=self.subject.wheel_layout_type)
                             self.is_hidden = False

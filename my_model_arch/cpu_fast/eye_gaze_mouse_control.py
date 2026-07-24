@@ -10,31 +10,14 @@
 # http://creativecommons.org/licenses/by-nc/4.0/
 # =============================================================================
 
-import win32api
-import win32con
-import time
+import sys
 import threading
-from queue import Queue
+import time
+from queue import Empty, Queue
+
 import numpy as np
-import pyautogui as pg
-from win32gui import GetCursorInfo
-import ctypes
-from ctypes import wintypes
 
-# 加载 user32 DLL
-user32 = ctypes.WinDLL('user32', use_last_error=True)
-# 定义 CURSORINFO 结构
-class CURSORINFO(ctypes.Structure):
-    _fields_ = [
-        ("cbSize", wintypes.DWORD),
-        ("flags", wintypes.DWORD),
-        ("hCursor", wintypes.HANDLE),
-        ("ptScreenPos", wintypes.POINT)
-    ]
-
-GetCursorInfo = user32.GetCursorInfo
-GetCursorInfo.argtypes = [ctypes.POINTER(CURSORINFO)]
-GetCursorInfo.restype = wintypes.BOOL
+from . import desktop
 
 class GazeMouseController:
     def __init__(self, observer, screen_width=1920, screen_height=1080,
@@ -71,6 +54,7 @@ class GazeMouseController:
         self.last_move = (0, 0)
         
         self.old_pos = None
+        self._worker_error = None
         
         # 锁定控制
         self.lock_until_time = time.time()
@@ -83,6 +67,7 @@ class GazeMouseController:
         self.screen_center = (width // 2, height // 2)
     def start(self):
         """启动控制器"""
+        self.raise_if_failed()
         if not self.running:
             self.running = True
             self.control_thread = threading.Thread(target=self._control_loop)
@@ -139,24 +124,12 @@ class GazeMouseController:
     def _move_mouse(self, dx, dy):
         """执行实际的鼠标移动"""
         if abs(dx) > 1 or abs(dy) > 1:  # 移动量太小就忽略
-            win32api.mouse_event(win32con.MOUSEEVENTF_MOVE, 
-                               int(dx), int(dy), 0, 0)
+            desktop.move_pointer(int(dx), int(dy), relative=True)
 
 
     def is_cursor_visible(self):
         """检查鼠标光标是否可见"""
-        cursor_info = CURSORINFO()
-        cursor_info.cbSize = ctypes.sizeof(CURSORINFO)
-        if GetCursorInfo(ctypes.byref(cursor_info)):
-            # 检查是否是标准光标（表示可见）
-            handle = cursor_info.hCursor
-            if handle is None:
-                return False
-            else:
-                return True
-            # print(handle)
-            # return handle < 331737755  # 标准光标的句柄值通常很小，这个好像也不一定。黑悟空里面可能很大的句柄。
-        return False
+        return desktop.is_cursor_visible()
         
     def _handle_visible_cursor(self, x, y):
         """处理可见光标的情况"""
@@ -174,11 +147,12 @@ class GazeMouseController:
                 rel_x = rel * x_dir* yaw_residual
                 rel_y = rel * y_dir* pitch_residual
                 if rel_x != 0 or rel_y != 0:
-                    mx, my = pg.position()
+                    mx, my = desktop.get_pointer_position()
                     new_x = np.clip(mx + rel_x, 0, self.screen_width)
                     new_y = np.clip(my + rel_y, 0, self.screen_height)
-                    threading.Thread(target=pg.moveTo, args=(int(new_x), int(new_y)),
-                                   kwargs={"_pause": False}).start()
+                    desktop.move_pointer(
+                        int(new_x), int(new_y), relative=False
+                    )
                     self.lock_with_head_until_time = time.time() + self.lock_head_duration
             # 使用凝视点控制
             # else:
@@ -187,7 +161,7 @@ class GazeMouseController:
                 x = np.clip(x, 0, self.screen_width)
                 y = np.clip(y, 0, self.screen_height)
                 if self.old_pos != (x, y):
-                    threading.Thread(target=pg.moveTo, args=(int(x), int(y))).start()
+                    desktop.move_pointer(int(x), int(y), relative=False)
                     self.old_pos = (x, y)
         else:
             # 轮盘显示时有两种控制方式都要写，这样在配置文件里面可以控制。
@@ -238,27 +212,37 @@ class GazeMouseController:
     
     def _control_loop(self):
         """控制循环"""
-        while self.running:
-            if self.observer.mouse_control:
-                try:
-                    gaze_x, gaze_y = self.gaze_queue.get_nowait()
-                    while not self.gaze_queue.empty():
+        try:
+            while self.running:
+                if self.observer.mouse_control:
+                    try:
                         gaze_x, gaze_y = self.gaze_queue.get_nowait()
-                except:
-                    time.sleep(0.01)
-                    continue
+                        while not self.gaze_queue.empty():
+                            gaze_x, gaze_y = self.gaze_queue.get_nowait()
+                    except Empty:
+                        time.sleep(0.01)
+                        continue
+
+                    if time.time() <= self.lock_until_time:
+                        continue
+                    print(f'control loop:gaze_x:{gaze_x} gaze_y:{gaze_y}')
+                    is_visible = self.is_cursor_visible()
+                    # print(f'is_visible:{is_visible}')
+                    if is_visible:
+                        self._handle_visible_cursor(gaze_x, gaze_y)
+                    else:
+                        self._handle_invisible_cursor(gaze_x, gaze_y)
                     
-                if time.time() <= self.lock_until_time:
-                    continue
-                print(f'control loop:gaze_x:{gaze_x} gaze_y:{gaze_y}')
-                is_visible = self.is_cursor_visible()
-                # print(f'is_visible:{is_visible}')
-                if is_visible:
-                    self._handle_visible_cursor(gaze_x, gaze_y)
-                else:
-                    self._handle_invisible_cursor(gaze_x, gaze_y)
-                
-            time.sleep(0.01)
+                time.sleep(0.01)
+        except BaseException:
+            self._worker_error = sys.exc_info()
+            self.running = False
+
+    def raise_if_failed(self):
+        if self._worker_error is None:
+            return
+        _, exc, traceback = self._worker_error
+        raise exc.with_traceback(traceback)
             
     def lock_control(self, duration):
         """锁定眼动控制一段时间"""

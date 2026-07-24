@@ -1,6 +1,6 @@
 # Ubuntu 24.04 Xorg 移植进度
 
-最后更新：2026-07-24
+最后更新：2026-07-25
 
 ## 协作规则
 
@@ -30,6 +30,8 @@
 - Windows 摄像头：本次不改
 - 权限：安装阶段需要 `sudo` 时先请求用户；运行阶段不使用 root
 - 失败策略：fail fast，无摄像头后端互相切换、Wayland、主线程或旧缓存回退
+- 桌面生命周期：应用级所有权；pipeline 消费已初始化的 desktop，只在退出时 `release_all()`，不调用 `initialize()`/`close()`；Task 7 GUI 负责应用启动和关闭
+- Pipeline cleanup：`quit_pipeline(primary_error=None)` 显式接收主异常；有主异常时保留同一异常对象和原 traceback，并用 notes 暴露 cleanup 失败；无主异常时聚合为 `BaseExceptionGroup`（成员全为 `Exception` 时由 Python 自动收窄为 `ExceptionGroup`）
 - 实验目录：不迁移 `learn/`
 
 ## 已发现环境
@@ -43,6 +45,8 @@
 - Orbbec SDK 系统库：`/usr/local/lib/libOrbbecSDK.so.2.9.3`
 - Orbbec SDK 安装目录：`/opt/OrbbecSDK_v2.9.3`
 - Python Orbbec 绑定：`pyorbbecsdk2==2.1.1`（包版本 2.1.1，SDK 版本 API 报告 2.8.6）
+- Task 8 兼容依赖基线：`mediapipe==0.10.14`、`opencv-python==4.11.0.86`、`opencv-contrib-python==4.11.0.86`、`numpy==1.26.4`
+- Task 5 补齐既有声明依赖：`filterpy==1.4.5`、`onnxruntime==1.27.0`；`pip check` 报告无损坏依赖
 - 仓库初始状态：`main` 与 `origin/main` 同步，开始设计时无本地改动
 
 ## 阶段状态
@@ -54,8 +58,8 @@
 | 设计评审 | 完成 | 用户分三部分批准设计 |
 | 设计文档 | 完成 | 摄像头后端修订提交 `62dc98a`，用户已批准 |
 | 实施计划 | 完成 | 8 个 TDD 任务已写入，提交 `6bf86ed`，待选择执行方式 |
-| 实现 | 进行中（Task 1–4 完成） | X11 后端纯测试与隔离 Xvfb 集成通过；双摄像头源、平台选择器和平台中立动作单元测试通过；Gemini 335 101 帧、关闭重开实机测试已验证 |
-| 自动化验证 | 进行中 | Task 4：纯测试 49 passed、Xvfb 集成 14 passed、安全集合 99 passed / 15 deselected、Xvfb 完整默认集合 113 passed / 1 deselected |
+| 实现 | 进行中（Task 1–5 完成） | 摄像头与桌面边界已接入生产 pipeline；X11 后端、双摄像头源、平台选择器和平台中立动作验证通过 |
+| 自动化验证 | 进行中 | Task 5 最终：runtime 28 passed、要求的回归集合 65 passed、隔离 Xvfb 完整默认集合 145 passed / 1 deselected |
 | Gemini 335 实机验收 | 未开始 | 需要连接设备和 Xorg 会话 |
 
 ## 任务进度
@@ -66,10 +70,11 @@
 | Task 2：Fail-fast OpenCV/V4L2 与 Orbbec RGB 源 | 完成（有 SDK ABI 偏差） | 33 个 Task 1/2 单元测试通过；Gemini 335 读取 100 帧、关闭、重开后再读 1 帧通过 |
 | Task 3：平台中立动作与显式桌面选择 | 完成 | selector/action 17 个测试通过（含 cleanup/lifecycle 并发回归）；common modules 编译通过；完整默认测试 50 passed / 1 deselected |
 | Task 4：X11/XTest/XFixes 后端 | 完成（final safety re-review 修复） | 纯测试 49 passed；隔离 Xvfb 集成 14 passed；安全集合 99 passed / 15 deselected；Xvfb 完整默认集合 113 passed / 1 deselected |
+| Task 5：生产 pipeline 接入摄像头与桌面边界 | 完成 | controller/runtime 32 passed；camera/action 回归 65 passed；隔离 Xvfb 完整默认集合 145 passed / 1 deselected |
 
 ## 当前工作
 
-Task 4 已完成直接 X11/XTest/XFixes 后端、纯测试和隔离集成测试；所有注入测试仅在 `xvfb-run` 隔离显示中执行，未触碰实时 `DISPLAY=:1`。下一步执行实施计划 Task 5，将摄像头与桌面边界接入生产管线。
+Task 5 已完成生产 pipeline 的显式 CameraConfig/source、平台中立桌面输入、同步动作执行、worker 错误监督和可观察 cleanup。camera 归 pipeline：calibration/evaluation/demo 正常或异常结束都只关闭一次并清空字段，后续运行重新打开；desktop 保持应用级生命周期，pipeline 只在退出时 `release_all()`，Task 7 GUI 将负责 initialize/close。action worker 现在保存单一 thread、接受显式 quit、在 outer boundary 保存 `sys.exc_info()`，evaluation fail fast 重抛，退出时先 join 再 release 输入；calibration 不再吞 camera/source 错误。Task 5 实施时发现计划行号范围已陈旧：仍存活的 `BindKeys.move_mouse` 与 `ObserverWithSectorWheel` pyautogui 调用位于标注范围外；仅做了两处直接 desktop 委托替换，未重组类。下一步执行 Task 6 的受监督 Xorg gaze overlay。
 
 ## 验证日志
 
@@ -141,6 +146,18 @@ Task 4 已完成直接 X11/XTest/XFixes 后端、纯测试和隔离集成测试�
 | 2026-07-25 | final safety re-review common `py_compile` | exit 0 |
 | 2026-07-25 | final safety re-review `pytest -m 'not x11' -v` | 99 passed / 15 deselected，0.37s |
 | 2026-07-25 | final safety re-review `xvfb-run -a ... pytest -v` | 113 passed / 1 deselected，0.59s；完整默认集合仅在隔离 Xvfb 中执行 |
+
+| 2026-07-25 | Task 5 `tests/test_gaze_mouse_controller.py tests/test_pipeline_runtime.py -v`（RED） | 0 collected / 2 collection errors；分别暴露 `win32api` 与 `win32gui` 顶层导入 |
+| 2026-07-25 | Task 5 pipeline 首次 GREEN 尝试 | fail fast 暴露既有声明依赖缺失：先后为 `filterpy`、`onnxruntime`；未使用 stub/fallback |
+| 2026-07-25 | 安装声明依赖并检查环境 | 安装 `filterpy==1.4.5`、`onnxruntime==1.27.0`；`pip check` 输出 `No broken requirements found.` |
+| 2026-07-25 | Task 5 focused GREEN | `tests/test_gaze_mouse_controller.py tests/test_pipeline_runtime.py -v`：19 passed，1.89s |
+| 2026-07-25 | Task 5 要求的 camera/action 回归 GREEN | `tests/test_gaze_mouse_controller.py tests/test_pipeline_runtime.py tests/test_keyboard_actions.py tests/test_camera_sources.py -v`：52 passed，1.90s；无 unhandled thread warning |
+| 2026-07-25 | Task 5 fail-fast ordering review RED/GREEN | 单测先以调用顺序 `inherited, raise_if_failed, decode` 失败；最小换序后 1 passed，1.84s |
+| 2026-07-25 | Task 5 隔离完整默认集合 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 xvfb-run -a ... -m pytest -v`：132 passed / 1 deselected，2.44s；未连接实时 `DISPLAY=:1` |
+| 2026-07-25 | Task 5 独立 review 后 focused RED | `tests/test_pipeline_runtime.py -v`：28 collected，13 passed / 15 failed；复现 idle action worker 不退出、action 错误无监督、join/release 竞态、calibration 吞 camera 错误、公共入口 camera 泄漏及 cleanup `BaseException` 覆盖主错误 |
+| 2026-07-25 | Task 5 独立 review 修复后 runtime GREEN | `tests/test_pipeline_runtime.py -v`：28 passed，1.81s；无 unhandled thread warning |
+| 2026-07-25 | Task 5 最终 camera/action 回归 GREEN | `tests/test_gaze_mouse_controller.py tests/test_pipeline_runtime.py tests/test_keyboard_actions.py tests/test_camera_sources.py -v`：65 passed，1.91s |
+| 2026-07-25 | Task 5 最终隔离完整默认集合 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 xvfb-run -a ... -m pytest -v`：145 passed / 1 deselected，2.37s；未连接实时 `DISPLAY=:1` |
 
 ## 阻塞项
 
