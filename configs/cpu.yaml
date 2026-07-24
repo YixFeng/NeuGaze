@@ -34,6 +34,12 @@ integrated_config:
   arch: mobileone_s0
   device: cpu
   cam_id: 0
+  camera_backend:
+    linux: orbbec
+    win32: opencv
+  camera_width: 1280
+  camera_height: 720
+  camera_fps: 30
   num_points: 9
   every_point_has_n_images: 25
   images_freq: 15

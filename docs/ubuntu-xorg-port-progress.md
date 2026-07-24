@@ -54,13 +54,19 @@
 | 设计评审 | 完成 | 用户分三部分批准设计 |
 | 设计文档 | 完成 | 摄像头后端修订提交 `62dc98a`，用户已批准 |
 | 实施计划 | 完成 | 8 个 TDD 任务已写入，提交 `6bf86ed`，待选择执行方式 |
-| 实现 | 未开始 | 依实施计划执行 |
+| 实现 | 进行中（Task 1 完成） | Task 1 测试与显式摄像头配置已验证；其余任务待执行 |
 | 自动化验证 | 未开始 | 依设计中的测试矩阵执行 |
 | Gemini 335 实机验收 | 未开始 | 需要连接设备和 Xorg 会话 |
 
+## 任务进度
+
+| 任务 | 状态 | 验证 |
+|---|---|---|
+| Task 1：测试基座与显式摄像头配置 | 完成 | 配置边界的 10 个测试通过 |
+
 ## 当前工作
 
-实施计划已完成自检。下一步按用户选择，以逐任务检查点执行；每个任务完成或阻塞后更新本文件。
+Task 1 已完成。下一步执行实施计划的 Task 2；每个任务完成或阻塞后更新本文件。
 
 ## 验证日志
 
@@ -74,6 +80,9 @@
 | 2026-07-24 | 摄像头范围变更 | 用户批准 Ubuntu 明确支持 Orbbec SDK 与 OpenCV/V4L2，默认 Orbbec 且禁止互相回退 |
 | 2026-07-24 | 摄像头后端设计自检 | 占位符、内部一致性、范围和歧义检查通过，提交 `62dc98a` |
 | 2026-07-24 | 实施计划自检 | 8 个任务覆盖配置、双摄像头后端、Win32/X11、管线、overlay、GUI、依赖与实机验收；占位符扫描通过，提交 `6bf86ed` |
+| 2026-07-24 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /home/yixiao/miniconda3/envs/neugaze/bin/python -m pytest tests/test_camera_config.py -v`（RED） | 预期失败：缺少 `my_model_arch.cpu_fast.camera`，`ModuleNotFoundError` |
+| 2026-07-24 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /home/yixiao/miniconda3/envs/neugaze/bin/python -m pytest tests/test_camera_config.py -v`（GREEN） | 10 passed，0.01s |
+| 2026-07-24 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /home/yixiao/miniconda3/envs/neugaze/bin/python -m pytest -v` | 10 passed，0.01s；系统 ROS pytest 插件自动加载受污染，测试命令必须显式禁用，未安装或隐藏其依赖 |
 
 ## 阻塞项
 
