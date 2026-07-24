@@ -1,3 +1,5 @@
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -431,3 +433,145 @@ def test_shifted_key_does_not_release_explicitly_held_shift(monkeypatch):
 
     x11.key_up("shift")
     assert not x11._keycode_is_down(keymap, shift_code)
+
+
+def test_import_does_not_construct_display_in_fresh_interpreter():
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from Xlib import display; "
+                "display.Display=lambda *args, **kwargs: "
+                "(_ for _ in ()).throw(AssertionError(\"connected\")); "
+                "import my_model_arch.cpu_fast.desktop.x11 as backend; "
+                "assert backend._display is None"
+            ),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_initialize_preserves_validation_and_cleanup_failures(monkeypatch):
+    monkeypatch.delenv("XDG_SESSION_TYPE", raising=False)
+    monkeypatch.setenv("DISPLAY", ":92")
+    candidate = FakeLifecycleDisplay(("XTEST",))
+    cleanup_error = OSError("close failed")
+    candidate.close = lambda: (_ for _ in ()).throw(cleanup_error)
+    monkeypatch.setattr(x11.xdisplay, "Display", lambda _name: candidate)
+
+    with pytest.raises(ExceptionGroup) as caught:
+        x11.initialize()
+
+    assert isinstance(caught.value.exceptions[0], RuntimeError)
+    assert caught.value.exceptions[1] is cleanup_error
+    assert x11._display is None
+    assert x11._root is None
+
+
+def test_close_release_failure_keeps_lifecycle_retryable(monkeypatch):
+    monkeypatch.delenv("XDG_SESSION_TYPE", raising=False)
+    monkeypatch.setenv("DISPLAY", ":93")
+    candidate = FakeLifecycleDisplay()
+    monkeypatch.setattr(x11.xdisplay, "Display", lambda _name: candidate)
+    x11.initialize()
+    release_error = OSError("release failed")
+    monkeypatch.setattr(
+        x11,
+        "release_all",
+        lambda: (_ for _ in ()).throw(release_error),
+    )
+
+    with pytest.raises(OSError) as caught:
+        x11.close()
+
+    assert caught.value is release_error
+    assert x11._display is candidate
+    assert x11._root is candidate.root
+    assert candidate.closed == 0
+
+    monkeypatch.setattr(x11, "release_all", lambda: None)
+    x11.close()
+
+    assert candidate.closed == 1
+    assert x11._display is None
+    assert x11._root is None
+
+
+def test_explicit_shift_release_transfers_to_implicit_user(monkeypatch):
+    expected, keymap, events = fake_injection_display(monkeypatch)
+    shift_code = expected["shift"][0]
+    a_code = expected["A"][0]
+
+    x11.key_down("shift")
+    x11.key_down("A")
+    x11.key_up("shift")
+
+    assert x11._keycode_is_down(keymap, shift_code)
+    assert "shift" not in x11._held_keys
+    assert x11._owns_implicit_shift
+
+    x11.key_up("A")
+
+    assert not x11._keycode_is_down(keymap, shift_code)
+    assert events == [
+        (X.KeyPress, shift_code),
+        (X.KeyPress, a_code),
+        (X.KeyRelease, a_code),
+        (X.KeyRelease, shift_code),
+    ]
+
+
+def test_failed_shift_transfer_preserves_explicit_ownership(monkeypatch):
+    expected, keymap, _events = fake_injection_display(monkeypatch)
+    shift_code = expected["shift"][0]
+    x11.key_down("shift")
+    x11.key_down("A")
+    flush_error = OSError("flush failed")
+    x11._display.flush = lambda: (_ for _ in ()).throw(flush_error)
+
+    with pytest.raises(OSError) as caught:
+        x11.key_up("shift")
+
+    assert caught.value is flush_error
+    assert x11._keycode_is_down(keymap, shift_code)
+    assert "shift" in x11._held_keys
+    assert not x11._owns_implicit_shift
+
+
+def test_scroll_release_failure_remains_recoverable(monkeypatch):
+    display, _expected = active_us_keymap()
+    display.flush = lambda: None
+    monkeypatch.setattr(x11, "_display", display)
+    monkeypatch.setattr(x11, "_root", object())
+    release_error = OSError("wheel release failed")
+    events = []
+
+    def fail_release(_display, event_type, detail=0, **_kwargs):
+        events.append((event_type, detail))
+        if event_type == X.ButtonRelease:
+            raise release_error
+
+    monkeypatch.setattr(x11.xtest, "fake_input", fail_release)
+
+    with pytest.raises(OSError) as caught:
+        x11.scroll(1)
+
+    assert caught.value is release_error
+    assert 4 in x11._held_buttons
+
+    monkeypatch.setattr(
+        x11.xtest,
+        "fake_input",
+        lambda _display, event_type, detail=0, **_kwargs: events.append(
+            (event_type, detail)
+        ),
+    )
+    x11.release_all()
+
+    assert 4 not in x11._held_buttons
+    assert events[-1] == (X.ButtonRelease, 4)

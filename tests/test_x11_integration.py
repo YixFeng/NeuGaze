@@ -12,20 +12,116 @@ from my_model_arch.cpu_fast.desktop import x11
 pytestmark = pytest.mark.x11
 
 
-def require_isolated_display():
+def xvfb_process_matches(display, authority, proc_root=Path("/proc"), uid=None):
+    if uid is None:
+        uid = os.getuid()
+    try:
+        processes = tuple(proc_root.iterdir())
+    except OSError:
+        return False
+    for process in processes:
+        if not process.name.isdigit():
+            continue
+        try:
+            if process.stat().st_uid != uid:
+                continue
+            arguments = [
+                field.decode()
+                for field in (process / "cmdline").read_bytes().split(b"\0")
+                if field
+            ]
+            executable = Path(os.readlink(process / "exe"))
+        except (OSError, UnicodeDecodeError):
+            continue
+        if (
+            executable.name != "Xvfb"
+            or len(arguments) < 2
+            or Path(arguments[0]).name != "Xvfb"
+            or arguments[1] != display
+            or arguments.count("-auth") != 1
+        ):
+            continue
+        auth_index = arguments.index("-auth")
+        if (
+            auth_index + 1 < len(arguments)
+            and arguments[auth_index + 1] == str(authority)
+        ):
+            return True
+    return False
+
+
+def require_isolated_display(proc_root=Path("/proc"), uid=None):
+    if uid is None:
+        uid = os.getuid()
     display = os.environ.get("DISPLAY")
-    if not display:
-        pytest.fail("X11 integration tests require xvfb-run")
-    authority = os.environ.get("XAUTHORITY")
+    authority_value = os.environ.get("XAUTHORITY")
     if (
-        not authority
-        or Path(authority).name != "Xauthority"
-        or not Path(authority).parent.name.startswith("xvfb-run.")
+        not display
+        or not display.startswith(":")
+        or not display[1:].isdigit()
+        or str(int(display[1:])) != display[1:]
+        or not authority_value
+    ):
+        pytest.fail("X11 integration tests require a local xvfb-run display")
+
+    authority = Path(authority_value)
+    try:
+        valid_authority = (
+            authority.is_absolute()
+            and authority.is_file()
+            and authority.stat().st_uid == uid
+        )
+    except OSError:
+        valid_authority = False
+    if not valid_authority or not xvfb_process_matches(
+        display,
+        authority,
+        proc_root=proc_root,
+        uid=uid,
     ):
         pytest.fail(
-            "X11 injection tests require the isolated XAUTHORITY created "
-            "by xvfb-run"
+            "X11 injection tests require the exact local Xvfb server "
+            "created by xvfb-run"
         )
+
+
+@pytest.fixture
+def controlled_proc(tmp_path):
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+
+    def add_process(pid, arguments, executable="/usr/bin/Xvfb"):
+        process = proc_root / str(pid)
+        process.mkdir()
+        (process / "cmdline").write_bytes(
+            b"\0".join(os.fsencode(argument) for argument in arguments) + b"\0"
+        )
+        (process / "exe").symlink_to(executable)
+
+    return proc_root, add_process
+
+
+def test_xvfb_process_match_requires_exact_controlled_process(
+    controlled_proc,
+    tmp_path,
+):
+    proc_root, add_process = controlled_proc
+    authority = tmp_path / "Xauthority"
+    authority.write_bytes(b"test")
+    add_process(
+        100,
+        ["Xvfb", ":77", "-screen", "0", "1280x720x24", "-auth", str(authority)],
+    )
+
+    assert xvfb_process_matches(
+        ":77", authority, proc_root=proc_root, uid=os.getuid()
+    )
+    assert not xvfb_process_matches(
+        ":78", authority, proc_root=proc_root, uid=os.getuid()
+    )
+    assert not xvfb_process_matches(
+        ":77", tmp_path / "other-authority", proc_root=proc_root, uid=os.getuid()
+    )
 
 
 @pytest.mark.parametrize("display", (":0", ":1.0", "unix/:1", ":2"))
@@ -215,3 +311,29 @@ def test_wayland_is_rejected_in_subprocess():
 
     assert completed.returncode != 0
     assert "wayland" in completed.stderr
+
+
+def test_isolation_guard_rejects_forged_xvfb_path_before_connect(
+    monkeypatch,
+    tmp_path,
+    controlled_proc,
+):
+    proc_root, _add_process = controlled_proc
+    authority_dir = tmp_path / "xvfb-run.fake"
+    authority_dir.mkdir()
+    authority = authority_dir / "Xauthority"
+    authority.write_bytes(b"forged")
+    monkeypatch.setenv("DISPLAY", ":1")
+    monkeypatch.setenv("XAUTHORITY", str(authority))
+    connected = False
+
+    def connect(_name):
+        nonlocal connected
+        connected = True
+
+    monkeypatch.setattr(x11.xdisplay, "Display", connect)
+
+    with pytest.raises(pytest.fail.Exception, match="xvfb-run"):
+        require_isolated_display(proc_root=proc_root, uid=os.getuid())
+
+    assert not connected

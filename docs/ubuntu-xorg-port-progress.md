@@ -55,7 +55,7 @@
 | 设计文档 | 完成 | 摄像头后端修订提交 `62dc98a`，用户已批准 |
 | 实施计划 | 完成 | 8 个 TDD 任务已写入，提交 `6bf86ed`，待选择执行方式 |
 | 实现 | 进行中（Task 1–4 完成） | X11 后端纯测试与隔离 Xvfb 集成通过；双摄像头源、平台选择器和平台中立动作单元测试通过；Gemini 335 101 帧、关闭重开实机测试已验证 |
-| 自动化验证 | 进行中 | Task 4：纯测试 42 passed、Xvfb 集成 11 passed、安全集合 92 passed / 12 deselected、Xvfb 完整默认集合 103 passed / 1 deselected |
+| 自动化验证 | 进行中 | Task 4：纯测试 48 passed、Xvfb 集成 13 passed、安全集合 98 passed / 14 deselected、Xvfb 完整默认集合 111 passed / 1 deselected |
 | Gemini 335 实机验收 | 未开始 | 需要连接设备和 Xorg 会话 |
 
 ## 任务进度
@@ -65,7 +65,7 @@
 | Task 1：测试基座与显式摄像头配置 | 完成 | 配置边界的 10 个测试通过 |
 | Task 2：Fail-fast OpenCV/V4L2 与 Orbbec RGB 源 | 完成（有 SDK ABI 偏差） | 33 个 Task 1/2 单元测试通过；Gemini 335 读取 100 帧、关闭、重开后再读 1 帧通过 |
 | Task 3：平台中立动作与显式桌面选择 | 完成 | selector/action 17 个测试通过（含 cleanup/lifecycle 并发回归）；common modules 编译通过；完整默认测试 50 passed / 1 deselected |
-| Task 4：X11/XTest/XFixes 后端 | 完成 | 纯测试 42 passed；隔离 Xvfb 集成 11 passed；安全集合 92 passed / 12 deselected；Xvfb 完整默认集合 103 passed / 1 deselected |
+| Task 4：X11/XTest/XFixes 后端 | 完成（formal review 修复） | 纯测试 48 passed；隔离 Xvfb 集成 13 passed；安全集合 98 passed / 14 deselected；Xvfb 完整默认集合 111 passed / 1 deselected |
 
 ## 当前工作
 
@@ -121,7 +121,18 @@ Task 4 已完成直接 X11/XTest/XFixes 后端、纯测试和隔离集成测试�
 | 2026-07-25 | 最终隔离 `tests/test_x11_integration.py -m x11 -v` | 11 passed，0.20s；增加 Xvfb Xauthority 身份门禁、实时显示别名拒绝及按钮 2/3 事件覆盖 |
 | 2026-07-25 | 最终 common `py_compile` | exit 0 |
 | 2026-07-25 | 最终 `pytest -m 'not x11' -v` | 92 passed / 12 deselected，0.38s |
-| 2026-07-25 | 最终 `xvfb-run -a ... pytest -v` | 103 passed / 1 deselected，0.52s；完整默认集合仅在隔离 Xvfb 中执行 |
+| 2026-07-25 | 最终 `xvfb-run -a ... pytest -v` | 103 passed / 1 deselected，0.52s；首次 review 后完整默认集合仅在隔离 Xvfb 中执行 |
+| 2026-07-25 | Task 4 formal parent review | Needs fixes：伪造 Xvfb 环境可绕过门禁、显式 Shift 逆序释放、滚轮 release 失败后无清理记录；另补 fresh import 与 lifecycle failure/retry 测试 |
+| 2026-07-25 | formal review focused RED：Shift/scroll | 3 failed；分别复现逆序 Shift、Shift transfer flush 失败状态、滚轮 release 失败后记录丢失 |
+| 2026-07-25 | formal review focused RED：伪造 Xvfb | 1 failed；已有伪造 authority 路径绕过门禁，且未连接 Display |
+| 2026-07-25 | formal review focused GREEN | Xvfb forged/normal 2 passed；Shift 2 passed；scroll 1 passed；fresh import/lifecycle 3 passed |
+| 2026-07-25 | formal review 最终 `tests/test_x11_keymap.py -v` | 48 passed，0.05s |
+| 2026-07-25 | controlled `/proc` fixture focused RED | 2 failed；guard scanner 尚未接收受控 proc root/UID，测试以 `TypeError` 暴露依赖 |
+| 2026-07-25 | controlled `/proc` fixture focused GREEN | 3 passed，0.03s；精确匹配、伪造拒绝和真实 `xvfb-run` 正向路径均通过 |
+| 2026-07-25 | formal review 最终隔离 `tests/test_x11_integration.py -v` | 13 passed，0.21s；受控 proc fixture 覆盖精确绑定，真实 `xvfb-run` 验证默认 `/proc` 路径 |
+| 2026-07-25 | formal review 最终 common `py_compile` | exit 0 |
+| 2026-07-25 | formal review 最终 `pytest -m 'not x11' -v` | 98 passed / 14 deselected，0.36s |
+| 2026-07-25 | formal review 最终 `xvfb-run -a ... pytest -v` | 111 passed / 1 deselected，0.60s；完整默认集合仅在隔离 Xvfb 中执行 |
 
 ## 阻塞项
 

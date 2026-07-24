@@ -286,6 +286,12 @@ def _modifier_keycode(display, modifiers):
     return None
 
 
+def _release_button_number(display, button, held_entry):
+    xtest.fake_input(display, X.ButtonRelease, button)
+    display.flush()
+    _held_buttons.discard(held_entry)
+
+
 def key_down(key):
     global _owns_implicit_shift
     with _lock:
@@ -323,12 +329,19 @@ def key_up(key):
         display, _ = _require_initialized()
         name = _normalized_name(key)
         if _is_button_name(name):
-            xtest.fake_input(display, X.ButtonRelease, _button_number(name))
-            display.flush()
-            _held_buttons.discard(name)
+            _release_button_number(display, _button_number(name), name)
             return None
 
         keycode, modifiers = _resolve_key(name, display)
+        if (
+            name == "shift"
+            and name in _held_keys
+            and _implicit_shift_keys
+        ):
+            display.flush()
+            _held_keys.discard(name)
+            _owns_implicit_shift = True
+            return None
         modifier_keycode = _modifier_keycode(display, modifiers)
         release_owned_modifier = (
             modifier_keycode is not None
@@ -386,8 +399,10 @@ def scroll(steps):
         button = 4 if count > 0 else 5
         for _ in range(abs(count)):
             xtest.fake_input(display, X.ButtonPress, button)
+            _held_buttons.add(button)
             xtest.fake_input(display, X.ButtonRelease, button)
-        display.flush()
+            display.flush()
+            _held_buttons.discard(button)
 
 
 def is_cursor_visible():
@@ -406,9 +421,19 @@ def release_all():
                 key_up(name)
             except Exception as error:
                 errors.append(error)
-        for name in tuple(sorted(_held_buttons)):
+        held_buttons = tuple(
+            sorted(
+                _held_buttons,
+                key=lambda entry: (isinstance(entry, str), str(entry)),
+            )
+        )
+        for name in held_buttons:
             try:
-                key_up(name)
+                if isinstance(name, int):
+                    display, _ = _require_initialized()
+                    _release_button_number(display, name, name)
+                else:
+                    key_up(name)
             except Exception as error:
                 errors.append(error)
         if errors:
