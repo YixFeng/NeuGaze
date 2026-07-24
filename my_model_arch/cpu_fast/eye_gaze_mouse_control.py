@@ -79,6 +79,12 @@ class GazeMouseController:
         self.running = False
         if hasattr(self, 'control_thread'):
             self.control_thread.join()
+        while True:
+            try:
+                self.gaze_queue.get_nowait()
+            except Empty:
+                break
+        self.raise_if_failed()
     
     def update_gaze(self, gaze_x, gaze_y):
         """更新凝视点位置"""

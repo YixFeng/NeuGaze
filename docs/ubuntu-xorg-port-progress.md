@@ -59,7 +59,7 @@
 | 设计文档 | 完成 | 摄像头后端修订提交 `62dc98a`，用户已批准 |
 | 实施计划 | 完成 | 8 个 TDD 任务已写入，提交 `6bf86ed`，待选择执行方式 |
 | 实现 | 进行中（Task 1–5 完成） | 摄像头与桌面边界已接入生产 pipeline；X11 后端、双摄像头源、平台选择器和平台中立动作验证通过 |
-| 自动化验证 | 进行中 | Task 5 最终：runtime 28 passed、要求的回归集合 65 passed、隔离 Xvfb 完整默认集合 145 passed / 1 deselected |
+| 自动化验证 | 进行中 | Task 5 formal review 最终：controller/runtime 42 passed、要求的回归集合 75 passed、隔离 Xvfb 完整默认集合 155 passed / 1 deselected |
 | Gemini 335 实机验收 | 未开始 | 需要连接设备和 Xorg 会话 |
 
 ## 任务进度
@@ -70,11 +70,11 @@
 | Task 2：Fail-fast OpenCV/V4L2 与 Orbbec RGB 源 | 完成（有 SDK ABI 偏差） | 33 个 Task 1/2 单元测试通过；Gemini 335 读取 100 帧、关闭、重开后再读 1 帧通过 |
 | Task 3：平台中立动作与显式桌面选择 | 完成 | selector/action 17 个测试通过（含 cleanup/lifecycle 并发回归）；common modules 编译通过；完整默认测试 50 passed / 1 deselected |
 | Task 4：X11/XTest/XFixes 后端 | 完成（final safety re-review 修复） | 纯测试 49 passed；隔离 Xvfb 集成 14 passed；安全集合 99 passed / 15 deselected；Xvfb 完整默认集合 113 passed / 1 deselected |
-| Task 5：生产 pipeline 接入摄像头与桌面边界 | 完成 | controller/runtime 32 passed；camera/action 回归 65 passed；隔离 Xvfb 完整默认集合 145 passed / 1 deselected |
+| Task 5：生产 pipeline 接入摄像头与桌面边界 | 完成（formal review 修复） | controller/runtime 42 passed；camera/action 回归 75 passed；隔离 Xvfb 完整默认集合 155 passed / 1 deselected |
 
 ## 当前工作
 
-Task 5 已完成生产 pipeline 的显式 CameraConfig/source、平台中立桌面输入、同步动作执行、worker 错误监督和可观察 cleanup。camera 归 pipeline：calibration/evaluation/demo 正常或异常结束都只关闭一次并清空字段，后续运行重新打开；desktop 保持应用级生命周期，pipeline 只在退出时 `release_all()`，Task 7 GUI 将负责 initialize/close。action worker 现在保存单一 thread、接受显式 quit、在 outer boundary 保存 `sys.exc_info()`，evaluation fail fast 重抛，退出时先 join 再 release 输入；calibration 不再吞 camera/source 错误。Task 5 实施时发现计划行号范围已陈旧：仍存活的 `BindKeys.move_mouse` 与 `ObserverWithSectorWheel` pyautogui 调用位于标注范围外；仅做了两处直接 desktop 委托替换，未重组类。下一步执行 Task 6 的受监督 Xorg gaze overlay。
+Task 5 已完成生产 pipeline 的显式 CameraConfig/source、平台中立桌面输入、同步动作执行、worker 错误监督和可观察 cleanup。camera 归 pipeline 且 `self.camera` 是采集的唯一 source of truth：calibration/evaluation/demo 正常结束时停止并监督本轮 `GazeMouseController`、清空陈旧 gaze、关闭 camera/window，但保持 `self.quit=False`、唯一 action worker 与 wheel thread，因而同一实例可用新 camera 连续运行；只有显式或错误终止才设置 quit、停止 wheel、join action worker 并 `release_all()`。controller `stop()` 按 running=false、join、drain、重抛原异常/traceback 的顺序执行，失败 controller 不能重启。`gaze_config` 现在必须由 GUI/config 显式传入，缺失时在任何 overlay/Win32 import 前直接报错。hotkey keydown 失败会逆序释放已按下按键并保留主异常，多项 keyup 失败聚合暴露。desktop 保持应用级生命周期，Task 7 GUI 将负责 initialize/close。Task 5 实施时发现计划行号范围已陈旧：仍存活的 `BindKeys.move_mouse` 与 `ObserverWithSectorWheel` pyautogui 调用位于标注范围外；仅做了两处直接 desktop 委托替换，未重组类。下一步执行 Task 6 的受监督 Xorg gaze overlay。
 
 ## 验证日志
 
@@ -158,6 +158,11 @@ Task 5 已完成生产 pipeline 的显式 CameraConfig/source、平台中立桌�
 | 2026-07-25 | Task 5 独立 review 修复后 runtime GREEN | `tests/test_pipeline_runtime.py -v`：28 passed，1.81s；无 unhandled thread warning |
 | 2026-07-25 | Task 5 最终 camera/action 回归 GREEN | `tests/test_gaze_mouse_controller.py tests/test_pipeline_runtime.py tests/test_keyboard_actions.py tests/test_camera_sources.py -v`：65 passed，1.91s |
 | 2026-07-25 | Task 5 最终隔离完整默认集合 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 xvfb-run -a ... -m pytest -v`：145 passed / 1 deselected，2.37s；未连接实时 `DISPLAY=:1` |
+| 2026-07-25 | Task 5 formal review focused RED | controller/runtime 42 collected，31 passed / 11 failed；暴露 normal run 错误进入 terminal quit、controller stop 未 drain/重抛 late failure、隐式 gaze config Win32 import，以及 capture 双重 camera 来源 |
+| 2026-07-25 | Task 5 formal review focused GREEN | `tests/test_gaze_mouse_controller.py tests/test_pipeline_runtime.py -v`：42 passed，1.89s；覆盖同实例双次运行、action worker/wheel 复用、无陈旧 gaze、异常 identity/traceback 与 hotkey cleanup |
+| 2026-07-25 | Task 5 formal review camera/action 回归 GREEN | `tests/test_gaze_mouse_controller.py tests/test_pipeline_runtime.py tests/test_keyboard_actions.py tests/test_camera_sources.py -v`：75 passed，1.83s |
+| 2026-07-25 | Task 5 formal review 隔离完整默认集合 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 xvfb-run -a ... -m pytest -v`：155 passed / 1 deselected，2.38s；未连接实时 `DISPLAY=:1` |
+| 2026-07-25 | Task 5 formal review compile/diff gate | 两个生产模块与两个测试模块 `py_compile` 通过；`git diff --check` exit 0 |
 
 ## 阻塞项
 

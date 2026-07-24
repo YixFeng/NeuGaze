@@ -1,3 +1,4 @@
+import sys
 import threading
 import time
 from types import SimpleNamespace
@@ -5,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from my_model_arch.cpu_fast import desktop
+from my_model_arch.cpu_fast import eye_gaze_mouse_control as controller_module
 from my_model_arch.cpu_fast.eye_gaze_mouse_control import GazeMouseController
 
 
@@ -110,13 +112,105 @@ def test_controller_rethrows_worker_failure(monkeypatch, observer):
     controller.update_gaze(100, 100)
     _wait_until_worker_stops(controller)
 
-    try:
-        with pytest.raises(OSError, match="XFixes failed"):
-            controller.raise_if_failed()
-    finally:
+    with pytest.raises(OSError, match="XFixes failed") as caught:
+        controller.raise_if_failed()
+
+    with pytest.raises(OSError) as stopped:
         controller.stop()
 
+    assert stopped.value is caught.value
     assert not any(
         thread is controller.control_thread and thread.is_alive()
         for thread in threading.enumerate()
     )
+
+
+def test_stop_rethrows_failure_recorded_during_join(observer):
+    controller = _unlocked_controller(observer)
+    source_error = OSError("late XFixes failure")
+    try:
+        raise source_error
+    except OSError:
+        source_info = sys.exc_info()
+
+    class LateFailureThread:
+        def join(self):
+            controller._worker_error = source_info
+
+    controller.running = True
+    controller.control_thread = LateFailureThread()
+    controller.update_gaze(100, 200)
+
+    with pytest.raises(OSError) as caught:
+        controller.stop()
+
+    assert caught.value is source_error
+    assert controller.gaze_queue.empty()
+    traceback = caught.value.__traceback__
+    traceback_chain = []
+    while traceback is not None:
+        traceback_chain.append(traceback)
+        traceback = traceback.tb_next
+    assert source_info[2] in traceback_chain
+
+
+def test_stop_drains_pending_gaze(observer):
+    controller = _unlocked_controller(observer)
+    controller.update_gaze(100, 200)
+    controller.update_gaze(300, 400)
+
+    controller.stop()
+
+    assert controller.gaze_queue.empty()
+
+
+def test_controller_restarts_after_normal_stop(monkeypatch, observer):
+    workers = []
+
+    class Worker:
+        def __init__(self, target):
+            self.target = target
+            self.started = False
+            self.joined = False
+            workers.append(self)
+
+        def start(self):
+            self.started = True
+
+        def join(self):
+            self.joined = True
+
+    monkeypatch.setattr(controller_module.threading, "Thread", Worker)
+    controller = _unlocked_controller(observer)
+
+    controller.start()
+    controller.stop()
+    controller.start()
+
+    assert len(workers) == 2
+    assert workers[0].joined is True
+    assert workers[1].started is True
+
+    controller.stop()
+
+
+def test_controller_does_not_restart_after_stored_error(
+    monkeypatch, observer
+):
+    controller = _unlocked_controller(observer)
+    source_error = OSError("stored worker failure")
+    try:
+        raise source_error
+    except OSError:
+        controller._worker_error = sys.exc_info()
+    monkeypatch.setattr(
+        controller_module.threading,
+        "Thread",
+        lambda **kwargs: pytest.fail("failed controller must not restart"),
+    )
+
+    with pytest.raises(OSError) as caught:
+        controller.start()
+
+    assert caught.value is source_error
+    assert controller.running is False

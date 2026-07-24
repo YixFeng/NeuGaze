@@ -1,4 +1,6 @@
 import ast
+import builtins
+import inspect
 import sys
 import threading
 from pathlib import Path
@@ -63,6 +65,73 @@ def test_constructor_builds_camera_config_once(monkeypatch):
     assert pipeline.camera is None
 
 
+@pytest.mark.parametrize("show_gaze", [False, True])
+def test_real_action_requires_gaze_config_without_importing_win32(
+    monkeypatch, show_gaze
+):
+    monkeypatch.setattr(
+        IntegratedRegressionMediaPipeline,
+        "get_regression_model",
+        lambda self: setattr(self, "regression_model", None),
+    )
+    monkeypatch.setattr(
+        IntegratedRegressionMediaPipeline,
+        "load_model_from_weights",
+        lambda self: None,
+    )
+    monkeypatch.setattr(
+        IntegratedRegressionMediaPipeline,
+        "get_mediapipe",
+        lambda self: object(),
+    )
+    monkeypatch.setattr(
+        pipeline_module,
+        "ExpressionEvaluator",
+        lambda config: object(),
+    )
+
+    class InertThread:
+        def __init__(self, target, daemon=None):
+            self.target = target
+            self.daemon = daemon
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(pipeline_module.threading, "Thread", InertThread)
+    requested_modules = []
+    real_import = builtins.__import__
+
+    def reject_platform_specific_import(
+        name, globals=None, locals=None, fromlist=(), level=0
+    ):
+        if name.endswith("gaze_show_utils") or name.startswith("win32"):
+            requested_modules.append(name)
+            raise AssertionError(f"unexpected platform import: {name}")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", reject_platform_specific_import)
+
+    with pytest.raises(ValueError, match="gaze_config is required"):
+        RealAction(
+            show_gaze=show_gaze,
+            gaze_config=None,
+            mouse_control_config={},
+            wheel_config={},
+            configuration={"type": {}},
+            expression_evaluator_config={},
+            weights="unused.param",
+            device="cpu",
+            camera_backend={"linux": "opencv", "win32": "opencv"},
+            camera_width=640,
+            camera_height=480,
+            camera_fps=30,
+            screen_size=(1920, 1080),
+        )
+
+    assert requested_modules == []
+
+
 def test_start_service_opens_configured_camera_once(monkeypatch):
     source = object()
     opened = []
@@ -100,6 +169,14 @@ def test_camera_read_exception_propagates():
 
     with pytest.raises(RuntimeError, match="camera disconnected"):
         pipeline.cap_read_img()
+
+
+def test_capture_results_uses_only_pipeline_camera():
+    parameters = inspect.signature(
+        IntegratedRegressionMediaPipeline.get_results_from_capture
+    ).parameters
+
+    assert list(parameters) == ["self"]
 
 
 def test_quit_closes_camera_and_releases_desktop(monkeypatch):
@@ -409,6 +486,78 @@ def test_hotkey_uses_explicit_down_and_reverse_up(monkeypatch):
     ]
 
 
+def test_hotkey_keydown_failure_releases_pressed_keys_and_preserves_primary(
+    monkeypatch,
+):
+    pipeline = _real_action_without_constructor()
+    calls = []
+    primary_error = OSError("shift down failed")
+    release_error = RuntimeError("ctrl release failed")
+
+    def key_down(key):
+        calls.append(("down", key))
+        if key == "shift":
+            raise primary_error
+
+    def key_up(key):
+        calls.append(("up", key))
+        raise release_error
+
+    monkeypatch.setattr(desktop, "supports_key", lambda key: False)
+    monkeypatch.setattr(desktop, "key_down", key_down)
+    monkeypatch.setattr(desktop, "key_up", key_up)
+
+    with pytest.raises(OSError) as caught:
+        _run_one_action(pipeline, Action("ctrl+shift+a", OpType.NONE))
+
+    assert caught.value is primary_error
+    assert calls == [
+        ("down", "ctrl"),
+        ("down", "shift"),
+        ("up", "ctrl"),
+    ]
+    assert caught.value.__notes__ == [
+        "desktop.key_up('ctrl') failed with "
+        "RuntimeError: ctrl release failed"
+    ]
+
+
+def test_hotkey_multiple_keyup_failures_are_aggregated(monkeypatch):
+    pipeline = _real_action_without_constructor()
+    release_errors = {
+        "a": RuntimeError("a release failed"),
+        "ctrl": OSError("ctrl release failed"),
+    }
+    calls = []
+
+    monkeypatch.setattr(desktop, "supports_key", lambda key: False)
+    monkeypatch.setattr(
+        desktop,
+        "key_down",
+        lambda key: calls.append(("down", key)),
+    )
+
+    def key_up(key):
+        calls.append(("up", key))
+        raise release_errors[key]
+
+    monkeypatch.setattr(desktop, "key_up", key_up)
+
+    with pytest.raises(ExceptionGroup) as caught:
+        _run_one_action(pipeline, Action("ctrl+a", OpType.NONE))
+
+    assert calls == [
+        ("down", "ctrl"),
+        ("down", "a"),
+        ("up", "a"),
+        ("up", "ctrl"),
+    ]
+    assert caught.value.exceptions == (
+        release_errors["a"],
+        release_errors["ctrl"],
+    )
+
+
 def test_scroll_uses_desktop_synchronously(monkeypatch):
     pipeline = _real_action_without_constructor()
     pipeline.last_scroll_time = 0
@@ -464,7 +613,7 @@ def test_calibration_capture_error_propagates(monkeypatch):
         return len(hotkey_checks) > 1
 
     monkeypatch.setattr(desktop, "are_keys_down", are_keys_down)
-    pipeline.get_results_from_capture = lambda cap: (_ for _ in ()).throw(
+    pipeline.get_results_from_capture = lambda: (_ for _ in ()).throw(
         source_error
     )
 
@@ -506,21 +655,137 @@ def _configure_public_run(pipeline, camera, fail=None):
 @pytest.mark.parametrize(
     "entrypoint", ["start_calibration", "start_evaluation", "demo"]
 )
-def test_public_run_closes_camera_once_on_normal_completion(
+def test_public_run_closes_only_per_run_resources_on_normal_completion(
     monkeypatch, entrypoint
 ):
-    close_calls = []
-    camera = SimpleNamespace(close=lambda: close_calls.append("camera.close"))
+    calls = []
+    camera = SimpleNamespace(close=lambda: calls.append("camera.close"))
     pipeline = _pipeline_without_constructor()
     _configure_public_run(pipeline, camera)
+    pipeline.gaze_mouse_controller = SimpleNamespace(
+        stop=lambda: calls.append("controller.stop")
+    )
+    pipeline.wheel = SimpleNamespace(should_run=True)
     monkeypatch.setattr(pipeline_module.cv2, "waitKey", lambda delay: 0)
     monkeypatch.setattr(desktop, "are_keys_down", lambda keys: True)
-    monkeypatch.setattr(desktop, "release_all", lambda: None)
+    monkeypatch.setattr(
+        desktop,
+        "release_all",
+        lambda: calls.append("desktop.release_all"),
+    )
 
     getattr(pipeline, entrypoint)()
 
-    assert close_calls == ["camera.close"]
+    assert calls == ["controller.stop", "camera.close"]
     assert pipeline.camera is None
+    assert pipeline.quit is False
+    assert pipeline.wheel.should_run is True
+
+
+def test_same_pipeline_reuses_action_worker_and_fresh_controller_run(
+    monkeypatch,
+):
+    action_threads = []
+
+    class ActionThread:
+        def __init__(self, target, daemon):
+            self.target = target
+            self.daemon = daemon
+            self.alive = False
+            self.join_count = 0
+            action_threads.append(self)
+
+        def start(self):
+            self.alive = True
+
+        def is_alive(self):
+            return self.alive
+
+        def join(self):
+            self.join_count += 1
+            self.alive = False
+
+    class RunController:
+        def __init__(self):
+            self.start_count = 0
+            self.stop_count = 0
+            self.stale_gaze = None
+            self.executed_gaze = []
+
+        def raise_if_failed(self):
+            pass
+
+        def update_screen_size(self, width, height):
+            pass
+
+        def start(self):
+            self.start_count += 1
+            if self.stale_gaze is not None:
+                self.executed_gaze.append(self.stale_gaze)
+
+        def stop(self):
+            self.stop_count += 1
+            self.stale_gaze = None
+
+    close_calls = []
+    cameras = [
+        SimpleNamespace(close=lambda: close_calls.append("camera-1")),
+        SimpleNamespace(close=lambda: close_calls.append("camera-2")),
+    ]
+    controller = RunController()
+    pipeline = _real_action_without_constructor()
+    pipeline.camera = None
+    pipeline.camera_config = CameraConfig("opencv", 0, 640, 480, 30)
+    pipeline.quit = False
+    pipeline.end_calibration_signal = False
+    pipeline.render_in_eval = False
+    pipeline.open_windows = []
+    pipeline.show_gaze = False
+    pipeline.screen_size = (640, 480)
+    pipeline._action_thread = None
+    pipeline._action_worker_error = None
+    pipeline.action_queue = []
+    pipeline.loop_queue = []
+    pipeline.gaze_mouse_controller = controller
+    pipeline.wheel = SimpleNamespace(should_run=True)
+    pipeline.destroy_window = lambda: None
+    pipeline.call_after_while_loop = lambda: None
+
+    def evaluate(camera):
+        if controller.start_count == 1:
+            controller.stale_gaze = (111, 222)
+        pipeline.end_calibration_signal = True
+
+    pipeline.evaluate = evaluate
+    release_calls = []
+    monkeypatch.setattr(pipeline_module, "Thread", ActionThread)
+    monkeypatch.setattr(desktop, "get_screen_size", lambda: (640, 480))
+    monkeypatch.setattr(
+        pipeline_module,
+        "open_camera",
+        lambda config, platform: cameras.pop(0),
+    )
+    monkeypatch.setattr(pipeline_module.cv2, "waitKey", lambda delay: 0)
+    monkeypatch.setattr(
+        desktop,
+        "release_all",
+        lambda: release_calls.append("release"),
+    )
+
+    pipeline.start_evaluation()
+    pipeline.start_evaluation()
+
+    assert close_calls == ["camera-1", "camera-2"]
+    assert pipeline.camera is None
+    assert pipeline.quit is False
+    assert pipeline.wheel.should_run is True
+    assert len(action_threads) == 1
+    assert action_threads[0].is_alive()
+    assert action_threads[0].join_count == 0
+    assert controller.start_count == 2
+    assert controller.stop_count == 2
+    assert controller.executed_gaze == []
+    assert release_calls == []
 
 
 @pytest.mark.parametrize(
@@ -565,6 +830,7 @@ def test_call_before_loop_stores_started_action_worker(monkeypatch):
     pipeline = _real_action_without_constructor()
     pipeline._action_thread = None
     pipeline._action_worker_error = None
+    pipeline.quit = False
     pipeline.show_gaze = False
     pipeline.screen_size = (1920, 1080)
     pipeline.gaze_mouse_controller = SimpleNamespace(

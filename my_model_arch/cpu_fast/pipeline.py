@@ -719,7 +719,7 @@ class IntegratedRegressionMediaPipeline:
                 continue
             
             # 2. 眼睛张开，获取数据并保存
-            results = self.get_results_from_capture(cap)
+            results = self.get_results_from_capture()
             if results is None:
                 continue
                 
@@ -1146,7 +1146,7 @@ class IntegratedRegressionMediaPipeline:
     def cap_read_img(self):
         self.frame = self.camera.read()
 
-    def get_results_from_capture(self, cap: cv2.VideoCapture):
+    def get_results_from_capture(self):
         count = 0
         while 1:
             t00 = time.time()
@@ -1278,6 +1278,12 @@ class IntegratedRegressionMediaPipeline:
         self.camera = None
         camera.close()
 
+    def _finish_run(self):
+        if hasattr(self, "gaze_mouse_controller"):
+            self.gaze_mouse_controller.stop()
+        self._close_camera()
+        self.destroy_window()
+
     def start_calibration(self):
         try:
             if self.camera is None:
@@ -1286,8 +1292,7 @@ class IntegratedRegressionMediaPipeline:
             cv2.waitKey(2000)
             self.calibrate(self.camera)
             self.is_calibrating = False
-            self.destroy_window()
-            self._close_camera()
+            self._finish_run()
         except BaseException as error:
             self.quit_pipeline(error)
         return True
@@ -1319,10 +1324,9 @@ class IntegratedRegressionMediaPipeline:
                 self.FPS = 1 / per_duration
                 self.call_after_each_eval_loop()
             self.call_after_while_loop()
+            self._finish_run()
         except BaseException as error:
             self.quit_pipeline(error)
-        else:
-            self.quit_pipeline()
 
     def quit_pipeline(self, primary_error: BaseException | None = None):
         """Stop pipeline-owned resources without closing the shared desktop."""
@@ -1431,7 +1435,6 @@ class IntegratedRegressionMediaPipeline:
                     self.evaluate(self.camera)
                 cv2.waitKey(1)
                 if desktop.are_keys_down(("esc", "q")):
-                    self.quit = True
                     break
                 if desktop.are_keys_down(("esc", "r")):
                     is_calibrating = True
@@ -1450,10 +1453,9 @@ class IntegratedRegressionMediaPipeline:
                 )
                 self.call_after_each_eval_loop()
             self.call_after_while_loop()
+            self._finish_run()
         except BaseException as error:
             self.quit_pipeline(error)
-        else:
-            self.quit_pipeline()
 
     def save_model(self, model_save_path=None):
         if model_save_path is None:
@@ -1470,7 +1472,7 @@ class IntegratedRegressionMediaPipeline:
 
     def evaluate(self, cap):
         t0 = time.time()
-        results = self.get_results_from_capture(cap)
+        results = self.get_results_from_capture()
         # print(results)
         t1 = time.time()
         results_dict = self.results_to_data_dict(results)
@@ -2237,6 +2239,8 @@ class RealAction(BindKeys):
                  head_angles_center=None, head_angles_scale=None, 
                  expression_evaluator_config=None,
                  **kwargs):
+        if gaze_config is None:
+            raise ValueError("gaze_config is required")
         super().__init__(
             head_angles_center=head_angles_center, 
             head_angles_scale=head_angles_scale, 
@@ -2248,9 +2252,6 @@ class RealAction(BindKeys):
         self.head_angles_scale = head_angles_scale
         
         self.show_gaze = show_gaze
-        if gaze_config is None:
-            from .gaze_show_utils import DEFAULT_GAZE_CONFIG
-            gaze_config = DEFAULT_GAZE_CONFIG
         self.gaze_config = gaze_config
         self.gaze_overlay = None
         self.gaze_thread = None
@@ -2433,13 +2434,13 @@ class RealAction(BindKeys):
     def call_before_while_loop(self):
         super().call_before_while_loop()
         self.raise_action_worker_if_failed()
-        if (
-            self._action_thread is not None
-            and self._action_thread.is_alive()
-        ):
-            raise RuntimeError("action worker is already running")
-        self._action_thread = Thread(target=self.loop_key, daemon=True)
-        self._action_thread.start()
+        if self.quit:
+            raise RuntimeError("pipeline has been shut down")
+        if self._action_thread is None:
+            self._action_thread = Thread(target=self.loop_key, daemon=True)
+            self._action_thread.start()
+        elif not self._action_thread.is_alive():
+            raise RuntimeError("action worker stopped unexpectedly")
         if self.show_gaze:
             self.start_gaze_display()
         self.gaze_mouse_controller.update_screen_size(
