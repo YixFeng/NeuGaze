@@ -1285,6 +1285,7 @@ class IntegratedRegressionMediaPipeline:
         self.destroy_window()
 
     def start_calibration(self):
+        cancelled = False
         try:
             if self.camera is None:
                 self.start_service()
@@ -1292,9 +1293,14 @@ class IntegratedRegressionMediaPipeline:
             cv2.waitKey(2000)
             self.calibrate(self.camera)
             self.is_calibrating = False
-            self._finish_run()
+            cancelled = self.quit
+            if not cancelled:
+                self._finish_run()
         except BaseException as error:
             self.quit_pipeline(error)
+        if cancelled:
+            self.quit_pipeline()
+            return None
         return True
 
     def end_calibration(self):
@@ -1333,7 +1339,13 @@ class IntegratedRegressionMediaPipeline:
         primary_traceback = (
             primary_error.__traceback__ if primary_error is not None else None
         )
-        self.quit = True
+        action_condition = getattr(self, "_action_condition", None)
+        if action_condition is None:
+            self.quit = True
+        else:
+            with action_condition:
+                self.quit = True
+                action_condition.notify_all()
         self.end_calibration_signal = True
         if hasattr(self, "wheel"):
             self.wheel.should_run = False
@@ -1411,6 +1423,7 @@ class IntegratedRegressionMediaPipeline:
         
         return False
     def demo(self):
+        cancelled = False
         try:
             if self.camera is None:
                 self.start_service()
@@ -1426,6 +1439,9 @@ class IntegratedRegressionMediaPipeline:
                     self.setup_window()
                     cv2.waitKey(2000)
                     self.calibrate(self.camera, test_mode=is_testing)
+                    if self.quit:
+                        cancelled = True
+                        break
                     is_calibrating = False
                     is_testing = False
                     self.destroy_window()
@@ -1435,6 +1451,7 @@ class IntegratedRegressionMediaPipeline:
                     self.evaluate(self.camera)
                 cv2.waitKey(1)
                 if desktop.are_keys_down(("esc", "q")):
+                    cancelled = True
                     break
                 if desktop.are_keys_down(("esc", "r")):
                     is_calibrating = True
@@ -1452,10 +1469,14 @@ class IntegratedRegressionMediaPipeline:
                     f"FPS: {self.FPS:.2f} duration: {per_duration:.2f}"
                 )
                 self.call_after_each_eval_loop()
-            self.call_after_while_loop()
-            self._finish_run()
+            if not cancelled:
+                self.call_after_while_loop()
+                self._finish_run()
         except BaseException as error:
             self.quit_pipeline(error)
+        if cancelled:
+            self.quit_pipeline()
+        return None
 
     def save_model(self, model_save_path=None):
         if model_save_path is None:
@@ -2285,6 +2306,10 @@ class RealAction(BindKeys):
         self.loop_queue = []  # this is used for control the speed of taking real actions
         self._action_thread = None
         self._action_worker_error = None
+        self._action_condition = threading.Condition()
+        self._published_action_tokens = 0
+        self._completed_action_tokens = 0
+        self._action_worker_idle = False
         self.lock_eye_controlled_mouse_move_until_time = time.time()
         self.lock_eye_controlled_mouse_move_with_head_until_time = time.time()
 
@@ -2447,6 +2472,28 @@ class RealAction(BindKeys):
             self.screen_size[0], self.screen_size[1]
         )
         self.gaze_mouse_controller.start()
+
+    def _publish_action_token(self):
+        with self._action_condition:
+            self.loop_queue.append(1)
+            self._published_action_tokens += 1
+            self._action_condition.notify_all()
+
+    def _wait_for_action_boundary(self):
+        with self._action_condition:
+            target = self._published_action_tokens
+            self._action_condition.wait_for(
+                lambda: (
+                    self._completed_action_tokens >= target
+                    or self._action_worker_error is not None
+                    or self.quit
+                )
+            )
+
+    def _finish_run(self):
+        self._wait_for_action_boundary()
+        self.raise_action_worker_if_failed()
+        super()._finish_run()
 
     def set_mouse_control(self,mouse_control):
         self.mouse_control = mouse_control
@@ -2627,19 +2674,34 @@ class RealAction(BindKeys):
 
     def loop_key(self):
         try:
-            while not self.quit:
-                time.sleep(0.01)
-                if self.quit:
-                    break
-                if not self.loop_queue:
-                    continue
-                self.loop_queue.pop(0)
-                if not self.action_queue:
-                    continue
-                self._execute_action(self.action_queue.pop(0))
+            while True:
+                with self._action_condition:
+                    while not self.quit and not self.loop_queue:
+                        self._action_worker_idle = True
+                        self._action_condition.notify_all()
+                        self._action_condition.wait()
+                    if self.quit:
+                        self._action_worker_idle = True
+                        self._action_condition.notify_all()
+                        return
+                    self._action_worker_idle = False
+                    self.loop_queue.pop(0)
+                    action = (
+                        self.action_queue.pop(0)
+                        if self.action_queue
+                        else None
+                    )
+                self._execute_action(action)
+                with self._action_condition:
+                    self._completed_action_tokens += 1
+                    self._action_worker_idle = not self.loop_queue
+                    self._action_condition.notify_all()
         except BaseException:
-            self._action_worker_error = sys.exc_info()
-            self.quit = True
+            with self._action_condition:
+                self._action_worker_error = sys.exc_info()
+                self.quit = True
+                self._action_worker_idle = True
+                self._action_condition.notify_all()
 
     def raise_action_worker_if_failed(self):
         if self._action_worker_error is None:
@@ -2668,7 +2730,7 @@ class RealAction(BindKeys):
         if self.quit:
             self.gaze_mouse_controller.stop()
         # print(f'main loop:{round(t1-t0,4)}, extra control:{round(t2-t1,4)}')
-        self.loop_queue.append(1)
+        self._publish_action_token()
 
 
     def set_key_control(self,key_control):

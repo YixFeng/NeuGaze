@@ -28,6 +28,17 @@ def _real_action_without_constructor():
     return object.__new__(RealAction)
 
 
+def _initialize_action_sync_state(pipeline):
+    pipeline.action_queue = []
+    pipeline.loop_queue = []
+    pipeline._action_thread = None
+    pipeline._action_worker_error = None
+    pipeline._action_condition = threading.Condition()
+    pipeline._published_action_tokens = 0
+    pipeline._completed_action_tokens = 0
+    pipeline._action_worker_idle = False
+
+
 def test_constructor_builds_camera_config_once(monkeypatch):
     monkeypatch.setattr(
         IntegratedRegressionMediaPipeline,
@@ -653,7 +664,7 @@ def _configure_public_run(pipeline, camera, fail=None):
 
 
 @pytest.mark.parametrize(
-    "entrypoint", ["start_calibration", "start_evaluation", "demo"]
+    "entrypoint", ["start_calibration", "start_evaluation"]
 )
 def test_public_run_closes_only_per_run_resources_on_normal_completion(
     monkeypatch, entrypoint
@@ -680,6 +691,332 @@ def test_public_run_closes_only_per_run_resources_on_normal_completion(
     assert pipeline.camera is None
     assert pipeline.quit is False
     assert pipeline.wheel.should_run is True
+
+
+@pytest.mark.parametrize(
+    "entrypoint,cancellation",
+    [
+        ("start_calibration", "calibrate"),
+        ("demo", "nested_calibrate"),
+        ("demo", "quit_hotkey"),
+    ],
+)
+def test_public_cancellation_uses_terminal_cleanup(
+    monkeypatch, entrypoint, cancellation
+):
+    calls = []
+    camera = SimpleNamespace(close=lambda: calls.append("camera.close"))
+    pipeline = _pipeline_without_constructor()
+    _configure_public_run(pipeline, camera)
+    pipeline.start_with_calibration = cancellation == "nested_calibrate"
+    pipeline.wheel = SimpleNamespace(should_run=True)
+    pipeline.gaze_mouse_controller = SimpleNamespace(
+        stop=lambda: calls.append("controller.stop")
+    )
+    pipeline.destroy_window = lambda: calls.append("windows")
+    pipeline._action_worker_error = None
+
+    class ActionThread:
+        def join(self):
+            assert pipeline.quit is True
+            assert pipeline.wheel.should_run is False
+            calls.append("action_worker.join")
+
+    pipeline._action_thread = ActionThread()
+
+    def cancel_calibration(*args, **kwargs):
+        pipeline.quit = True
+
+    if cancellation in ("calibrate", "nested_calibrate"):
+        pipeline.calibrate = cancel_calibration
+
+    hotkey_calls = []
+
+    def are_keys_down(keys):
+        hotkey_calls.append(keys)
+        return cancellation in ("nested_calibrate", "quit_hotkey")
+
+    monkeypatch.setattr(pipeline_module.cv2, "waitKey", lambda delay: 0)
+    monkeypatch.setattr(desktop, "are_keys_down", are_keys_down)
+    monkeypatch.setattr(
+        desktop,
+        "release_all",
+        lambda: calls.append("desktop.release_all"),
+    )
+
+    result = getattr(pipeline, entrypoint)()
+
+    assert result is None
+    assert calls == [
+        "action_worker.join",
+        "desktop.release_all",
+        "controller.stop",
+        "camera.close",
+        "windows",
+    ]
+    assert pipeline.quit is True
+    assert pipeline.wheel.should_run is False
+    assert pipeline.camera is None
+    if cancellation == "nested_calibrate":
+        assert hotkey_calls == []
+    elif cancellation == "quit_hotkey":
+        assert hotkey_calls == [("esc", "q")]
+
+
+def test_quit_notifies_action_worker_before_join(monkeypatch):
+    calls = []
+    pipeline = _pipeline_without_constructor()
+    pipeline.quit = False
+    pipeline.end_calibration_signal = False
+    pipeline.camera = None
+    pipeline.destroy_window = lambda: None
+    pipeline._action_worker_error = None
+
+    class RecordingCondition:
+        def __enter__(self):
+            calls.append("condition.enter")
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            calls.append("condition.exit")
+
+        def notify_all(self):
+            calls.append("condition.notify_all")
+
+    class ActionThread:
+        def join(self):
+            assert pipeline.quit is True
+            calls.append("action_worker.join")
+
+    pipeline._action_condition = RecordingCondition()
+    pipeline._action_thread = ActionThread()
+    monkeypatch.setattr(desktop, "release_all", lambda: None)
+
+    pipeline.quit_pipeline()
+
+    assert calls == [
+        "condition.enter",
+        "condition.notify_all",
+        "condition.exit",
+        "action_worker.join",
+    ]
+
+
+def test_final_action_failure_crosses_normal_boundary_with_original_traceback(
+    monkeypatch,
+):
+    calls = []
+    pipeline = _real_action_without_constructor()
+    _initialize_action_sync_state(pipeline)
+    pipeline.camera = SimpleNamespace(
+        close=lambda: calls.append("camera.close")
+    )
+    pipeline.quit = False
+    pipeline.end_calibration_signal = False
+    pipeline.render_in_eval = False
+    pipeline.open_windows = []
+    pipeline.show_gaze = False
+    pipeline.screen_size = (640, 480)
+    pipeline.sys_mode_list = []
+    pipeline.wheel = SimpleNamespace(should_run=True)
+    pipeline.destroy_window = lambda: calls.append("windows")
+    pipeline.gaze_mouse_controller = SimpleNamespace(
+        raise_if_failed=lambda: None,
+        update_screen_size=lambda width, height: None,
+        start=lambda: calls.append("controller.start"),
+        stop=lambda: calls.append("controller.stop"),
+    )
+
+    source_error = OSError("final action failed")
+    source_traceback = []
+    action_started = threading.Event()
+    boundary_reached = threading.Event()
+    evaluation_count = 0
+
+    def fail_final_action():
+        action_started.set()
+        assert boundary_reached.wait(1)
+        try:
+            raise source_error
+        except OSError as error:
+            source_traceback.append(error.__traceback__)
+            raise
+
+    def evaluate(camera):
+        nonlocal evaluation_count
+        evaluation_count += 1
+        if evaluation_count == 2:
+            assert action_started.wait(1)
+            pipeline.end_calibration_signal = True
+
+    def publish_final_action():
+        with pipeline._action_condition:
+            pipeline.action_queue.append(
+                SimpleNamespace(
+                    keyname="a",
+                    execute=fail_final_action,
+                )
+            )
+            pipeline.loop_queue.append(1)
+            pipeline._published_action_tokens += 1
+            pipeline._action_condition.notify_all()
+
+    pipeline.evaluate = evaluate
+    pipeline.call_after_each_eval_loop = publish_final_action
+    pipeline.call_after_while_loop = boundary_reached.set
+    monkeypatch.setattr(pipeline_module.cv2, "waitKey", lambda delay: 0)
+    monkeypatch.setattr(desktop, "supports_key", lambda key: True)
+    monkeypatch.setattr(
+        desktop,
+        "release_all",
+        lambda: calls.append("desktop.release_all"),
+    )
+
+    try:
+        with pytest.raises(OSError) as caught:
+            pipeline.start_evaluation()
+    finally:
+        boundary_reached.set()
+        action_thread = getattr(pipeline, "_action_thread", None)
+        if action_thread is not None:
+            action_thread.join(1)
+
+    assert caught.value is source_error
+    traceback = caught.value.__traceback__
+    traceback_chain = []
+    while traceback is not None:
+        traceback_chain.append(traceback)
+        traceback = traceback.tb_next
+    assert source_traceback[0] in traceback_chain
+    assert calls == [
+        "controller.start",
+        "desktop.release_all",
+        "controller.stop",
+        "camera.close",
+        "windows",
+    ]
+    assert pipeline.quit is True
+    assert pipeline.wheel.should_run is False
+    assert pipeline.camera is None
+    assert not pipeline._action_thread.is_alive()
+
+
+def test_successful_final_actions_complete_before_two_reusable_runs_return(
+    monkeypatch,
+):
+    pipeline = _real_action_without_constructor()
+    _initialize_action_sync_state(pipeline)
+    close_calls = []
+    cameras = [
+        SimpleNamespace(close=lambda: close_calls.append("camera-1")),
+        SimpleNamespace(close=lambda: close_calls.append("camera-2")),
+    ]
+    executed = []
+    action_started = [threading.Event(), threading.Event()]
+    boundary_reached = [threading.Event(), threading.Event()]
+    evaluation_counts = [0, 0]
+
+    class RunController:
+        def __init__(self):
+            self.start_count = 0
+            self.stop_count = 0
+
+        def raise_if_failed(self):
+            pass
+
+        def update_screen_size(self, width, height):
+            pass
+
+        def start(self):
+            self.start_count += 1
+
+        def stop(self):
+            self.stop_count += 1
+
+    controller = RunController()
+    pipeline.camera = None
+    pipeline.camera_config = CameraConfig("opencv", 0, 640, 480, 30)
+    pipeline.quit = False
+    pipeline.end_calibration_signal = False
+    pipeline.render_in_eval = False
+    pipeline.open_windows = []
+    pipeline.show_gaze = False
+    pipeline.screen_size = (640, 480)
+    pipeline.sys_mode_list = []
+    pipeline.wheel = SimpleNamespace(should_run=True)
+    pipeline.destroy_window = lambda: None
+    pipeline.gaze_mouse_controller = controller
+
+    def current_run():
+        return controller.start_count - 1
+
+    def execute_action(run_id):
+        action_started[run_id].set()
+        assert boundary_reached[run_id].wait(1)
+        executed.append(run_id)
+
+    def evaluate(camera):
+        run_id = current_run()
+        evaluation_counts[run_id] += 1
+        if evaluation_counts[run_id] == 2:
+            assert action_started[run_id].wait(1)
+            pipeline.end_calibration_signal = True
+
+    def publish_action():
+        run_id = current_run()
+        with pipeline._action_condition:
+            pipeline.action_queue.append(
+                SimpleNamespace(
+                    keyname="a",
+                    execute=lambda: execute_action(run_id),
+                )
+            )
+            pipeline.loop_queue.append(1)
+            pipeline._published_action_tokens += 1
+            pipeline._action_condition.notify_all()
+
+    pipeline.evaluate = evaluate
+    pipeline.call_after_each_eval_loop = publish_action
+    pipeline.call_after_while_loop = (
+        lambda: boundary_reached[current_run()].set()
+    )
+    monkeypatch.setattr(
+        pipeline_module,
+        "open_camera",
+        lambda config, platform: cameras.pop(0),
+    )
+    monkeypatch.setattr(desktop, "get_screen_size", lambda: (640, 480))
+    monkeypatch.setattr(desktop, "supports_key", lambda key: True)
+    monkeypatch.setattr(pipeline_module.cv2, "waitKey", lambda delay: 0)
+    monkeypatch.setattr(
+        desktop,
+        "release_all",
+        lambda: pytest.fail("normal run must not release desktop input"),
+    )
+
+    try:
+        pipeline.start_evaluation()
+        action_thread = pipeline._action_thread
+        pipeline.start_evaluation()
+
+        assert executed == [0, 1]
+        assert pipeline._completed_action_tokens == 2
+        assert pipeline._published_action_tokens == 2
+        assert pipeline._action_thread is action_thread
+        assert pipeline._action_thread.is_alive()
+        assert controller.start_count == 2
+        assert controller.stop_count == 2
+        assert close_calls == ["camera-1", "camera-2"]
+        assert pipeline.camera is None
+        assert pipeline.quit is False
+        assert pipeline.wheel.should_run is True
+    finally:
+        with pipeline._action_condition:
+            pipeline.quit = True
+            pipeline._action_condition.notify_all()
+        action_thread = getattr(pipeline, "_action_thread", None)
+        if action_thread is not None:
+            action_thread.join(1)
 
 
 def test_same_pipeline_reuses_action_worker_and_fresh_controller_run(
@@ -746,6 +1083,10 @@ def test_same_pipeline_reuses_action_worker_and_fresh_controller_run(
     pipeline._action_worker_error = None
     pipeline.action_queue = []
     pipeline.loop_queue = []
+    pipeline._action_condition = threading.Condition()
+    pipeline._published_action_tokens = 0
+    pipeline._completed_action_tokens = 0
+    pipeline._action_worker_idle = False
     pipeline.gaze_mouse_controller = controller
     pipeline.wheel = SimpleNamespace(should_run=True)
     pipeline.destroy_window = lambda: None
@@ -865,46 +1206,39 @@ def test_call_before_loop_stores_started_action_worker(monkeypatch):
 
 def test_idle_action_worker_exits_after_quit_signal(monkeypatch):
     pipeline = _real_action_without_constructor()
+    _initialize_action_sync_state(pipeline)
     pipeline.quit = False
-    pipeline.loop_queue = []
-    pipeline.action_queue = []
     pipeline.sys_mode_list = []
-    pipeline._action_worker_error = None
-    sleep_entered = threading.Event()
-    release_sleep = threading.Event()
-
-    def controlled_sleep(duration):
-        sleep_entered.set()
-        release_sleep.wait(1)
-
-    monkeypatch.setattr(pipeline_module.time, "sleep", controlled_sleep)
     monkeypatch.setattr(desktop, "supports_key", lambda key: True)
     worker = threading.Thread(target=pipeline.loop_key, daemon=True)
-    worker.start()
-    assert sleep_entered.wait(1)
 
     try:
-        pipeline.quit = True
-        release_sleep.set()
+        with pipeline._action_condition:
+            worker.start()
+            assert pipeline._action_condition.wait_for(
+                lambda: pipeline._action_worker_idle,
+                timeout=1,
+            )
+            pipeline.quit = True
+            pipeline._action_condition.notify_all()
         worker.join(0.5)
         assert not worker.is_alive()
         assert pipeline._action_worker_error is None
     finally:
         if worker.is_alive():
-            pipeline.loop_queue.append(1)
-            pipeline.action_queue.append(
-                SimpleNamespace(keyname="a", execute=lambda: None)
-            )
+            with pipeline._action_condition:
+                pipeline.quit = True
+                pipeline._action_condition.notify_all()
             worker.join(1)
 
 
 def test_action_worker_rethrows_original_error_and_traceback(monkeypatch):
     pipeline = _real_action_without_constructor()
+    _initialize_action_sync_state(pipeline)
     pipeline.quit = False
     pipeline.loop_queue = [1]
-    pipeline.action_queue = []
+    pipeline._published_action_tokens = 1
     pipeline.sys_mode_list = []
-    pipeline._action_worker_error = None
     source_error = OSError("desktop injection failed")
     source_traceback = []
 
@@ -918,7 +1252,6 @@ def test_action_worker_rethrows_original_error_and_traceback(monkeypatch):
     pipeline.action_queue.append(
         SimpleNamespace(keyname="a", execute=fail)
     )
-    monkeypatch.setattr(pipeline_module.time, "sleep", lambda duration: None)
     monkeypatch.setattr(desktop, "supports_key", lambda key: True)
     worker = threading.Thread(target=pipeline.loop_key, daemon=True)
     worker.start()
@@ -952,6 +1285,9 @@ def test_each_evaluation_iteration_checks_controller_failure(monkeypatch):
     pipeline.raise_action_worker_if_failed = lambda: calls.append(
         "raise_action_worker_if_failed"
     )
+    pipeline._publish_action_token = lambda: calls.append(
+        "publish_action_token"
+    )
     monkeypatch.setattr(
         BindKeys,
         "call_after_each_eval_loop",
@@ -965,5 +1301,6 @@ def test_each_evaluation_iteration_checks_controller_failure(monkeypatch):
         "raise_if_failed",
         "inherited",
         "decode",
+        "publish_action_token",
     ]
-    assert pipeline.loop_queue == [1]
+    assert pipeline.loop_queue == []
