@@ -198,27 +198,27 @@ def _key_info(key):
 
 def key_down(key):
     name, key_info = _key_info(key)
-    if key_info.get("is_mouse", False):
-        win32api.mouse_event(
-            key_info["down_flag"], 0, 0, key_info.get("x_flag", 0), 0
-        )
-    else:
-        win32api.keybd_event(key_info["vk"], key_info["scan"], 0, 0)
     with _held_lock:
+        if key_info.get("is_mouse", False):
+            win32api.mouse_event(
+                key_info["down_flag"], 0, 0, key_info.get("x_flag", 0), 0
+            )
+        else:
+            win32api.keybd_event(key_info["vk"], key_info["scan"], 0, 0)
         _held_inputs.add(name)
 
 
 def key_up(key):
     name, key_info = _key_info(key)
-    if key_info.get("is_mouse", False):
-        win32api.mouse_event(
-            key_info["up_flag"], 0, 0, key_info.get("x_flag", 0), 0
-        )
-    else:
-        win32api.keybd_event(
-            key_info["vk"], key_info["scan"], win32con.KEYEVENTF_KEYUP, 0
-        )
     with _held_lock:
+        if key_info.get("is_mouse", False):
+            win32api.mouse_event(
+                key_info["up_flag"], 0, 0, key_info.get("x_flag", 0), 0
+            )
+        else:
+            win32api.keybd_event(
+                key_info["vk"], key_info["scan"], win32con.KEYEVENTF_KEYUP, 0
+            )
         _held_inputs.discard(name)
 
 
@@ -257,10 +257,10 @@ def release_all():
     errors = []
     with _held_lock:
         held_inputs = tuple(sorted(_held_inputs))
-    for key in held_inputs:
-        try:
-            key_up(key)
-        except Exception as error:
-            errors.append(error)
+        for key in held_inputs:
+            try:
+                key_up(key)
+            except Exception as error:
+                errors.append(error)
     if errors:
         raise ExceptionGroup("failed to release Win32 inputs", errors)

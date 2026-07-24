@@ -64,7 +64,7 @@
 |---|---|---|
 | Task 1：测试基座与显式摄像头配置 | 完成 | 配置边界的 10 个测试通过 |
 | Task 2：Fail-fast OpenCV/V4L2 与 Orbbec RGB 源 | 完成（有 SDK ABI 偏差） | 33 个 Task 1/2 单元测试通过；Gemini 335 读取 100 帧、关闭、重开后再读 1 帧通过 |
-| Task 3：平台中立动作与显式桌面选择 | 完成 | selector/action 13 个测试通过；common modules 编译通过；完整默认测试 46 passed / 1 deselected |
+| Task 3：平台中立动作与显式桌面选择 | 完成 | selector/action 17 个测试通过（含 cleanup/lifecycle 并发回归）；common modules 编译通过；完整默认测试 50 passed / 1 deselected |
 
 ## 当前工作
 
@@ -98,6 +98,10 @@ Task 3 已完成。Linux selector 在首次桌面操作前不导入尚未实现�
 | 2026-07-24 | 同一 selector/action 命令（GREEN） | 13 passed，0.01s；覆盖两平台惰性选择、全部 `OpType`、未知键错误透传、安全按下/释放及后端异常透传 |
 | 2026-07-24 | `/home/yixiao/miniconda3/envs/neugaze/bin/python -m py_compile my_model_arch/cpu_fast/keyboard_utils.py my_model_arch/cpu_fast/desktop/__init__.py my_model_arch/cpu_fast/desktop/win32.py` | exit 0 |
 | 2026-07-24 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /home/yixiao/miniconda3/envs/neugaze/bin/python -m pytest -v` | 46 passed / 1 deselected，0.08s |
+| 2026-07-24 | selector close 与 Win32 cleanup 受控交错测试（review RED） | 2 failed / 15 passed；分别复现 close 与已派发操作重叠、cleanup 漏掉注入后尚未记账输入 |
+| 2026-07-24 | selector/action review 修复后 focused GREEN | 17 passed，0.24s；另验证 import/close 失败保留原异常与可重试状态 |
+| 2026-07-24 | review 修复后 common modules `py_compile` | exit 0 |
+| 2026-07-24 | review 修复后完整默认测试 | 50 passed / 1 deselected，0.30s |
 
 ## 阻塞项
 
