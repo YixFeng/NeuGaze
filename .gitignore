@@ -11,6 +11,7 @@ dist/
 flutter_application_1/
 .idea/
 .vscode
+.worktrees/
 *.pkl
 add_watermark.py
 image/
