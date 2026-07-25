@@ -15,6 +15,8 @@
 - 设计：`docs/superpowers/specs/2026-07-23-ubuntu-xorg-port-design.md`
 - 实施计划：`docs/superpowers/plans/2026-07-24-ubuntu-xorg-port.md`
 - 本进度：`docs/ubuntu-xorg-port-progress.md`
+- Task 8 审查基线（已批准 Task 1–7）：`f632509`
+- Task 8 初始范围提交：`625061e`（`docs: add Ubuntu Xorg setup and verification`）
 
 ## 已确认决策
 
@@ -59,7 +61,7 @@
 | 设计文档 | 完成 | 摄像头后端修订提交 `62dc98a`，用户已批准 |
 | 实施计划 | 完成 | 8 个 TDD 任务已写入，提交 `6bf86ed`，待选择执行方式 |
 | 实现 | Task 1–8 范围内实现完成，等待 ABI 决策 | Task 8 已新增 Ubuntu 锁定依赖、只读聚合诊断与双语文档；诊断按设计因 Orbbec 2.8.6/wheel 库偏差非零退出 |
-| 自动化验证 | 完成（Task 8） | diagnostic unit 15 passed；non-hardware/non-X11 230 passed / 18 deselected；隔离 Xvfb 无/有 compositor 两组各 16 passed / 1 skipped；编译通过 |
+| 自动化验证 | 完成（Task 8） | diagnostic unit 32 passed；non-hardware/non-X11 247 passed / 18 deselected；隔离 Xvfb 无/有 compositor 两组各 16 passed / 1 skipped；编译通过 |
 | Gemini 335 实机验收 | 部分完成 | 当前用户 Xorg 已验证；Orbbec 100 帧、关闭、重开、一帧通过；GUI、九点校准、输入、物理断开仍需人工验收 |
 
 ## 任务进度
@@ -248,6 +250,13 @@ Task 8 新增完全锁定的 `requirements-ubuntu.txt`，保留 Windows `require
 | 2026-07-26 | Task 8 isolated positive compositor | 隔离 `xvfb-run` 内启动 `xcompmgr -a` 后运行完整 `-m x11`：最终 fresh 16 passed / 1 skipped / 231 deselected，2.35s；正向 overlay 通过，缺 compositor negative 按条件跳过；未连接实时 `DISPLAY=:1`。 |
 | 2026-07-26 | Task 8 compile | `.../python -m py_compile config_gui_cpu.py my_model_arch/cpu_fast/*.py my_model_arch/cpu_fast/desktop/*.py scripts/check_ubuntu_runtime.py`：exit 0。 |
 | 2026-07-26 | Task 8 最终 fresh verification | diagnostic unit 15 passed；non-hardware/non-X11 230 passed / 18 deselected；isolated X11 negative 16 passed / 1 skipped / 231 deselected；isolated X11 positive 16 passed / 1 skipped / 231 deselected；compile exit 0；实时 diagnostic 10 PASS / 1 ABI FAIL；Gemini hardware 1 passed，8.42s。硬件测试本身再次生成 7467-byte `Log/OrbbecSDK.log.txt`，记录后删除；诊断命令仍不生成该文件。 |
+| 2026-07-26 | Task 8 正式评审 | 审查 `f632509..625061e`：无 critical；6 项 important 要求补强 Ubuntu/架构边界、完整摄像头配置与设备真实性、`ldd not found`、复合清理异常、build wiring 和硬件测试开发依赖说明；ABI/人工验收/缺少 torchaudio 仍是诚实阻塞项。 |
+| 2026-07-26 | Task 8 review RED | diagnostic focused 收集 31 项：14 failed / 17 passed，精确暴露上述代码缺口；未改 ABI 预期。 |
+| 2026-07-26 | Task 8 review focused GREEN | diagnostic focused 32 passed，0.02s；原始子进程失败及 stdout/stderr 保留，清理失败只作为原错误 note，V4L2 字符设备/读写权限和 Gemini 335/profile 显式验证。 |
+| 2026-07-26 | SDK 型号表示 RED/GREEN | 首次 review 后实时诊断额外暴露 `Orbbec Gemini 335` 与过窄精确值 `Gemini 335` 的假阴性：9 PASS / 2 FAIL；focused RED 1 failed。仅允许两个已知官方表示后 focused 32 passed，其他型号仍 fail fast。 |
+| 2026-07-26 | Task 8 review final gates | non-hardware/non-X11 247 passed / 18 deselected，5.85s；isolated X11 negative 16 passed / 1 skipped / 248 deselected，2.43s；positive compositor 16 passed / 1 skipped / 248 deselected，2.34s；validated glob compile exit 0。 |
+| 2026-07-26 | Task 8 review 最终实时诊断 | 10 PASS / 1 ABI FAIL，exit 1；Ubuntu 24.04 x86_64、完整 1280x720@30 配置和 `Orbbec Gemini 335`/序列号通过，唯一失败仍为批准的 2.9.3/system authority 与 wheel 2.8.6/内置库偏差；仓库无 `Log/`。 |
+| 2026-07-26 | Task 8 正式复审 | Critical 0、Important 0；唯一 Minor 为进度表 31/32 计数，已在本行前校正；ABI constants 和无 fallback 策略保持不变。 |
 
 ## Task 8 实机会话验收
 

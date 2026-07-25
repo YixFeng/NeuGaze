@@ -139,8 +139,16 @@ In the GUI, choose exactly one Linux camera backend:
 - **OpenCV / V4L2** uses the selected `/dev/videoN` device.
 
 A selected backend or device failure is reported directly; NeuGaze never
-switches to the other backend automatically. With a Gemini 335 connected, run
-the explicit 100-frame, close, reopen, and one-frame hardware check:
+switches to the other backend automatically. The hardware acceptance command
+uses pytest, so install the development requirements before running it; these
+are not required for normal NeuGaze runtime:
+
+```bash
+python -m pip install -r requirements-dev.txt
+```
+
+With a Gemini 335 connected, run the explicit 100-frame, close, reopen, and
+one-frame hardware check:
 
 ```bash
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest tests/test_orbbec_hardware.py --run-orbbec -v

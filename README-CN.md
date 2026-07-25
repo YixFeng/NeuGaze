@@ -139,8 +139,15 @@ GUI 中必须明确选择一个 Linux 摄像头后端：
 - **Orbbec SDK**：枚举型号和序列号，并使用选中的 Gemini 335 索引；
 - **OpenCV / V4L2**：使用选中的 `/dev/videoN` 设备。
 
-后端或设备失败会直接显示；NeuGaze 不会自动切换到另一后端。连接
-Gemini 335 后，用以下显式命令验证读取 100 帧、关闭、重开并再读一帧：
+后端或设备失败会直接显示；NeuGaze 不会自动切换到另一后端。硬件验收
+命令使用 pytest，因此执行前先安装开发依赖；正常运行 NeuGaze 不需要这些
+依赖：
+
+```bash
+python -m pip install -r requirements-dev.txt
+```
+
+连接 Gemini 335 后，用以下显式命令验证读取 100 帧、关闭、重开并再读一帧：
 
 ```bash
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest tests/test_orbbec_hardware.py --run-orbbec -v

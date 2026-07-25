@@ -9,6 +9,7 @@ import json
 import os
 import platform
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -84,16 +85,28 @@ def check_python(version_info: Sequence[int]) -> str:
     return f"Python {actual}"
 
 
-def check_platform(platform_name: str) -> str:
+def check_platform(
+    platform_name: str,
+    os_release: Mapping[str, str],
+    machine: str,
+) -> str:
     if platform_name != "linux":
         raise RuntimeError(
             f"Ubuntu runtime diagnostics require Linux, got "
             f"{platform_name!r}"
         )
-    return (
-        f"{platform.system()} {platform.release()} "
-        f"{platform.machine()}"
-    )
+    distribution = os_release.get("ID")
+    version = os_release.get("VERSION_ID")
+    if distribution != "ubuntu" or version != "24.04":
+        raise RuntimeError(
+            "NeuGaze requires Ubuntu 24.04; "
+            f"got ID={distribution!r}, VERSION_ID={version!r}"
+        )
+    if machine != "x86_64":
+        raise RuntimeError(
+            f"NeuGaze Ubuntu runtime requires x86_64, got {machine!r}"
+        )
+    return f"Ubuntu 24.04 x86_64, kernel {platform.release()}"
 
 
 def check_session(environ: Mapping[str, str]) -> str:
@@ -203,7 +216,9 @@ def check_model_assets(
     return f"{len(paths)} required model assets exist"
 
 
-def _camera_config(config: Mapping[str, object]) -> tuple[str, int]:
+def _camera_config(
+    config: Mapping[str, object],
+) -> tuple[str, int, int, int, int]:
     integrated = config.get("integrated_config")
     if not isinstance(integrated, Mapping):
         raise TypeError("integrated_config must be a mapping")
@@ -216,7 +231,7 @@ def _camera_config(config: Mapping[str, object]) -> tuple[str, int]:
     if backend not in {"orbbec", "opencv"}:
         raise RuntimeError(
             "integrated_config.camera_backend.linux must be "
-            f"'orbbec' or 'opencv', got {backend!r}"
+            f"orbbec or opencv, got {backend!r}"
         )
     device_id = integrated.get("cam_id")
     if (
@@ -227,11 +242,28 @@ def _camera_config(config: Mapping[str, object]) -> tuple[str, int]:
         raise RuntimeError(
             "integrated_config.cam_id must be a non-negative integer"
         )
-    return backend, device_id
+
+    stream_values = []
+    for key in ("camera_width", "camera_height", "camera_fps"):
+        value = integrated.get(key)
+        if (
+            not isinstance(value, int)
+            or isinstance(value, bool)
+            or value <= 0
+        ):
+            raise RuntimeError(
+                f"integrated_config.{key} must be a positive integer"
+            )
+        stream_values.append(value)
+    width, height, fps = stream_values
+    return backend, device_id, width, height, fps
 
 
 def query_orbbec_devices(
     run_command: Callable[..., object] = subprocess.run,
+    temporary_directory_factory: Callable[..., object] = (
+        tempfile.TemporaryDirectory
+    ),
 ) -> list[dict[str, object]]:
     source = (
         "import json\n"
@@ -248,89 +280,136 @@ def query_orbbec_devices(
         "print(\"NEUGAZE_ORBBEC_DEVICES=\" + json.dumps(payload, sort_keys=True))\n"
     )
     command = (sys.executable, "-c", source)
-    with tempfile.TemporaryDirectory(
+    temporary_directory = temporary_directory_factory(
         prefix="neugaze-orbbec-probe-"
-    ) as probe_directory:
+    )
+    primary_error = None
+    try:
         result = run_command(
             command,
-            cwd=probe_directory,
+            cwd=temporary_directory.name,
             check=False,
             capture_output=True,
             text=True,
         )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"command {command[:2]!r} exited {result.returncode}; "
-            f"stdout={result.stdout!r}; stderr={result.stderr!r}"
-        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"command {command[:2]!r} exited {result.returncode}; "
+                f"stdout={result.stdout!r}; stderr={result.stderr!r}"
+            )
 
-    prefix = "NEUGAZE_ORBBEC_DEVICES="
-    payload_lines = [
-        line[len(prefix):]
-        for line in result.stdout.splitlines()
-        if line.startswith(prefix)
-    ]
-    if len(payload_lines) != 1:
-        raise RuntimeError(
-            f"command {command[:2]!r} returned "
-            f"{len(payload_lines)} structured Orbbec results; "
-            f"stdout={result.stdout!r}; stderr={result.stderr!r}"
-        )
-    try:
-        payload = json.loads(payload_lines[0])
-    except json.JSONDecodeError as error:
-        raise RuntimeError(
-            f"command {command[:2]!r} returned malformed Orbbec data; "
-            f"stdout={result.stdout!r}; stderr={result.stderr!r}"
-        ) from error
+        prefix = "NEUGAZE_ORBBEC_DEVICES="
+        payload_lines = [
+            line[len(prefix):]
+            for line in result.stdout.splitlines()
+            if line.startswith(prefix)
+        ]
+        if len(payload_lines) != 1:
+            raise RuntimeError(
+                f"command {command[:2]!r} returned "
+                f"{len(payload_lines)} structured Orbbec results; "
+                f"stdout={result.stdout!r}; stderr={result.stderr!r}"
+            )
+        try:
+            payload = json.loads(payload_lines[0])
+        except json.JSONDecodeError as error:
+            raise RuntimeError(
+                f"command {command[:2]!r} returned malformed Orbbec data; "
+                f"stdout={result.stdout!r}; stderr={result.stderr!r}"
+            ) from error
 
-    if not isinstance(payload, dict):
-        raise RuntimeError(f"malformed Orbbec probe payload: {payload!r}")
-    device_count = payload.get("device_count")
-    devices = payload.get("devices")
-    if (
-        not isinstance(device_count, int)
-        or isinstance(device_count, bool)
-        or not isinstance(devices, list)
-        or device_count != len(devices)
-    ):
-        raise RuntimeError(f"malformed Orbbec probe payload: {payload!r}")
-    for expected_index, device in enumerate(devices):
+        if not isinstance(payload, dict):
+            raise RuntimeError(
+                f"malformed Orbbec probe payload: {payload!r}"
+            )
+        device_count = payload.get("device_count")
+        devices = payload.get("devices")
         if (
-            not isinstance(device, dict)
-            or device.get("index") != expected_index
-            or not isinstance(device.get("name"), str)
-            or not isinstance(device.get("serial"), str)
+            not isinstance(device_count, int)
+            or isinstance(device_count, bool)
+            or not isinstance(devices, list)
+            or device_count != len(devices)
         ):
-            raise RuntimeError(f"malformed Orbbec device entry: {device!r}")
-    return devices
+            raise RuntimeError(
+                f"malformed Orbbec probe payload: {payload!r}"
+            )
+        for expected_index, device in enumerate(devices):
+            if (
+                not isinstance(device, dict)
+                or device.get("index") != expected_index
+                or not isinstance(device.get("name"), str)
+                or not isinstance(device.get("serial"), str)
+            ):
+                raise RuntimeError(
+                    f"malformed Orbbec device entry: {device!r}"
+                )
+        return devices
+    except Exception as error:
+        primary_error = error
+        raise
+    finally:
+        try:
+            temporary_directory.cleanup()
+        except Exception as cleanup_error:
+            if primary_error is None:
+                raise
+            primary_error.add_note(
+                "cleaning Orbbec probe temporary directory also failed: "
+                f"{cleanup_error!r}"
+            )
 
 
 def check_camera_selection(
     config: Mapping[str, object],
     platform_name: str,
     device_root: Path = Path("/dev"),
+    device_stat: Callable[[Path], object] = os.stat,
+    device_access: Callable[[Path, int], bool] = os.access,
+    orbbec_devices: Sequence[Mapping[str, object]] | None = None,
 ) -> str:
     if platform_name != "linux":
         raise RuntimeError(
             f"Ubuntu camera check requires Linux, got {platform_name!r}"
         )
-    backend, device_id = _camera_config(config)
+    backend, device_id, width, height, fps = _camera_config(config)
     if backend == "opencv":
         device_path = device_root / f"video{device_id}"
-        if not device_path.exists():
+        display_path = f"/dev/video{device_id}"
+        try:
+            device_info = device_stat(device_path)
+        except FileNotFoundError as error:
             raise RuntimeError(
-                f"selected OpenCV/V4L2 camera /dev/video{device_id} "
+                f"selected OpenCV/V4L2 camera {display_path} "
                 "does not exist"
+            ) from error
+        if not stat.S_ISCHR(device_info.st_mode):
+            raise RuntimeError(
+                f"selected OpenCV/V4L2 camera {display_path} "
+                "is not a character device"
+            )
+        if not device_access(device_path, os.R_OK | os.W_OK):
+            raise RuntimeError(
+                f"selected OpenCV/V4L2 camera {display_path} "
+                "is not accessible for read/write"
             )
         import cv2
 
         return (
             f"OpenCV {cv2.__version__}, selected V4L2 device "
-            f"/dev/video{device_id} exists"
+            f"{display_path} is an accessible character device; "
+            f"configured {width}x{height} at {fps} FPS"
         )
 
-    devices = query_orbbec_devices()
+    if (width, height, fps) != (1280, 720, 30):
+        raise RuntimeError(
+            "Gemini 335 requires 1280x720 at 30 FPS; "
+            f"configured {width}x{height} at {fps} FPS"
+        )
+    devices = (
+        query_orbbec_devices()
+        if orbbec_devices is None
+        else list(orbbec_devices)
+    )
     device_count = len(devices)
     if device_id >= device_count:
         raise RuntimeError(
@@ -340,8 +419,14 @@ def check_camera_selection(
     info = devices[device_id]
     name = info["name"]
     serial = info["serial"]
+    if name not in {"Gemini 335", "Orbbec Gemini 335"}:
+        raise RuntimeError(
+            f"selected Orbbec camera index {device_id} must be "
+            f"Gemini 335, got {name!r}"
+        )
     return (
         f"Orbbec index {device_id}: name={name!r}, serial={serial!r}; "
+        f"configured {width}x{height} at {fps} FPS; "
         f"detected {device_count} device(s)"
     )
 
@@ -459,9 +544,12 @@ def _orbbec_extension(module) -> Path:
     return extensions[0]
 
 
-def _ldd_orbbec_library(extension: Path) -> Path:
+def _ldd_orbbec_library(
+    extension: Path,
+    run_command: Callable[..., object] = subprocess.run,
+) -> Path:
     command = ("ldd", str(extension))
-    result = subprocess.run(
+    result = run_command(
         command,
         check=False,
         capture_output=True,
@@ -470,6 +558,15 @@ def _ldd_orbbec_library(extension: Path) -> Path:
     if result.returncode != 0:
         raise RuntimeError(
             f"command {command!r} exited {result.returncode}; "
+            f"stdout={result.stdout!r}; stderr={result.stderr!r}"
+        )
+    if re.search(
+        r"^\s*libOrbbecSDK\.so(?:\.\d+)*\s+=>\s+not found\s*$",
+        result.stdout,
+        flags=re.MULTILINE,
+    ):
+        raise RuntimeError(
+            f"command {command!r}: libOrbbecSDK was not found; "
             f"stdout={result.stdout!r}; stderr={result.stderr!r}"
         )
     match = re.search(
@@ -502,10 +599,10 @@ def _check_orbbec_abi_host() -> str:
 
 def _check_config(path: Path) -> str:
     config = _load_config(path)
-    backend, device_id = _camera_config(config)
+    backend, device_id, width, height, fps = _camera_config(config)
     return (
         f"{path}: Linux camera backend={backend!r}, "
-        f"cam_id={device_id}"
+        f"cam_id={device_id}, {width}x{height} at {fps} FPS"
     )
 
 
@@ -516,7 +613,14 @@ def build_checks(
     display_name = os.environ.get("DISPLAY")
     return (
         ("Python", lambda: check_python(sys.version_info)),
-        ("Platform", lambda: check_platform(sys.platform)),
+        (
+            "Platform",
+            lambda: check_platform(
+                sys.platform,
+                platform.freedesktop_os_release(),
+                platform.machine(),
+            ),
+        ),
         ("Xorg session", lambda: check_session(os.environ)),
         (
             "X11 display",

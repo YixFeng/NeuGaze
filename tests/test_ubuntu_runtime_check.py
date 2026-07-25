@@ -1,4 +1,5 @@
 import io
+import stat
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -21,6 +22,9 @@ def valid_config():
                 "win32": "opencv",
             },
             "cam_id": 0,
+            "camera_width": 1280,
+            "camera_height": 720,
+            "camera_fps": 30,
         },
     }
 
@@ -78,12 +82,110 @@ def test_execute_checks_collects_every_failure_and_preserves_tracebacks():
     assert "in fail_display" in report
 
 
+def test_build_checks_wires_the_complete_diagnostic(monkeypatch, tmp_path):
+    config = valid_config()
+    config_path = tmp_path / "cpu.yaml"
+    config_path.write_text("unused")
+    monkeypatch.setenv("DISPLAY", ":99")
+    monkeypatch.setenv("XDG_SESSION_TYPE", "x11")
+    monkeypatch.setattr(
+        runtime.platform,
+        "freedesktop_os_release",
+        lambda: {"ID": "ubuntu", "VERSION_ID": "24.04"},
+    )
+    monkeypatch.setattr(runtime.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(
+        runtime,
+        "_check_x11_display",
+        lambda display: f"connected to {display}",
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_query_x11_extensions",
+        lambda display: {"XTEST", "XFIXES"},
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_compositor_owner_exists",
+        lambda display: False,
+    )
+    monkeypatch.setattr(runtime, "_load_config", lambda path: config)
+    monkeypatch.setattr(
+        runtime,
+        "check_model_assets",
+        lambda loaded, root: "assets ready",
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_check_orbbec_abi_host",
+        lambda: "ABI ready",
+    )
+    monkeypatch.setattr(
+        runtime,
+        "check_camera_selection",
+        lambda loaded, platform_name: "camera ready",
+    )
+    output = io.StringIO()
+
+    failures = runtime.execute_checks(
+        runtime.build_checks(config_path, require_overlay=False),
+        output,
+    )
+
+    assert failures == []
+    pass_names = [
+        line.removeprefix("[PASS] ").split(":", 1)[0]
+        for line in output.getvalue().splitlines()
+        if line.startswith("[PASS] ")
+    ]
+    assert pass_names == [
+        "Python",
+        "Platform",
+        "Xorg session",
+        "X11 display",
+        "XTest",
+        "XFixes",
+        "X11 compositor",
+        "Configuration",
+        "Model assets",
+        "Orbbec binding/SDK ABI",
+        "Selected camera",
+    ]
+
+
 def test_python_check_rejects_wrong_minor_version():
     with pytest.raises(
         RuntimeError,
         match=r"requires Python 3\.11, got 3\.12\.1",
     ):
         runtime.check_python((3, 12, 1))
+
+
+@pytest.mark.parametrize(
+    ("os_release", "machine", "expected"),
+    (
+        ({"ID": "debian", "VERSION_ID": "24.04"}, "x86_64", "requires Ubuntu 24.04"),
+        ({"ID": "ubuntu", "VERSION_ID": "22.04"}, "x86_64", "requires Ubuntu 24.04"),
+        ({"ID": "ubuntu", "VERSION_ID": "24.04"}, "aarch64", "requires x86_64"),
+    ),
+)
+def test_platform_check_rejects_wrong_distribution_version_or_architecture(
+    os_release,
+    machine,
+    expected,
+):
+    with pytest.raises(RuntimeError, match=expected):
+        runtime.check_platform("linux", os_release, machine)
+
+
+def test_platform_check_accepts_ubuntu_2404_x86_64():
+    detail = runtime.check_platform(
+        "linux",
+        {"ID": "ubuntu", "VERSION_ID": "24.04"},
+        "x86_64",
+    )
+
+    assert detail.startswith("Ubuntu 24.04 x86_64")
 
 
 def test_session_check_rejects_wayland_even_with_display():
@@ -180,6 +282,53 @@ def test_model_asset_check_accepts_required_and_configured_files(tmp_path):
     assert detail == "4 required model assets exist"
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("camera_width", 0),
+        ("camera_height", True),
+        ("camera_fps", -1),
+    ),
+)
+def test_camera_config_rejects_invalid_stream_values(field, value):
+    config = valid_config()
+    config["integrated_config"][field] = value
+
+    with pytest.raises(
+        RuntimeError,
+        match=rf"integrated_config\.{field} must be a positive integer",
+    ):
+        runtime._camera_config(config)
+
+
+def test_camera_config_rejects_missing_stream_value():
+    config = valid_config()
+    del config["integrated_config"]["camera_height"]
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"integrated_config\.camera_height must be a positive integer",
+    ):
+        runtime._camera_config(config)
+
+
+def test_orbbec_selection_requires_approved_stream_profile():
+    config = valid_config()
+    config["integrated_config"]["camera_fps"] = 60
+
+    with pytest.raises(
+        RuntimeError,
+        match="Gemini 335 requires 1280x720 at 30 FPS",
+    ):
+        runtime.check_camera_selection(
+            config,
+            platform_name="linux",
+            orbbec_devices=[
+                {"index": 0, "name": "Gemini 335", "serial": "A"}
+            ],
+        )
+
+
 def test_camera_selection_rejects_missing_selected_v4l2_device(tmp_path):
     config = valid_config()
     config["integrated_config"]["camera_backend"]["linux"] = "opencv"
@@ -193,6 +342,69 @@ def test_camera_selection_rejects_missing_selected_v4l2_device(tmp_path):
             config,
             platform_name="linux",
             device_root=tmp_path,
+        )
+
+
+def test_camera_selection_rejects_regular_file_as_v4l2_device(tmp_path):
+    config = valid_config()
+    config["integrated_config"]["camera_backend"]["linux"] = "opencv"
+    selected = tmp_path / "video0"
+    selected.write_bytes(b"not a device")
+
+    with pytest.raises(RuntimeError, match="is not a character device"):
+        runtime.check_camera_selection(
+            config,
+            platform_name="linux",
+            device_root=tmp_path,
+        )
+
+
+def test_camera_selection_rejects_inaccessible_v4l2_character_device(tmp_path):
+    config = valid_config()
+    config["integrated_config"]["camera_backend"]["linux"] = "opencv"
+    char_stat = SimpleNamespace(st_mode=stat.S_IFCHR | 0o660)
+
+    with pytest.raises(RuntimeError, match="is not accessible for read/write"):
+        runtime.check_camera_selection(
+            config,
+            platform_name="linux",
+            device_root=tmp_path,
+            device_stat=lambda path: char_stat,
+            device_access=lambda path, mode: False,
+        )
+
+
+def test_camera_selection_accepts_sdk_gemini_335_model_name():
+    config = valid_config()
+
+    detail = runtime.check_camera_selection(
+        config,
+        platform_name="linux",
+        orbbec_devices=[
+            {
+                "index": 0,
+                "name": "Orbbec Gemini 335",
+                "serial": "ABC123",
+            }
+        ],
+    )
+
+    assert detail.startswith("Orbbec index 0:")
+    assert "Orbbec Gemini 335" in detail
+    assert "ABC123" in detail
+    assert "1280x720 at 30 FPS" in detail
+
+
+def test_camera_selection_rejects_non_gemini_335_orbbec_model():
+    config = valid_config()
+
+    with pytest.raises(RuntimeError, match="must be Gemini 335"):
+        runtime.check_camera_selection(
+            config,
+            platform_name="linux",
+            orbbec_devices=[
+                {"index": 0, "name": "Femto Bolt", "serial": "A"}
+            ],
         )
 
 
@@ -231,6 +443,75 @@ def test_orbbec_probe_contains_sdk_files_outside_caller_cwd(
     assert list(caller.iterdir()) == []
     assert len(probe_directories) == 1
     assert not probe_directories[0].exists()
+
+
+def test_orbbec_probe_reports_subprocess_failure_with_output():
+    def failed_process(command, **options):
+        return SimpleNamespace(
+            returncode=7,
+            stdout="probe stdout",
+            stderr="SDK stderr",
+        )
+
+    with pytest.raises(RuntimeError) as captured:
+        runtime.query_orbbec_devices(run_command=failed_process)
+
+    message = str(captured.value)
+    assert "exited 7" in message
+    assert "probe stdout" in message
+    assert "SDK stderr" in message
+
+
+def test_orbbec_probe_preserves_primary_failure_when_cleanup_also_fails(tmp_path):
+    probe_directory = tmp_path / "probe"
+    probe_directory.mkdir()
+
+    class CleanupFails:
+        name = str(probe_directory)
+
+        def cleanup(self):
+            raise OSError("cleanup failed")
+
+    def failed_process(command, **options):
+        return SimpleNamespace(
+            returncode=9,
+            stdout="primary stdout",
+            stderr="primary stderr",
+        )
+
+    with pytest.raises(RuntimeError) as captured:
+        runtime.query_orbbec_devices(
+            run_command=failed_process,
+            temporary_directory_factory=lambda **options: CleanupFails(),
+        )
+
+    assert "exited 9" in str(captured.value)
+    assert "primary stdout" in str(captured.value)
+    assert "primary stderr" in str(captured.value)
+    assert any(
+        "cleanup failed" in note
+        for note in getattr(captured.value, "__notes__", ())
+    )
+
+
+def test_ldd_orbbec_library_reports_unresolved_dependency(tmp_path):
+    extension = tmp_path / "pyorbbecsdk.so"
+
+    def unresolved(command, **options):
+        return SimpleNamespace(
+            returncode=0,
+            stdout="\tlibOrbbecSDK.so.2 => not found\n",
+            stderr="loader diagnostics",
+        )
+
+    with pytest.raises(RuntimeError) as captured:
+        runtime._ldd_orbbec_library(extension, run_command=unresolved)
+
+    message = str(captured.value)
+    assert "libOrbbecSDK was not found" in message
+    assert "ldd" in message
+    assert "not found" in message
+    assert "loader diagnostics" in message
 
 
 def test_orbbec_abi_check_accepts_expected_system_sdk():
