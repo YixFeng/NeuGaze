@@ -58,9 +58,9 @@
 | 设计评审 | 完成 | 用户分三部分批准设计 |
 | 设计文档 | 完成 | 摄像头后端修订提交 `62dc98a`，用户已批准 |
 | 实施计划 | 完成 | 8 个 TDD 任务已写入，提交 `6bf86ed`，待选择执行方式 |
-| 实现 | 进行中（Task 1–7 完成） | Task 7 GUI 已接入显式 camera backend、直接 BGR preview、应用级 desktop 生命周期与配置 roundtrip；未开始 Task 8 |
-| 自动化验证 | 进行中 | Task 7 final re-review 修复后 camera regression 56 passed、Task 5/6 focused regression 149 passed、完整 offscreen non-X11 215 passed / 18 deselected；Task 6 隔离 compositor 门禁保持通过 |
-| Gemini 335 实机验收 | 未开始 | 需要连接设备和 Xorg 会话 |
+| 实现 | Task 1–8 范围内实现完成，等待 ABI 决策 | Task 8 已新增 Ubuntu 锁定依赖、只读聚合诊断与双语文档；诊断按设计因 Orbbec 2.8.6/wheel 库偏差非零退出 |
+| 自动化验证 | 完成（Task 8） | diagnostic unit 15 passed；non-hardware/non-X11 230 passed / 18 deselected；隔离 Xvfb 无/有 compositor 两组各 16 passed / 1 skipped；编译通过 |
+| Gemini 335 实机验收 | 部分完成 | 当前用户 Xorg 已验证；Orbbec 100 帧、关闭、重开、一帧通过；GUI、九点校准、输入、物理断开仍需人工验收 |
 
 ## 任务进度
 
@@ -73,10 +73,14 @@
 | Task 5：生产 pipeline 接入摄像头与桌面边界 | 完成（redesign final re-review clean） | controller/runtime 57 passed；camera/action 回归 90 passed；隔离 Xvfb 完整默认集合 170 passed / 1 deselected |
 | Task 6：受监督的 Xorg gaze overlay | 完成（external gate resolved） | process 36 passed；focused regression 126 passed；non-X11 192 passed / 18 deselected；isolated negative 1 passed；positive compositor 2 passed / 1 skipped；compositor 完整集合 208 passed / 1 skipped / 1 deselected |
 | Task 7：GUI 摄像头后端、预览与配置 roundtrip | 完成（final re-review fixes verified） | GUI/camera 56 passed；Task 5/6 ownership/overlay regression 149 passed；offscreen non-X11 215 passed / 18 deselected；static/scope/import gates 通过 |
+| Task 8：Ubuntu 依赖、诊断、文档与全量验证 | NEEDS_CONTEXT（ABI） | 诊断单测与自动化门禁通过，实机 RGB 通过；实际诊断诚实失败于设计指定 2.9.3 与 wheel 2.8.6/内置库偏差 |
 
 ## 当前工作
 
-Task 7 将 GUI 摄像头链路改为显式平台配置：Linux 后端选择直接调用 `list_cameras` / `open_camera`，Orbbec model/serial 与 V4L2 device label 的 backend/device ID 保存在 combo item data；preview 直接以 ndarray 的 BGR 通道、真实宽高和 stride 构造 `QImage`。backend 切换先在阻断信号时清空并禁用 device IDs，再尝试关闭旧 preview；close 失败保留原 camera/异常且不枚举、不打开、不重试。calibration/evaluation handoff 先关闭 GUI preview；确认新摄像头会终止持有旧 camera config 的 pipeline。camera enumeration/open/read、pipeline 初始化、calibration preview restart 和 desktop shutdown 的原异常 identity/traceback 可见且无 retry/fallback。YAML 保存直接在各层原 mapping 的深拷贝上覆盖 UI 所有字段，完整 hydration nullable path、screen size、颜色与 gaze bias；expression conditions 统一通过 `ExpressionRow.set_condition()` hydration，每个 row 自持 deep-copied origin mapping，删除/重排不会把未知 metadata 转移给相邻条件。保存保留各 section/expression condition/priority/key item 的未知嵌套键、未触碰值及 `camera_backend["win32"] == "opencv"`。desktop 仅由 `run_gui` 在应用启动/退出时 initialize/close，pipeline 所有权未改；GUI 顶层 `keyboard`/DirectShow 路径已移除。未修改 `learn/`，未开始 Task 8。
+Task 7 将 GUI 摄像头链路改为显式平台配置：Linux 后端选择直接调用 `list_cameras` / `open_camera`，Orbbec model/serial 与 V4L2 device label 的 backend/device ID 保存在 combo item data；preview 直接以 ndarray 的 BGR 通道、真实宽高和 stride 构造 `QImage`。backend 切换先在阻断信号时清空并禁用 device IDs，再尝试关闭旧 preview；close 失败保留原 camera/异常且不枚举、不打开、不重试。calibration/evaluation handoff 先关闭 GUI preview；确认新摄像头会终止持有旧 camera config 的 pipeline。camera enumeration/open/read、pipeline 初始化、calibration preview restart 和 desktop shutdown 的原异常 identity/traceback 可见且无 retry/fallback。YAML 保存直接在各层原 mapping 的深拷贝上覆盖 UI 所有字段，完整 hydration nullable path、screen size、颜色与 gaze bias；expression conditions 统一通过 `ExpressionRow.set_condition()` hydration，每个 row 自持 deep-copied origin mapping，删除/重排不会把未知 metadata 转移给相邻条件。保存保留各 section/expression condition/priority/key item 的未知嵌套键、未触碰值及 `camera_backend["win32"] == "opencv"`。desktop 仅由 `run_gui` 在应用启动/退出时 initialize/close，pipeline 所有权未改；GUI 顶层 `keyboard`/DirectShow 路径已移除。未修改 `learn/`；Task 8 状态见下段。
+
+Task 8 新增完全锁定的 `requirements-ubuntu.txt`，保留 Windows `requirements.txt` 不变，并排除 `pywin32`、`keyboard`、`pyautogui` 与 CUDA wheel。诊断逐项检查 Python、Linux、Xorg、DISPLAY、XTest、XFixes、按需 compositor、配置、模型文件、Orbbec 包/SDK/`ldd` 库来源和明确选择的摄像头；所有失败聚合并保留 traceback，无安装、重试、环境变量改写、udev 修改或后端回退。第三方 Orbbec 枚举会在当前目录写 `Log/OrbbecSDK.log.txt`，因此只把该枚举放进临时工作目录的子进程；结构化结果、stdout、stderr 和失败状态返回父进程，临时目录自动清理，实际诊断不再污染仓库。当前唯一诊断失败是批准设计要求的系统 SDK 2.9.3 与 `pyorbbecsdk2==2.1.1` wheel 实际 SDK 2.8.6/`$ORIGIN` 内置库偏差。
+
 
 ## 验证日志
 
@@ -228,6 +232,43 @@ Task 7 将 GUI 摄像头链路改为显式平台配置：Linux 后端选择直�
 | 2026-07-26 | Task 7 expression final re-review GREEN | setup 统一调用 `ExpressionRow.set_condition()`，row 自持 deep-copied origin，serialization 直接合并该 origin 与 UI-owned keys；同一 exact command：2 passed，0.46s。 |
 | 2026-07-26 | Task 7 expression final regression | GUI/camera 56 passed，3.28s；Task 5/6 149 passed，5.53s；完整 offscreen non-X11 215 passed / 18 deselected，5.79s；无 warning。 |
 | 2026-07-26 | Task 7 expression final static/bookkeeping | `py_compile`、diff/import/forbidden refs/learn/artifact/scope 均 exit 0；reviewed final head：`config_gui_cpu.py` 2553 行，GUI test 907 行 / 23 collected。 |
+
+| 2026-07-26 | Task 8 diagnostic RED | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .../python -m pytest tests/test_ubuntu_runtime_check.py -v`：exit 2，0 collected / 1 collection error；`ModuleNotFoundError: No module named scripts`。 |
+| 2026-07-26 | Task 8 diagnostic 首次 GREEN | 同一文件 14 passed，0.02s；覆盖成功、聚合 traceback、错误 Python、Wayland、无 DISPLAY、XTest/XFixes、compositor、模型、V4L2 选择与 Orbbec ABI。 |
+| 2026-07-26 | 初次实时诊断 | 当前用户 `DISPLAY=:1` 上 10 PASS / 1 FAIL，exit 1；唯一失败为 `pyorbbecsdk2=2.1.1`、SDK 2.8.6、wheel 内 `libOrbbecSDK.so.2`，而设计期望 `/usr/local/lib/libOrbbecSDK.so.2.9.3`；Gemini 335 型号、序列号 `CP0E85300058` 与 1 台设备检查通过。 |
+| 2026-07-26 | Orbbec 诊断副作用定位 | Context/设备枚举可复现生成仓库 `Log/OrbbecSDK.log.txt`；日志来自第三方 SDK device watcher/device creation，不是任务源文件，已移除。 |
+| 2026-07-26 | Orbbec 临时目录隔离 RED/GREEN | focused RED 1 failed：缺少 `query_orbbec_devices`；最小子进程/临时 cwd 修复后 focused 1 passed，完整 diagnostic 15 passed，0.02s。 |
+| 2026-07-26 | 实时诊断无污染复验 | 仍为 10 PASS / 1 ABI FAIL；随后 `git status --short` 仅列预期 Task 8 文件，`find . -maxdepth 1 -name Log` 无输出，无手工清理。 |
+| 2026-07-26 | Ubuntu requirements 与环境比对 | `pip check`：`No broken requirements found.`；16 个已安装锁定项全部精确匹配，显式要求的 `torchaudio==2.6.0+cpu` 当前未安装；未安装/升级任何包；Windows requirements SHA-256 保持 `6cc7a8fd64df6ee4dd1d70b1d11438108605320fe5519188c8d8e700b539b916`。 |
+| 2026-07-26 | 当前会话所有权 | `DISPLAY=:1`、`XDG_SESSION_TYPE=x11`、Xauthority `/run/user/1000/gdm/Xauthority`；Xorg PID 769526 与 GNOME Shell 均由 uid 1000 `yixiao` 所有。 |
+| 2026-07-26 | Gemini 335 显式硬件命令 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .../python -m pytest tests/test_orbbec_hardware.py --run-orbbec -v`：1 passed，8.48s；读取 100 帧、关闭、重开并再读 1 帧。 |
+| 2026-07-26 | OpenCV/V4L2 显式源检查 | 只调用 `open_camera(CameraConfig("opencv", 0, 1280, 720, 30), "linux")`；`/dev/video0` 打开、返回 `(720, 1280, 3) uint8 C-contiguous` 一帧并关闭，exit 0；未调用 Orbbec 后端或回退。当前 `/dev/video0`–`/dev/video7` 均标识为 Gemini 335，没有独立普通 USB 摄像头证据。 |
+| 2026-07-26 | Task 8 non-hardware/non-X11 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .../python -m pytest -m "not hardware and not x11" -v`：最终 fresh 230 passed / 18 deselected，5.76s。 |
+| 2026-07-26 | Task 8 exact isolated X11 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 xvfb-run -a .../python -m pytest -m x11 -v`：最终 fresh 16 passed / 1 skipped / 231 deselected，2.41s；通过无 compositor fail-fast，positive compositor 用例按条件跳过；未连接实时 `DISPLAY=:1`。 |
+| 2026-07-26 | Task 8 isolated positive compositor | 隔离 `xvfb-run` 内启动 `xcompmgr -a` 后运行完整 `-m x11`：最终 fresh 16 passed / 1 skipped / 231 deselected，2.35s；正向 overlay 通过，缺 compositor negative 按条件跳过；未连接实时 `DISPLAY=:1`。 |
+| 2026-07-26 | Task 8 compile | `.../python -m py_compile config_gui_cpu.py my_model_arch/cpu_fast/*.py my_model_arch/cpu_fast/desktop/*.py scripts/check_ubuntu_runtime.py`：exit 0。 |
+| 2026-07-26 | Task 8 最终 fresh verification | diagnostic unit 15 passed；non-hardware/non-X11 230 passed / 18 deselected；isolated X11 negative 16 passed / 1 skipped / 231 deselected；isolated X11 positive 16 passed / 1 skipped / 231 deselected；compile exit 0；实时 diagnostic 10 PASS / 1 ABI FAIL；Gemini hardware 1 passed，8.42s。硬件测试本身再次生成 7467-byte `Log/OrbbecSDK.log.txt`，记录后删除；诊断命令仍不生成该文件。 |
+
+## Task 8 实机会话验收
+
+1. **实时诊断：已执行但未通过。** Xorg、扩展、compositor、模型和摄像头均通过；ABI/库来源偏差使退出码为 1，未标记成功。
+2. **Orbbec 硬件：已执行。** 程序化型号/序列号检查与 100 帧、关闭、重开、一帧通过；这不等同于 GUI 人工预览确认。
+3. **GUI Gemini 335 label/serial 与 100 帧预览：未执行人工 GUI 验收。** 需要在 ABI 决策后启动 GUI，确认显示 `Orbbec Gemini 335 CP0E85300058`，预览持续至少 100 帧且关闭/重开正常。
+4. **OpenCV/V4L2：部分执行。** 显式 V4L2 `/dev/video0` 单帧路径通过且无 Orbbec SDK 回退；GUI 后端切换未人工确认，当前也没有独立普通 USB 摄像头，只有 Gemini 335 暴露的 V4L2 节点。
+5. **九点校准：未执行。** 需要完成全部九点并确认保存的回归模型可加载。
+6. **输入与 overlay：未执行实时人工验收。** 自动化只在隔离 Xvfb 验证。人工需逐项确认：凝视绝对/相对移动；左/右/中/X1/X2；滚动；按下/保持/释放；组合键；安全释放；表情映射；轮盘选择；透明、置顶、点击穿透、不抢焦点；ESC+Q 后无残留按键、按钮、overlay、摄像头或进程。
+7. **物理断开 Gemini 335：未执行。** 预览中拔出设备后必须显示原始 SDK 错误并终止当前操作，不得返回空帧、重试或切 V4L2。
+8. **非 root：已确认本次 Task 8 命令。** 所有记录的诊断、测试、摄像头与编译命令均由 uid 1000 执行且未使用 `sudo`；这不代替后续人工会话对命令历史的复核。
+
+## Orbbec ABI 决策选项
+
+ELF 证据：`pyorbbecsdk.cpython-311-x86_64-linux-gnu.so` 的 `NEEDED` 为 `libOrbbecSDK.so.2`，同时 `RUNPATH=$ORIGIN`；同目录 wheel 库 SONAME 也是 `libOrbbecSDK.so.2`，所以正常解析确定落到 wheel 内 2.8.6，而非已由 `ldconfig` 暴露的 `/usr/local/lib/libOrbbecSDK.so.2.9.3`。
+
+- **选项 A：修订批准设计，正式采用 wheel 内 SDK 2.8.6。** 现有 Gemini 335 RGB 硬件测试支持其可运行性，但必须由用户明确批准改变期望 SDK 版本和库来源，随后同步诊断与文档。
+- **选项 B：构建/安装与系统 SDK v2.9.3 链接的 Python 绑定。** 需要找到与 v2.9.3 API 匹配的绑定源码或维护版本，构建 cp311 扩展且不携带指向旧 wheel 库的 `$ORIGIN` 解析，安装到非 root 环境后重新运行 ABI、全量和硬件门禁；这会改变已批准绑定来源，需先确认。
+- **选项 C：使用明确包含 SDK 2.9.3 的其他官方兼容二进制绑定。** 若包名或版本不再是 `pyorbbecsdk2==2.1.1`，必须先修订锁定依赖和设计，再验证 `get_version()`、`ldd` 与硬件。
+
+禁止作为解决方案：`LD_LIBRARY_PATH`、`LD_PRELOAD`、替换 wheel 内库、修改系统库/软链接或把 2.8.6 偏差静默标为通过。
 
 
 ## 阻塞项

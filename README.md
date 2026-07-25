@@ -7,7 +7,7 @@
 [![arXiv](https://img.shields.io/badge/arXiv-2504.15101-b31b1b.svg)](https://arxiv.org/abs/2504.15101)
 [![Demo Video](https://img.shields.io/badge/Demo-Bilibili-00A1D6)](https://www.bilibili.com/video/BV1kKdYYVEEM/#reply270100925344)
 [![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
-[![Platform](https://img.shields.io/badge/Platform-Windows-green.svg)](https://www.microsoft.com/)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Ubuntu-blue.svg)](#-requirements)
 [![License](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc/4.0/)
 
 *A non-invasive computer control system that combines facial expression recognition, head movement tracking, and gaze estimation, designed for hands-free human-computer interaction.*
@@ -44,9 +44,9 @@ Traditional assistive technologies face significant limitations: invasive brain-
 
 | Component | Requirement | Description |
 |-----------|-------------|-------------|
-| 📷 **Camera** | Standard webcam | No special hardware needed |
+| 📷 **Camera** | Orbbec Gemini 335 or webcam | Orbbec SDK RGB or OpenCV/V4L2 |
 | 💻 **Processor** | CPU-only operation | No GPU required |
-| 🪟 **OS** | Windows | Other platforms may work but untested |
+| 🪟 **OS** | Windows or Ubuntu 24.04 Xorg | Wayland is not supported |
 
 ### ⭐ Key Features
 
@@ -104,7 +104,49 @@ The script will automatically:
 
 </details>
 
-### 🔧 Manual Environment Setup
+#### Ubuntu 24.04 Users (Xorg)
+
+At the login screen, select your account, use the gear menu, and choose
+**Ubuntu on Xorg** before signing in. NeuGaze does not support Wayland. The
+Ubuntu host must provide XTest, XFixes, an X11 compositing manager such as
+`xcompmgr` when the gaze overlay is required, `libxcb-cursor0`, and Orbbec SDK
+v2.9.3 plus its udev rules for Gemini 335. Installing system libraries or udev
+rules is a one-time administrator operation; normal NeuGaze diagnostics and
+runtime commands do not use `sudo`.
+
+From the repository root:
+
+```bash
+conda create -n neugaze python=3.11.11
+conda activate neugaze
+python -m pip install -r requirements-ubuntu.txt
+python scripts/check_ubuntu_runtime.py --config configs/cpu.yaml --require-overlay
+python config_gui_cpu.py
+```
+
+The diagnostic is read-only, prints every check, and exits nonzero if any
+prerequisite is wrong. Do not start the GUI until it exits zero. In particular,
+it verifies `pyorbbecsdk.get_version()` and the `ldd`-resolved
+`libOrbbecSDK`. If the binding reports a different SDK or resolves a bundled
+wheel library instead of the approved system v2.9.3 library, stop and resolve
+the binding/SDK decision. Do not use `LD_LIBRARY_PATH`, `LD_PRELOAD`, library
+replacement, or an automatic fallback to hide the mismatch.
+
+In the GUI, choose exactly one Linux camera backend:
+
+- **Orbbec SDK** enumerates model and serial information and uses the selected
+  Gemini 335 index.
+- **OpenCV / V4L2** uses the selected `/dev/videoN` device.
+
+A selected backend or device failure is reported directly; NeuGaze never
+switches to the other backend automatically. With a Gemini 335 connected, run
+the explicit 100-frame, close, reopen, and one-frame hardware check:
+
+```bash
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest tests/test_orbbec_hardware.py --run-orbbec -v
+```
+
+### 🔧 Manual Environment Setup (Windows)
 
 ```bash
 # Create and activate conda environment

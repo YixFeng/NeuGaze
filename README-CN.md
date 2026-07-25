@@ -7,7 +7,7 @@
 [![arXiv](https://img.shields.io/badge/arXiv-2504.15101-b31b1b.svg)](https://arxiv.org/abs/2504.15101)
 [![演示视频](https://img.shields.io/badge/Demo-Bilibili-00A1D6)](https://www.bilibili.com/video/BV1kKdYYVEEM/#reply270100925344)
 [![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
-[![Platform](https://img.shields.io/badge/Platform-Windows-green.svg)](https://www.microsoft.com/)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Ubuntu-blue.svg)](#-硬件要求)
 [![License](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc/4.0/)
 QQ 群 ：809133143
 *一个结合面部表情识别、头部动作追踪和凝视估计的非侵入式计算机控制系统，专为免手操作的人机交互而设计。*
@@ -48,9 +48,9 @@ QQ 群 ：809133143
 
 | 组件 | 要求 | 说明 |
 |------|------|------|
-| 📷 **摄像头** | 标准摄像头 | 无需特殊硬件 |
+| 📷 **摄像头** | Orbbec Gemini 335 或普通摄像头 | Orbbec SDK RGB 或 OpenCV/V4L2 |
 | 💻 **处理器** | 仅CPU运行 | 无需GPU |
-| 🪟 **操作系统** | Windows | 其他平台可能可用但未测试 |
+| 🪟 **操作系统** | Windows 或 Ubuntu 24.04 Xorg | 不支持 Wayland |
 
 ### ⭐ 核心特性
 
@@ -108,7 +108,45 @@ install.bat
 
 </details>
 
-### 🔧 手动环境配置
+#### Ubuntu 24.04 用户（Xorg）
+
+在登录界面选择用户后，点击齿轮菜单并选择 **Ubuntu on Xorg**，再进入
+桌面；NeuGaze 不支持 Wayland。Ubuntu 主机需要 XTest、XFixes；需要凝视
+透明层时还必须运行 `xcompmgr` 等 X11 合成管理器，并安装
+`libxcb-cursor0`。Gemini 335 需要 Orbbec SDK v2.9.3 和对应 udev 规则。
+系统库与 udev 规则属于一次性的管理员安装步骤；NeuGaze 日常诊断与运行
+命令不使用 `sudo`。
+
+在仓库根目录执行：
+
+```bash
+conda create -n neugaze python=3.11.11
+conda activate neugaze
+python -m pip install -r requirements-ubuntu.txt
+python scripts/check_ubuntu_runtime.py --config configs/cpu.yaml --require-overlay
+python config_gui_cpu.py
+```
+
+诊断脚本只读运行，逐项打印所有检查，并在任一前置条件错误时以非零状态
+退出。诊断退出 0 前不要启动 GUI。脚本会同时打印
+`pyorbbecsdk.get_version()` 和扩展经 `ldd` 实际解析到的
+`libOrbbecSDK`。如果绑定报告的 SDK 版本不符，或扩展加载的是 wheel 内置
+库而不是已批准的系统 v2.9.3 库，应先明确解决绑定与 SDK 决策；禁止用
+`LD_LIBRARY_PATH`、`LD_PRELOAD`、替换库文件或自动回退掩盖偏差。
+
+GUI 中必须明确选择一个 Linux 摄像头后端：
+
+- **Orbbec SDK**：枚举型号和序列号，并使用选中的 Gemini 335 索引；
+- **OpenCV / V4L2**：使用选中的 `/dev/videoN` 设备。
+
+后端或设备失败会直接显示；NeuGaze 不会自动切换到另一后端。连接
+Gemini 335 后，用以下显式命令验证读取 100 帧、关闭、重开并再读一帧：
+
+```bash
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest tests/test_orbbec_hardware.py --run-orbbec -v
+```
+
+### 🔧 手动环境配置（Windows）
 
 ```bash
 # 创建并激活conda环境
