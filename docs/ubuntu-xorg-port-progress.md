@@ -59,7 +59,7 @@
 | 设计文档 | 完成 | 摄像头后端修订提交 `62dc98a`，用户已批准 |
 | 实施计划 | 完成 | 8 个 TDD 任务已写入，提交 `6bf86ed`，待选择执行方式 |
 | 实现 | 进行中（Task 1–6 完成） | Task 6 formal-review Critical/Important findings 已修复；未开始 Task 7 |
-| 自动化验证 | 进行中 | Task 6 process 35 passed、focused regression 125 passed、完整 non-X11 191 passed / 18 deselected；正向 compositor 门禁受系统依赖阻塞 |
+| 自动化验证 | 进行中 | Task 6 process 36 passed、focused regression 126 passed、完整 non-X11 192 passed / 18 deselected；正向 compositor 门禁受系统依赖阻塞 |
 | Gemini 335 实机验收 | 未开始 | 需要连接设备和 Xorg 会话 |
 
 ## 任务进度
@@ -71,11 +71,11 @@
 | Task 3：平台中立动作与显式桌面选择 | 完成 | selector/action 17 个测试通过（含 cleanup/lifecycle 并发回归）；common modules 编译通过；完整默认测试 50 passed / 1 deselected |
 | Task 4：X11/XTest/XFixes 后端 | 完成（final safety re-review 修复） | 纯测试 49 passed；隔离 Xvfb 集成 14 passed；安全集合 99 passed / 15 deselected；Xvfb 完整默认集合 113 passed / 1 deselected |
 | Task 5：生产 pipeline 接入摄像头与桌面边界 | 完成（redesign final re-review clean） | controller/runtime 57 passed；camera/action 回归 90 passed；隔离 Xvfb 完整默认集合 170 passed / 1 deselected |
-| Task 6：受监督的 Xorg gaze overlay | 完成（formal-review fixes verified） | process 35 passed；focused regression 125 passed；non-X11 191 passed / 18 deselected；isolated negative 1 passed，positive compositor gate BLOCKED |
+| Task 6：受监督的 Xorg gaze overlay | 完成（formal-review fixes verified） | process 36 passed；focused regression 126 passed；non-X11 192 passed / 18 deselected；isolated negative 1 passed，positive compositor gate BLOCKED |
 
 ## 当前工作
 
-Task 6 formal review 的四个根因已直接修复：所有 acquisition/transport/join/close 进入同一 cleanup boundary，保留原异常 identity/traceback 并逐项尝试清理；存活 child 依次 terminate、bounded join、kill、bounded join，仍存活或 close 失败时保留句柄并以 note 报告；child 仅在 Qt loop 和 Queue shutdown 成功后发送 `stopped`，parent join 后继续 drain control messages；timer 在无新点时仍推进非空 history。实现保持单模块直接控制流、Linux lazy Win32 route 与 Task 5 边界，未新增 manager/factory/base 抽象。正向 compositor 集成仍被 `xcompmgr` 与 `libxcb-cursor0` 缺失阻塞，未用 offscreen、备用实现或实时 `DISPLAY=:1` 掩盖。
+Task 6 formal review 的四个根因已直接修复：所有 acquisition/transport/join/close 进入同一 cleanup boundary，保留原异常 identity/traceback 并逐项尝试清理；存活 child 依次 terminate、bounded join、kill、bounded join，仍存活或 close 失败时保留句柄并以 note 报告；child 仅在 Qt loop 和 Queue shutdown 成功后发送 `stopped`，parent join 后继续 drain control messages；timer 在无新点时仍推进非空 history。后续 re-review 的 compound-failure gap 也已修复：callback traceback 延迟到 child Queue cleanup 完成，若两者均失败则合并成一个 exact `("error", formatted_traceback)` tuple 且只发送一次。实现保持单模块直接控制流、Linux lazy Win32 route 与 Task 5 边界，未新增 manager/factory/base 抽象。正向 compositor 集成仍被 `xcompmgr` 与 `libxcb-cursor0` 缺失阻塞，未用 offscreen、备用实现或实时 `DISPLAY=:1` 掩盖。
 
 ## 验证日志
 
@@ -203,6 +203,9 @@ Task 6 formal review 的四个根因已直接修复：所有 acquisition/transpo
 | 2026-07-25 | Task 6 formal-review non-X11 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .../python -m pytest -m 'not x11' -q`：191 passed / 18 deselected，2.29s。 |
 | 2026-07-25 | Task 6 formal-review isolated X11 | missing-compositor gate 1 passed，0.12s；dependency-aware X11 file 1 passed / 2 skipped，0.16s；未连接实时 `DISPLAY=:1`。 |
 | 2026-07-25 | Task 6 formal-review compile/scope | `py_compile`、`git diff --check`、`learn/` scope 与 `.orig/.rej` artifact gates 均 exit 0；系统仍缺 `xcompmgr` 与 `libxcb-cursor.so.0`，正向 compositor 门禁继续 BLOCKED。 |
+| 2026-07-25 | Task 6 compound re-review RED/GREEN | callback + Queue-close compound 与 retained send-failure 聚焦 RED：2 failed；最小 deferred traceback 修复后，compound/adjacent 4 passed，1.96s，exactly one error tuple 同时包含两段 traceback。 |
+| 2026-07-25 | Task 6 compound re-review regression | process 36 passed，1.93s；overlay/controller/runtime/keyboard/camera 126 passed，2.08s；non-X11 192 passed / 18 deselected，2.32s。 |
+| 2026-07-25 | Task 6 compound re-review X11/static | isolated negative 1 passed，0.12s；dependency-aware 1 passed / 2 skipped，0.16s；`py_compile`、diff/scope/artifact gates exit 0；模块 534 行。 |
 
 
 ## 阻塞项

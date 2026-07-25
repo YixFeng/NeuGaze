@@ -190,6 +190,60 @@ def _overlay_with_fake_context(
     return GazeOverlay(), context
 
 
+def _install_callback_failure_qt(monkeypatch, control, events):
+    callback = {}
+
+    class FakeSignal:
+        def connect(self, function):
+            callback["run"] = function
+
+    class FakeTimer:
+        def __init__(self):
+            self.timeout = FakeSignal()
+
+        def start(self, interval):
+            pass
+
+        def stop(self):
+            events.append("timer.stop")
+
+    class FakeApp:
+        def __init__(self, arguments):
+            pass
+
+        def primaryScreen(self):
+            return SimpleNamespace(geometry=lambda: object())
+
+        def exec(self):
+            callback["run"]()
+            return 1
+
+        def exit(self, code):
+            events.append(("app.exit", code))
+
+        def quit(self):
+            pytest.fail("normal quit is not expected")
+
+    class FakeWidget:
+        def __init__(self, config):
+            pass
+
+        def setGeometry(self, geometry):
+            pass
+
+        def showFullScreen(self):
+            pass
+
+        def close(self):
+            events.append("widget.close")
+
+    control.poll_error = RuntimeError("callback poll failed")
+    monkeypatch.setattr(overlay_module, "_x11_compositor_owner_exists", lambda: True)
+    monkeypatch.setattr(overlay_module, "QApplication", FakeApp)
+    monkeypatch.setattr(overlay_module, "QTimer", FakeTimer)
+    monkeypatch.setattr(overlay_module, "_GazeOverlayWidget", FakeWidget)
+
+
 def test_start_uses_spawn_and_waits_for_exact_ready_handshake(monkeypatch):
     overlay, context = _overlay_with_fake_context(monkeypatch)
 
@@ -733,7 +787,7 @@ def test_child_shutdown_failure_sends_error_instead_of_stopped(monkeypatch):
     def fail_close():
         raise source_error
 
-    monkeypatch.setattr(overlay_module, "_run_qt_overlay", lambda *args: True)
+    monkeypatch.setattr(overlay_module, "_run_qt_overlay", lambda *args: None)
     point_queue = SimpleNamespace(close=fail_close)
     overlay_module._overlay_process_main(control, point_queue, {})
 
@@ -820,56 +874,37 @@ def test_point_queue_transport_error_preserves_identity_and_cleans_handles(monke
     assert context.point_queue.joined is True
 
 
+
+def test_callback_and_queue_cleanup_failures_use_one_error_message(monkeypatch):
+    control = FakeControl()
+    events = []
+    _install_callback_failure_qt(monkeypatch, control, events)
+    queue_error = OSError("child queue cleanup failed")
+
+    def fail_close():
+        raise queue_error
+
+    point_queue = SimpleNamespace(close=fail_close)
+    overlay_module._overlay_process_main(
+        control,
+        point_queue,
+        {"update_interval": 0.01},
+    )
+
+    assert events == ["timer.stop", "widget.close", ("app.exit", 1)]
+    assert control.closed is True
+    error_messages = [message for message in control.sent if message[0] == "error"]
+    assert len(error_messages) == 1
+    message_type, formatted_traceback = error_messages[0]
+    assert message_type == "error"
+    assert "RuntimeError: callback poll failed" in formatted_traceback
+    assert "OSError: child queue cleanup failed" in formatted_traceback
+
+
 def test_callback_error_send_failure_still_runs_every_qt_shutdown_step(monkeypatch):
     events = []
-    callback = {}
-
-    class FakeSignal:
-        def connect(self, function):
-            callback["run"] = function
-
-    class FakeTimer:
-        def __init__(self):
-            self.timeout = FakeSignal()
-
-        def start(self, interval):
-            pass
-
-        def stop(self):
-            events.append("timer.stop")
-
-    class FakeApp:
-        def __init__(self, arguments):
-            pass
-
-        def primaryScreen(self):
-            return SimpleNamespace(geometry=lambda: object())
-
-        def exec(self):
-            callback["run"]()
-            pytest.fail("callback error transport should escape")
-
-        def exit(self, code):
-            events.append(("app.exit", code))
-
-        def quit(self):
-            pytest.fail("normal quit is not expected")
-
-    class FakeWidget:
-        def __init__(self, config):
-            pass
-
-        def setGeometry(self, geometry):
-            pass
-
-        def showFullScreen(self):
-            pass
-
-        def close(self):
-            events.append("widget.close")
-
     control = FakeControl()
-    callback_error = RuntimeError("callback poll failed")
+    _install_callback_failure_qt(monkeypatch, control, events)
     send_error = BrokenPipeError("callback error transfer failed")
 
     def fail_error_send(message):
@@ -878,19 +913,14 @@ def test_callback_error_send_failure_still_runs_every_qt_shutdown_step(monkeypat
             raise send_error
 
     control.send = fail_error_send
-    control.poll_error = callback_error
-    monkeypatch.setattr(overlay_module, "_x11_compositor_owner_exists", lambda: True)
-    monkeypatch.setattr(overlay_module, "QApplication", FakeApp)
-    monkeypatch.setattr(overlay_module, "QTimer", FakeTimer)
-    monkeypatch.setattr(overlay_module, "_GazeOverlayWidget", FakeWidget)
-
     with pytest.raises(BrokenPipeError) as caught:
-        overlay_module._run_qt_overlay(
+        overlay_module._overlay_process_main(
             control,
-            SimpleNamespace(),
+            SimpleNamespace(close=lambda: None),
             {"update_interval": 0.01},
         )
 
     assert caught.value is send_error
     assert events == ["timer.stop", "widget.close", ("app.exit", 1)]
     assert [message[0] for message in control.sent] == ["ready", "error"]
+    assert control.closed is True

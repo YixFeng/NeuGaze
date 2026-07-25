@@ -136,13 +136,12 @@ def _run_qt_overlay(control_connection, point_queue, config):
     widget.showFullScreen()
 
     timer = QTimer()
-    callback_failed = False
+    callback_traceback = None
     stop_requested = False
 
     def fail_callback():
-        nonlocal callback_failed
-        callback_failed = True
-        formatted_traceback = traceback.format_exc()
+        nonlocal callback_traceback
+        callback_traceback = traceback.format_exc()
         shutdown_failures = []
         for label, operation in (
             ("timer stop", timer.stop),
@@ -154,10 +153,9 @@ def _run_qt_overlay(control_connection, point_queue, config):
             except BaseException:
                 shutdown_failures.append((label, traceback.format_exc()))
         for label, shutdown_traceback in shutdown_failures:
-            formatted_traceback += (
+            callback_traceback += (
                 f"\nDuring gaze overlay {label}:\n{shutdown_traceback}"
             )
-        control_connection.send(("error", formatted_traceback))
 
     def poll_parent():
         nonlocal stop_requested
@@ -191,38 +189,43 @@ def _run_qt_overlay(control_connection, point_queue, config):
     timer.start(max(1, round(config["update_interval"] * 1000)))
     control_connection.send(("ready", None))
     exit_code = app.exec()
-    if callback_failed:
-        return False
+    if callback_traceback is not None:
+        return callback_traceback
     if exit_code:
         raise RuntimeError(
             f"X11 gaze overlay event loop exited with code {exit_code}"
         )
     if not stop_requested:
         raise RuntimeError("X11 gaze overlay event loop exited before stop")
-    return True
+    return None
 
 
 def _overlay_process_main(control_connection, point_queue, config):
+    formatted_traceback = None
     try:
-        stopped = _run_qt_overlay(control_connection, point_queue, config)
+        formatted_traceback = _run_qt_overlay(
+            control_connection, point_queue, config
+        )
     except BaseException:
         formatted_traceback = traceback.format_exc()
-        try:
-            point_queue.close()
-        except BaseException:
+
+    try:
+        point_queue.close()
+    except BaseException:
+        queue_traceback = traceback.format_exc()
+        if formatted_traceback is None:
+            formatted_traceback = queue_traceback
+        else:
             formatted_traceback += (
                 "\nDuring gaze overlay queue cleanup:\n"
-                + traceback.format_exc()
+                + queue_traceback
             )
-        control_connection.send(("error", formatted_traceback))
-    else:
-        try:
-            point_queue.close()
-        except BaseException:
-            control_connection.send(("error", traceback.format_exc()))
+
+    try:
+        if formatted_traceback is None:
+            control_connection.send(("stopped", None))
         else:
-            if stopped:
-                control_connection.send(("stopped", None))
+            control_connection.send(("error", formatted_traceback))
     finally:
         control_connection.close()
 
