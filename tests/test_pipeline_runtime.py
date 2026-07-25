@@ -4,6 +4,7 @@ import inspect
 import queue
 import sys
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -452,6 +453,8 @@ def test_pipeline_has_no_live_platform_specific_input_dependency():
 
 def _run_one_action(pipeline, action):
     pipeline.sys_mode_list = []
+    pipeline.action_queue = queue.Queue()
+    pipeline.wheel = SimpleNamespace(stop=lambda: None)
     pipeline._execute_action(action)
 
 
@@ -829,6 +832,45 @@ def _initialize_redesigned_lifecycle(pipeline):
     pipeline.gaze_overlay = None
 
 
+class _CleanupHandoffRLock:
+    """Hand an armed outer release to a waiting cleanup thread."""
+
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._depth = threading.local()
+        self.cleanup_thread_id = None
+        self.cleanup_enter_attempted = threading.Event()
+        self.cleanup_finished = threading.Event()
+        self._handoff_armed = False
+        self._handoff_done = False
+
+    def arm_handoff(self):
+        self._handoff_armed = True
+
+    def __enter__(self):
+        if threading.get_ident() == self.cleanup_thread_id:
+            self.cleanup_enter_attempted.set()
+        self._lock.acquire()
+        depth = getattr(self._depth, "value", 0)
+        self._depth.value = depth + 1
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        depth = self._depth.value
+        outermost = depth == 1
+        self._depth.value = depth - 1
+        handoff = (
+            outermost
+            and self._handoff_armed
+            and not self._handoff_done
+        )
+        if handoff:
+            self._handoff_done = True
+        self._lock.release()
+        if handoff:
+            assert self.cleanup_finished.wait(1)
+
+
 def test_evaluation_boundary_drains_every_pending_action(monkeypatch):
     pipeline = _real_action_without_constructor()
     _initialize_redesigned_lifecycle(pipeline)
@@ -930,6 +972,82 @@ def test_final_action_failure_preserves_exception_object_and_traceback(
     assert pipeline.action_queue.empty()
 
 
+@pytest.mark.parametrize("failure_path", ["queued", "direct"])
+def test_action_failure_stops_wheel_and_discards_post_failure_callback(
+    monkeypatch,
+    failure_path,
+):
+    pipeline = _real_action_without_constructor()
+    _initialize_redesigned_lifecycle(pipeline)
+    pipeline.sys_mode_list = []
+    pipeline.quit = False
+    pipeline.end_calibration_signal = False
+    pipeline.camera = None
+    pipeline.destroy_window = lambda: None
+    executed = []
+    source_error = OSError("first action failed")
+    cleanup_error = RuntimeError("wheel stop failed after join")
+    source_traceback = []
+
+    def fail():
+        try:
+            raise source_error
+        except OSError as error:
+            source_traceback.append(error.__traceback__)
+            raise
+
+    class LateActionWheel:
+        def __init__(self):
+            self.stop_calls = 0
+
+        def stop(self):
+            self.stop_calls += 1
+            if self.stop_calls == 1:
+                pipeline.action_queue.put(
+                    SimpleNamespace(
+                        keyname="late",
+                        execute=lambda: executed.append("late"),
+                    )
+                )
+                raise cleanup_error
+
+    pipeline.wheel = LateActionWheel()
+    monkeypatch.setattr(desktop, "supports_key", lambda key: True)
+
+    failing_action = SimpleNamespace(
+        keyname="failing",
+        execute=fail,
+    )
+    if failure_path == "queued":
+        pipeline.action_queue.put(failing_action)
+        fail_action = pipeline._drain_actions
+    else:
+        fail_action = lambda: pipeline._execute_action(
+            failing_action
+        )
+
+    try:
+        fail_action()
+    except BaseException as error:
+        with pytest.raises(OSError) as caught:
+            pipeline.quit_pipeline(error)
+
+    assert caught.value is source_error
+    traceback = caught.value.__traceback__
+    traceback_chain = []
+    while traceback is not None:
+        traceback_chain.append(traceback)
+        traceback = traceback.tb_next
+    assert source_traceback[0] in traceback_chain
+    assert executed == []
+    assert pipeline.action_queue.empty()
+    assert pipeline.wheel.stop_calls == 2
+    assert any(
+        "wheel.stop" in note and "wheel stop failed after join" in note
+        for note in source_error.__notes__
+    )
+
+
 def test_run_start_racing_terminal_quit_cannot_start_resources(
     monkeypatch,
 ):
@@ -996,6 +1114,104 @@ def test_run_start_racing_terminal_quit_cannot_start_resources(
     assert pipeline.camera is None
 
 
+@pytest.mark.parametrize(
+    "entrypoint,start_with_calibration,consumer_name",
+    [
+        ("start_evaluation", False, "evaluate"),
+        ("start_calibration", False, "calibrate"),
+        ("demo", False, "evaluate"),
+        ("demo", True, "calibrate"),
+    ],
+)
+def test_terminal_cleanup_waits_for_first_camera_consuming_boundary(
+    monkeypatch,
+    entrypoint,
+    start_with_calibration,
+    consumer_name,
+):
+    class Camera:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    camera = Camera()
+    pipeline = _pipeline_without_constructor()
+    _configure_public_run(pipeline, camera)
+    lifecycle_lock = _CleanupHandoffRLock()
+    pipeline._lifecycle_lock = lifecycle_lock
+    pipeline.start_with_calibration = start_with_calibration
+    boundary_entered = threading.Event()
+    allow_boundary_return = threading.Event()
+
+    def pause_after_authorization():
+        with lifecycle_lock:
+            boundary_entered.set()
+            assert allow_boundary_return.wait(1)
+
+    if entrypoint == "start_calibration":
+        pipeline.setup_window = pause_after_authorization
+    else:
+        pipeline.call_before_while_loop = pause_after_authorization
+    uses = []
+    run_errors = []
+    cleanup_errors = []
+
+    def consume(camera_argument, *args, **kwargs):
+        uses.append(
+            (
+                consumer_name,
+                camera_argument,
+                None if camera_argument is None else camera_argument.closed,
+            )
+        )
+        if consumer_name == "evaluate":
+            pipeline.end_calibration_signal = True
+
+    pipeline.evaluate = consume
+    pipeline.calibrate = consume
+    monkeypatch.setattr(pipeline_module.cv2, "waitKey", lambda delay: 0)
+    monkeypatch.setattr(desktop, "are_keys_down", lambda keys: False)
+    monkeypatch.setattr(desktop, "release_all", lambda: None)
+
+    def run_public_entrypoint():
+        try:
+            getattr(pipeline, entrypoint)()
+        except BaseException as error:
+            run_errors.append(error)
+
+    def run_cleanup():
+        lifecycle_lock.cleanup_thread_id = threading.get_ident()
+        try:
+            pipeline.quit_pipeline()
+        except BaseException as error:
+            cleanup_errors.append(error)
+        finally:
+            lifecycle_lock.cleanup_finished.set()
+
+    run_thread = threading.Thread(target=run_public_entrypoint)
+    run_thread.start()
+    assert boundary_entered.wait(1)
+
+    cleanup_thread = threading.Thread(target=run_cleanup)
+    cleanup_thread.start()
+    assert lifecycle_lock.cleanup_enter_attempted.wait(1)
+    lifecycle_lock.arm_handoff()
+    allow_boundary_return.set()
+    run_thread.join(2)
+    cleanup_thread.join(2)
+
+    assert not run_thread.is_alive()
+    assert not cleanup_thread.is_alive()
+    assert run_errors == []
+    assert cleanup_errors == []
+    assert uses == []
+    assert camera.closed is True
+    assert pipeline.camera is None
+    assert pipeline.quit is True
+
+
 def test_explicit_quit_stops_demo_before_another_evaluation(monkeypatch):
     pipeline = _pipeline_without_constructor()
     pipeline.camera = SimpleNamespace(close=lambda: None)
@@ -1014,6 +1230,7 @@ def test_explicit_quit_stops_demo_before_another_evaluation(monkeypatch):
     allow_evaluation_return = threading.Event()
     evaluation_calls = 0
     run_errors = []
+    cleanup_errors = []
 
     def evaluate(camera):
         nonlocal evaluation_calls
@@ -1035,17 +1252,31 @@ def test_explicit_quit_stops_demo_before_another_evaluation(monkeypatch):
         except BaseException as error:
             run_errors.append(error)
 
+    def run_cleanup():
+        try:
+            pipeline.quit_pipeline()
+        except BaseException as error:
+            cleanup_errors.append(error)
+
     run_thread = threading.Thread(target=run_demo)
     run_thread.start()
     assert evaluation_entered.wait(1)
 
-    pipeline.quit_pipeline()
+    cleanup_thread = threading.Thread(target=run_cleanup)
+    cleanup_thread.start()
+    deadline = time.monotonic() + 1
+    while not pipeline.quit and time.monotonic() < deadline:
+        time.sleep(0.001)
+    assert pipeline.quit is True
     allow_evaluation_return.set()
-    run_thread.join(1)
+    run_thread.join(2)
+    cleanup_thread.join(2)
 
     assert not run_thread.is_alive()
+    assert not cleanup_thread.is_alive()
     assert evaluation_calls == 1
     assert run_errors == []
+    assert cleanup_errors == []
 
 
 def test_wheel_stop_requests_tk_destroy_and_joins_stored_thread(

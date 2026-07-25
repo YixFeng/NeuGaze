@@ -58,8 +58,8 @@
 | 设计评审 | 完成 | 用户分三部分批准设计 |
 | 设计文档 | 完成 | 摄像头后端修订提交 `62dc98a`，用户已批准 |
 | 实施计划 | 完成 | 8 个 TDD 任务已写入，提交 `6bf86ed`，待选择执行方式 |
-| 实现 | 进行中（Task 1–4 完成；Task 5 redesign 待 formal review） | Task 5 已按用户批准的简化生命周期重构；新 formal review 通过前不标记完成 |
-| 自动化验证 | 进行中 | Task 5 redesign：controller/runtime 51 passed、要求的回归集合 84 passed、隔离 Xvfb 完整默认集合 164 passed / 1 deselected |
+| 实现 | 进行中（Task 1–4 完成；Task 5 formal-review fixes 待复审） | Task 5 redesign 的 Critical/Important review findings 已修复；clean re-review 前不标记完成 |
+| 自动化验证 | 进行中 | Task 5 formal-review fixes：controller/runtime 57 passed、要求的回归集合 90 passed、隔离 Xvfb 完整默认集合 170 passed / 1 deselected |
 | Gemini 335 实机验收 | 未开始 | 需要连接设备和 Xorg 会话 |
 
 ## 任务进度
@@ -70,11 +70,13 @@
 | Task 2：Fail-fast OpenCV/V4L2 与 Orbbec RGB 源 | 完成（有 SDK ABI 偏差） | 33 个 Task 1/2 单元测试通过；Gemini 335 读取 100 帧、关闭、重开后再读 1 帧通过 |
 | Task 3：平台中立动作与显式桌面选择 | 完成 | selector/action 17 个测试通过（含 cleanup/lifecycle 并发回归）；common modules 编译通过；完整默认测试 50 passed / 1 deselected |
 | Task 4：X11/XTest/XFixes 后端 | 完成（final safety re-review 修复） | 纯测试 49 passed；隔离 Xvfb 集成 14 passed；安全集合 99 passed / 15 deselected；Xvfb 完整默认集合 113 passed / 1 deselected |
-| Task 5：生产 pipeline 接入摄像头与桌面边界 | 进行中（redesign 已实现，待 formal review） | controller/runtime 51 passed；camera/action 回归 84 passed；隔离 Xvfb 完整默认集合 164 passed / 1 deselected |
+| Task 5：生产 pipeline 接入摄像头与桌面边界 | 进行中（formal-review fixes 已实现，待 clean re-review） | controller/runtime 57 passed；camera/action 回归 90 passed；隔离 Xvfb 完整默认集合 170 passed / 1 deselected |
 
 ## 当前工作
 
 Task 5 第三轮 review 判定 persistent action worker、condition/token generation 协议和匿名 Tk thread 仍有边界竞态，旧“已完成”结论失效。用户批准的 redesign 已移除该协议：`queue.Queue` 仅承担 wheel/Tk callback 到 evaluation thread 的窄交接；evaluation 每个边界同步 drain 全部动作；normal finish 与 terminal quit 都先停止并 join wheel producer，再 drain 最终动作，动作失败保留同一异常对象和 traceback，队列不跨 reusable run。wheel 现在有显式 `start()`/`stop()`、存储的 non-daemon thread 和每轮重置状态，`stop()` 通过 Tk `root.after(0, root.destroy)` 请求销毁并 join。一个直接 `threading.RLock` 串行化 public start、normal finish 与 terminal cleanup，防止 terminal quit 后资源复活；normal completion 保持可复用，explicit quit/cancellation/error 保持 terminal。camera 仍由 pipeline 独占且 `self.camera` 是唯一 frame source；desktop 仍由应用拥有，pipeline 不 initialize/close，只在 terminal cleanup 调用 `release_all()`。Windows desktop 与 lazy overlay 路径继续保留，Linux 无 live Win32 import。新 focused、要求的回归和隔离 Xvfb 全量集合均通过，但 Task 5 在新的 formal review clean 前保持“进行中”。
+
+本轮 formal review 返回 Needs fixes：Action 失败后 wheel 仍可能提交迟到动作并在 terminal cleanup 中被执行；public run 释放 lifecycle lock 后，terminal cleanup 可能在首个 `evaluate`/`calibrate` 前关闭 camera。修复后，queued 和 direct Action 共用同一失败边界：先 stop/join wheel producer，再 discard 队列，原 Action 异常对象/traceback 保持 primary，stop/discard 失败以 note 暴露。`quit_pipeline()` 先发布 terminal 信号，再等待同一个 RLock 做 cleanup；evaluation、standalone calibration 与 demo 的 camera-consuming boundary 在锁内检查 terminal，因此 active consumer 完成前 camera 不会关闭，而外部 quit 无需等到拿锁才发出终止信号。review 的 Minor source-string-test 建议按要求不在本轮实现，留待 final branch review ledger。
 
 ## 验证日志
 
@@ -174,6 +176,15 @@ Task 5 第三轮 review 判定 persistent action worker、condition/token genera
 | 2026-07-25 | Task 5 redesign focused GREEN | `tests/test_gaze_mouse_controller.py tests/test_pipeline_runtime.py -v`：51 passed，1.91s |
 | 2026-07-25 | Task 5 redesign camera/action 回归 GREEN | `tests/test_gaze_mouse_controller.py tests/test_pipeline_runtime.py tests/test_keyboard_actions.py tests/test_camera_sources.py -v`：84 passed，1.92s |
 | 2026-07-25 | Task 5 redesign 隔离完整默认集合 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 xvfb-run -a ... -m pytest -v`：164 passed / 1 deselected，2.47s；未连接实时 `DISPLAY=:1` |
+
+| 2026-07-25 | Task 5 redesign formal review | Needs fixes：Critical 为 Action failure 后迟到 wheel action 被 terminal drain 执行；Important 为首个 camera consumer 前 cleanup 可关闭资源；Minor source-string-test 建议按要求 deferred 到 final branch review |
+| 2026-07-25 | formal-review fix Action RED | queued 路径 1 failed，1.85s：`executed == ['late']`；queued fix 后 direct 路径再 1 failed，1.90s：同样执行迟到 action |
+| 2026-07-25 | formal-review fix Action GREEN | queued/final-boundary adjacent 3 passed，1.84s；统一 direct/queued Action boundary 与 hotkey 异常回归 4 passed，1.86s |
+| 2026-07-25 | formal-review fix startup RED | evaluation、standalone calibration、demo evaluate/calibrate 的确定性交错 4 failed，1.90s；consumer 全部收到 cleanup 后的 `None` camera |
+| 2026-07-25 | formal-review fix startup GREEN | 四条 first-consumer 交错、active demo external quit 与既有 start/quit race 共 6 passed，1.82s；terminal signal 在等待 RLock cleanup 前发布 |
+| 2026-07-25 | formal-review fix focused/regression GREEN | controller/runtime 57 passed，1.94s；controller/runtime/keyboard/camera 90 passed，1.93s |
+| 2026-07-25 | formal-review fix 隔离完整默认集合 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 xvfb-run -a ... -m pytest -v`：170 passed / 1 deselected，2.42s；未连接实时 `DISPLAY=:1` |
+| 2026-07-25 | formal-review fix compile/diff/scope gate | `pipeline.py` 与 `test_pipeline_runtime.py` `py_compile` 通过；`git diff --check` exit 0；旧 worker/token 名称仅存在于 absence test；无 live Win32 import、无 `learn/` diff、无 `.orig/.rej` |
 
 ## 阻塞项
 

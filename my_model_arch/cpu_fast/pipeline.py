@@ -1300,11 +1300,14 @@ class IntegratedRegressionMediaPipeline:
                     raise RuntimeError("pipeline has been shut down")
                 if self.camera is None:
                     self.start_service()
-            self.setup_window()
-            cv2.waitKey(2000)
-            self.calibrate(self.camera)
-            self.is_calibrating = False
-            cancelled = self.quit
+                self.setup_window()
+                cv2.waitKey(2000)
+                if self.quit:
+                    cancelled = True
+                else:
+                    self.calibrate(self.camera)
+                self.is_calibrating = False
+                cancelled = cancelled or self.quit
             if not cancelled:
                 self._finish_run()
         except BaseException as error:
@@ -1319,22 +1322,29 @@ class IntegratedRegressionMediaPipeline:
 
     def start_evaluation(self):
         try:
-            with self._lifecycle_lock:
-                if self.quit:
-                    raise RuntimeError("pipeline has been shut down")
-                if self.camera is None:
-                    self.start_service()
-                self.end_calibration_signal = False
-                self.call_before_while_loop()
             count = 0
             tl = []
+            first_iteration = True
             while True:
-                t_start = time.time()
-                if self.render_in_eval and len(self.open_windows) == 0:
-                    self.setup_window()
-                self.evaluate(self.camera)
+                with self._lifecycle_lock:
+                    if first_iteration:
+                        if self.quit:
+                            raise RuntimeError("pipeline has been shut down")
+                        if self.camera is None:
+                            self.start_service()
+                        self.end_calibration_signal = False
+                        self.call_before_while_loop()
+                    if self.quit:
+                        break
+                    t_start = time.time()
+                    if self.render_in_eval and len(self.open_windows) == 0:
+                        self.setup_window()
+                    self.evaluate(self.camera)
+                first_iteration = False
+                if self.quit:
+                    break
                 cv2.waitKey(1)
-                if self.end_calibration_signal:
+                if self.quit or self.end_calibration_signal:
                     break
                 t_end = time.time()
                 count += 1
@@ -1342,7 +1352,10 @@ class IntegratedRegressionMediaPipeline:
                 used_tl = tl[-60:]
                 per_duration = sum(used_tl) / len(used_tl)
                 self.FPS = 1 / per_duration
-                self.call_after_each_eval_loop()
+                with self._lifecycle_lock:
+                    if self.quit:
+                        break
+                    self.call_after_each_eval_loop()
             with self._lifecycle_lock:
                 if not self.quit:
                     self.call_after_while_loop()
@@ -1352,12 +1365,12 @@ class IntegratedRegressionMediaPipeline:
 
     def quit_pipeline(self, primary_error: BaseException | None = None):
         """Stop pipeline-owned resources without closing the shared desktop."""
+        self.quit = True
+        self.end_calibration_signal = True
         with self._lifecycle_lock:
             primary_traceback = (
                 primary_error.__traceback__ if primary_error is not None else None
             )
-            self.quit = True
-            self.end_calibration_signal = True
 
             cleanup_errors = []
 
@@ -1435,33 +1448,45 @@ class IntegratedRegressionMediaPipeline:
     def demo(self):
         cancelled = False
         try:
-            with self._lifecycle_lock:
-                if self.quit:
-                    raise RuntimeError("pipeline has been shut down")
-                if self.camera is None:
-                    self.start_service()
-                self.call_before_while_loop()
             is_calibrating = self.start_with_calibration
             is_testing = False
             count = 0
             tl = []
+            first_iteration = True
             while True:
-                t_start = time.time()
-                if is_calibrating:
-                    print("start calibrating")
-                    self.setup_window()
-                    cv2.waitKey(2000)
-                    self.calibrate(self.camera, test_mode=is_testing)
+                with self._lifecycle_lock:
+                    if first_iteration:
+                        if self.quit:
+                            raise RuntimeError("pipeline has been shut down")
+                        if self.camera is None:
+                            self.start_service()
+                        self.call_before_while_loop()
                     if self.quit:
                         cancelled = True
                         break
-                    is_calibrating = False
-                    is_testing = False
-                    self.destroy_window()
-                else:
-                    if self.render_in_eval and len(self.open_windows) == 0:
+                    t_start = time.time()
+                    if is_calibrating:
+                        print("start calibrating")
                         self.setup_window()
-                    self.evaluate(self.camera)
+                        cv2.waitKey(2000)
+                        if self.quit:
+                            cancelled = True
+                            break
+                        self.calibrate(self.camera, test_mode=is_testing)
+                        if self.quit:
+                            cancelled = True
+                            break
+                        is_calibrating = False
+                        is_testing = False
+                        self.destroy_window()
+                    else:
+                        if self.render_in_eval and len(self.open_windows) == 0:
+                            self.setup_window()
+                        self.evaluate(self.camera)
+                first_iteration = False
+                if self.quit:
+                    cancelled = True
+                    break
                 cv2.waitKey(1)
                 if self.quit:
                     cancelled = True
@@ -1484,7 +1509,11 @@ class IntegratedRegressionMediaPipeline:
                 print(
                     f"FPS: {self.FPS:.2f} duration: {per_duration:.2f}"
                 )
-                self.call_after_each_eval_loop()
+                with self._lifecycle_lock:
+                    if self.quit:
+                        cancelled = True
+                        break
+                    self.call_after_each_eval_loop()
             with self._lifecycle_lock:
                 if not cancelled and not self.quit:
                     self.call_after_while_loop()
@@ -2487,21 +2516,20 @@ class RealAction(BindKeys):
             )
             self.gaze_mouse_controller.start()
 
+    def _discard_actions(self):
+        while True:
+            try:
+                self.action_queue.get_nowait()
+            except queue.Empty:
+                return
+
     def _drain_actions(self):
         while True:
             try:
                 action = self.action_queue.get_nowait()
             except queue.Empty:
                 return
-            try:
-                self._execute_action(action)
-            except BaseException:
-                while True:
-                    try:
-                        self.action_queue.get_nowait()
-                    except queue.Empty:
-                        break
-                raise
+            self._execute_action(action)
 
     def _finish_run(self):
         with self._lifecycle_lock:
@@ -2627,6 +2655,26 @@ class RealAction(BindKeys):
                 quit()
 
     def _execute_action(self, action):
+        try:
+            return self._execute_action_once(action)
+        except BaseException as error:
+            try:
+                self.wheel.stop()
+            except BaseException as cleanup_error:
+                error.add_note(
+                    "wheel.stop after action failure failed with "
+                    f"{type(cleanup_error).__name__}: {cleanup_error}"
+                )
+            try:
+                self._discard_actions()
+            except BaseException as cleanup_error:
+                error.add_note(
+                    "action discard after action failure failed with "
+                    f"{type(cleanup_error).__name__}: {cleanup_error}"
+                )
+            raise
+
+    def _execute_action_once(self, action):
         if action is None or action.keyname is None:
             return
 
