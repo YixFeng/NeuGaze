@@ -1260,7 +1260,6 @@ class ConfigWindow(QMainWindow):
 
             original_expression = original_expressions.get(expr_name, {})
             expression = copy.deepcopy(original_expression)
-            original_conditions = original_expression.get('conditions', [])
             conditions = []
             layout = conditions_widget.layout()
             if layout:
@@ -1272,10 +1271,9 @@ class ConfigWindow(QMainWindow):
                     if not isinstance(condition_widget, ExpressionRow):
                         continue
 
-                    if j < len(original_conditions):
-                        condition = copy.deepcopy(original_conditions[j])
-                    else:
-                        condition = {}
+                    condition = copy.deepcopy(
+                        condition_widget.origin_condition
+                    )
                     for field in condition_fields:
                         condition.pop(field, None)
                     condition.update(condition_widget.get_condition())
@@ -2030,17 +2028,8 @@ class ConfigWindow(QMainWindow):
             # 添加现有条件
             for condition in expr_config.get('conditions', []):
                 row = ExpressionRow()
-                row.expression_combo.setCurrentText(condition['feature'])
-                row.operator_combo.setCurrentText(condition['operator'])
-                
-                # 根据操作符类型设置值
-                if condition['operator'] == 'BETWEEN':
-                    row.threshold_spin.setValue(float(condition.get('min', 0)))
-                elif condition['operator'].startswith('DIFF'):
-                    row.threshold_spin.setValue(float(condition.get('threshold', 0)))
-                else:
-                    row.threshold_spin.setValue(float(condition.get('threshold', 0)))
-                
+                row.set_condition(condition)
+
                 # 连接删除按钮
                 row.delete_btn.clicked.connect(lambda _, w=row: w.deleteLater())
                 conditions_layout.addWidget(row)
@@ -2402,6 +2391,7 @@ class NoWheelComboBox(QComboBox):
 class ExpressionRow(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.origin_condition = {}
         layout = QHBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
         
@@ -2515,6 +2505,7 @@ class ExpressionRow(QWidget):
 
     def set_condition(self, condition):
         """设置条件配置"""
+        self.origin_condition = copy.deepcopy(condition)
         self.expression_combo.setCurrentText(condition['feature'])
         self.operator_combo.setCurrentText(condition['operator'])
         

@@ -11,7 +11,7 @@ import yaml
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QSize
+from PySide6.QtCore import QEvent, QSize
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 import config_gui_cpu as gui
@@ -131,6 +131,24 @@ def combo_index(combo, data):
         if combo.itemData(index) == data:
             return index
     raise AssertionError(f"{data!r} is not present in combo")
+
+
+def expression_rows(window, expression_name):
+    root = window.expression_tree.invisibleRootItem()
+    for index in range(root.childCount()):
+        expression_item = root.child(index)
+        if expression_item.text(0) != expression_name:
+            continue
+        container = window.expression_tree.itemWidget(expression_item, 1)
+        layout = container.layout()
+        return [
+            layout.itemAt(row_index).widget()
+            for row_index in range(layout.count())
+            if isinstance(layout.itemAt(row_index).widget(), gui.ExpressionRow)
+        ]
+    raise AssertionError(
+        f"{expression_name!r} is not present in expression tree"
+    )
 
 
 def test_linux_backend_combo_defaults_to_yaml_orbbec(window_factory):
@@ -616,6 +634,122 @@ def test_save_roundtrip_changes_only_camera_and_edited_hydrated_widgets(
         saved_after_edit["integrated_config"]["regression_model_path"]
         == "model_weights/new/model.pkl"
     )
+
+
+def test_expression_between_and_diff_conditions_roundtrip_exactly(
+    window_factory, config_mapping, tmp_path
+):
+    original = copy.deepcopy(config_mapping)
+    expression_config = original["expression_evaluator_config"]
+    expression_config["future_expression_section"] = {"keep": [1, 2]}
+    expression_config["priority_rules"][0]["future_priority"] = {
+        "keep": [3, 4],
+    }
+    expression_config["expressions"]["review_complex"] = {
+        "combine": "OR",
+        "future_expression": {"keep": [5, 6]},
+        "conditions": [
+            {
+                "feature": "jawOpen",
+                "operator": "BETWEEN",
+                "min": 0.25,
+                "max": 0.75,
+                "future_condition": {"origin": "between"},
+            },
+            {
+                "feature": "mouthSmileLeft",
+                "operator": "DIFF>",
+                "threshold": 0.35,
+                "compare_to": "jawRight",
+                "future_condition": {"origin": "diff"},
+            },
+        ],
+    }
+    window, _ = window_factory(mapping=original)
+    rows = expression_rows(window, "review_complex")
+
+    assert [row.get_condition() for row in rows] == [
+        {
+            "feature": "jawOpen",
+            "operator": "BETWEEN",
+            "min": 0.25,
+            "max": 0.75,
+        },
+        {
+            "feature": "mouthSmileLeft",
+            "operator": "DIFF>",
+            "threshold": 0.35,
+            "compare_to": "jawRight",
+        },
+    ]
+    assert not rows[0].min_spin.isHidden()
+    assert not rows[0].max_spin.isHidden()
+    assert rows[0].threshold_spin.isHidden()
+    assert rows[0].compare_to_combo.isHidden()
+    assert rows[1].min_spin.isHidden()
+    assert rows[1].max_spin.isHidden()
+    assert not rows[1].threshold_spin.isHidden()
+    assert not rows[1].compare_to_combo.isHidden()
+    output_path = tmp_path / "expression-roundtrip.yaml"
+
+    window.save_config_to_file(output_path)
+
+    saved = yaml.safe_load(output_path.read_text(encoding="utf-8"))
+    assert (
+        saved["expression_evaluator_config"]
+        == original["expression_evaluator_config"]
+    )
+
+
+def test_deleting_expression_condition_keeps_survivor_origin_metadata(
+    app, window_factory, config_mapping, tmp_path
+):
+    original = copy.deepcopy(config_mapping)
+    expression_config = original["expression_evaluator_config"]
+    expression_config["future_expression_section"] = {"keep": [1, 2]}
+    expression_config["priority_rules"][0]["future_priority"] = {
+        "keep": [3, 4],
+    }
+    expression_config["expressions"]["review_delete"] = {
+        "combine": "AND",
+        "future_expression": {"keep": [5, 6]},
+        "conditions": [
+            {
+                "feature": "jawLeft",
+                "operator": ">",
+                "threshold": 0.2,
+                "future_condition": {"origin": "deleted"},
+            },
+            {
+                "feature": "jawRight",
+                "operator": "<",
+                "threshold": 0.6,
+                "future_condition": {"origin": "survivor"},
+            },
+        ],
+    }
+    window, _ = window_factory(mapping=original)
+    rows = expression_rows(window, "review_delete")
+
+    rows[0].delete_btn.click()
+    QApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+    app.processEvents()
+    assert expression_rows(window, "review_delete") == [rows[1]]
+    output_path = tmp_path / "expression-delete.yaml"
+
+    window.save_config_to_file(output_path)
+
+    saved = yaml.safe_load(output_path.read_text(encoding="utf-8"))
+    expected = copy.deepcopy(expression_config)
+    expected["expressions"]["review_delete"]["conditions"] = [
+        {
+            "feature": "jawRight",
+            "operator": "<",
+            "threshold": 0.6,
+            "future_condition": {"origin": "survivor"},
+        }
+    ]
+    assert saved["expression_evaluator_config"] == expected
 
 
 def test_calibration_restart_error_is_shown_once_and_propagates_same_object(

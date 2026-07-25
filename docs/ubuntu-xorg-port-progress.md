@@ -59,7 +59,7 @@
 | 设计文档 | 完成 | 摄像头后端修订提交 `62dc98a`，用户已批准 |
 | 实施计划 | 完成 | 8 个 TDD 任务已写入，提交 `6bf86ed`，待选择执行方式 |
 | 实现 | 进行中（Task 1–7 完成） | Task 7 GUI 已接入显式 camera backend、直接 BGR preview、应用级 desktop 生命周期与配置 roundtrip；未开始 Task 8 |
-| 自动化验证 | 进行中 | Task 7 formal-review 修复后 camera regression 54 passed、Task 5/6 focused regression 147 passed、完整 offscreen non-X11 213 passed / 18 deselected；Task 6 隔离 compositor 门禁保持通过 |
+| 自动化验证 | 进行中 | Task 7 final re-review 修复后 camera regression 56 passed、Task 5/6 focused regression 149 passed、完整 offscreen non-X11 215 passed / 18 deselected；Task 6 隔离 compositor 门禁保持通过 |
 | Gemini 335 实机验收 | 未开始 | 需要连接设备和 Xorg 会话 |
 
 ## 任务进度
@@ -72,11 +72,11 @@
 | Task 4：X11/XTest/XFixes 后端 | 完成（final safety re-review 修复） | 纯测试 49 passed；隔离 Xvfb 集成 14 passed；安全集合 99 passed / 15 deselected；Xvfb 完整默认集合 113 passed / 1 deselected |
 | Task 5：生产 pipeline 接入摄像头与桌面边界 | 完成（redesign final re-review clean） | controller/runtime 57 passed；camera/action 回归 90 passed；隔离 Xvfb 完整默认集合 170 passed / 1 deselected |
 | Task 6：受监督的 Xorg gaze overlay | 完成（external gate resolved） | process 36 passed；focused regression 126 passed；non-X11 192 passed / 18 deselected；isolated negative 1 passed；positive compositor 2 passed / 1 skipped；compositor 完整集合 208 passed / 1 skipped / 1 deselected |
-| Task 7：GUI 摄像头后端、预览与配置 roundtrip | 完成（formal-review fixes verified） | GUI/camera 54 passed；Task 5/6 ownership/overlay regression 147 passed；offscreen non-X11 213 passed / 18 deselected；static/scope/import gates 通过 |
+| Task 7：GUI 摄像头后端、预览与配置 roundtrip | 完成（final re-review fixes verified） | GUI/camera 56 passed；Task 5/6 ownership/overlay regression 149 passed；offscreen non-X11 215 passed / 18 deselected；static/scope/import gates 通过 |
 
 ## 当前工作
 
-Task 7 将 GUI 摄像头链路改为显式平台配置：Linux 后端选择直接调用 `list_cameras` / `open_camera`，Orbbec model/serial 与 V4L2 device label 的 backend/device ID 保存在 combo item data；preview 直接以 ndarray 的 BGR 通道、真实宽高和 stride 构造 `QImage`。backend 切换先在阻断信号时清空并禁用 device IDs，再尝试关闭旧 preview；close 失败保留原 camera/异常且不枚举、不打开、不重试。calibration/evaluation handoff 先关闭 GUI preview；确认新摄像头会终止持有旧 camera config 的 pipeline。camera enumeration/open/read、pipeline 初始化、calibration preview restart 和 desktop shutdown 的原异常 identity/traceback 可见且无 retry/fallback。YAML 保存直接在各层原 mapping 的深拷贝上覆盖 UI 所有字段，完整 hydration nullable path、screen size、颜色与 gaze bias，保留各 section/expression condition/priority/key item 的未知嵌套键、未触碰值及 `camera_backend["win32"] == "opencv"`。desktop 仅由 `run_gui` 在应用启动/退出时 initialize/close，pipeline 所有权未改；GUI 顶层 `keyboard`/DirectShow 路径已移除。未修改 `learn/`，未开始 Task 8。
+Task 7 将 GUI 摄像头链路改为显式平台配置：Linux 后端选择直接调用 `list_cameras` / `open_camera`，Orbbec model/serial 与 V4L2 device label 的 backend/device ID 保存在 combo item data；preview 直接以 ndarray 的 BGR 通道、真实宽高和 stride 构造 `QImage`。backend 切换先在阻断信号时清空并禁用 device IDs，再尝试关闭旧 preview；close 失败保留原 camera/异常且不枚举、不打开、不重试。calibration/evaluation handoff 先关闭 GUI preview；确认新摄像头会终止持有旧 camera config 的 pipeline。camera enumeration/open/read、pipeline 初始化、calibration preview restart 和 desktop shutdown 的原异常 identity/traceback 可见且无 retry/fallback。YAML 保存直接在各层原 mapping 的深拷贝上覆盖 UI 所有字段，完整 hydration nullable path、screen size、颜色与 gaze bias；expression conditions 统一通过 `ExpressionRow.set_condition()` hydration，每个 row 自持 deep-copied origin mapping，删除/重排不会把未知 metadata 转移给相邻条件。保存保留各 section/expression condition/priority/key item 的未知嵌套键、未触碰值及 `camera_backend["win32"] == "opencv"`。desktop 仅由 `run_gui` 在应用启动/退出时 initialize/close，pipeline 所有权未改；GUI 顶层 `keyboard`/DirectShow 路径已移除。未修改 `learn/`，未开始 Task 8。
 
 ## 验证日志
 
@@ -224,6 +224,10 @@ Task 7 将 GUI 摄像头链路改为显式平台配置：Linux 后端选择直�
 | 2026-07-26 | Task 7 formal-review Task 5/6 regression | GUI/overlay/controller/runtime/keyboard/camera：147 passed，7.63s。 |
 | 2026-07-26 | Task 7 formal-review non-X11 | 完整 offscreen：213 passed / 18 deselected，7.86s；未连接实时 `DISPLAY=:1`。 |
 | 2026-07-26 | Task 7 formal-review static/scope/import | `py_compile`、`git diff --check`、Linux no-Win32 live import、GUI 禁用引用、`learn/`、artifact、changed-file scope 均 exit 0。 |
+| 2026-07-26 | Task 7 expression final re-review RED | exact focused command 在 production edit 前运行：2 failed，0.47s。untouched BETWEEN 的 `min/max=.25/.75` 实际为 `0/0`，DIFF fixture 覆盖 `compare_to=jawRight`；删除首 condition 后 expression-config equality 失败，暴露按 layout index 转移 unknown metadata。 |
+| 2026-07-26 | Task 7 expression final re-review GREEN | setup 统一调用 `ExpressionRow.set_condition()`，row 自持 deep-copied origin，serialization 直接合并该 origin 与 UI-owned keys；同一 exact command：2 passed，0.46s。 |
+| 2026-07-26 | Task 7 expression final regression | GUI/camera 56 passed，3.28s；Task 5/6 149 passed，5.53s；完整 offscreen non-X11 215 passed / 18 deselected，5.79s；无 warning。 |
+| 2026-07-26 | Task 7 expression final static/bookkeeping | `py_compile`、diff/import/forbidden refs/learn/artifact/scope 均 exit 0；reviewed final head：`config_gui_cpu.py` 2553 行，GUI test 907 行 / 23 collected。 |
 
 
 ## 阻塞项
