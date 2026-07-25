@@ -59,7 +59,7 @@
 | 设计文档 | 完成 | 摄像头后端修订提交 `62dc98a`，用户已批准 |
 | 实施计划 | 完成 | 8 个 TDD 任务已写入，提交 `6bf86ed`，待选择执行方式 |
 | 实现 | 进行中（Task 1–7 完成） | Task 7 GUI 已接入显式 camera backend、直接 BGR preview、应用级 desktop 生命周期与配置 roundtrip；未开始 Task 8 |
-| 自动化验证 | 进行中 | Task 7 camera regression 51 passed、Task 5/6 focused regression 144 passed、完整 offscreen non-X11 210 passed / 18 deselected；Task 6 隔离 compositor 门禁保持通过 |
+| 自动化验证 | 进行中 | Task 7 formal-review 修复后 camera regression 54 passed、Task 5/6 focused regression 147 passed、完整 offscreen non-X11 213 passed / 18 deselected；Task 6 隔离 compositor 门禁保持通过 |
 | Gemini 335 实机验收 | 未开始 | 需要连接设备和 Xorg 会话 |
 
 ## 任务进度
@@ -72,11 +72,11 @@
 | Task 4：X11/XTest/XFixes 后端 | 完成（final safety re-review 修复） | 纯测试 49 passed；隔离 Xvfb 集成 14 passed；安全集合 99 passed / 15 deselected；Xvfb 完整默认集合 113 passed / 1 deselected |
 | Task 5：生产 pipeline 接入摄像头与桌面边界 | 完成（redesign final re-review clean） | controller/runtime 57 passed；camera/action 回归 90 passed；隔离 Xvfb 完整默认集合 170 passed / 1 deselected |
 | Task 6：受监督的 Xorg gaze overlay | 完成（external gate resolved） | process 36 passed；focused regression 126 passed；non-X11 192 passed / 18 deselected；isolated negative 1 passed；positive compositor 2 passed / 1 skipped；compositor 完整集合 208 passed / 1 skipped / 1 deselected |
-| Task 7：GUI 摄像头后端、预览与配置 roundtrip | 完成 | GUI/camera 51 passed；Task 5/6 ownership/overlay regression 144 passed；offscreen non-X11 210 passed / 18 deselected；static/scope/import gates 通过 |
+| Task 7：GUI 摄像头后端、预览与配置 roundtrip | 完成（formal-review fixes verified） | GUI/camera 54 passed；Task 5/6 ownership/overlay regression 147 passed；offscreen non-X11 213 passed / 18 deselected；static/scope/import gates 通过 |
 
 ## 当前工作
 
-Task 7 将 GUI 摄像头链路改为显式平台配置：Linux 后端选择直接调用 `list_cameras` / `open_camera`，Orbbec model/serial 与 V4L2 device label 的 backend/device ID 保存在 combo item data；preview 直接以 ndarray 的 BGR 通道、真实宽高和 stride 构造 `QImage`。backend 切换、重新打开以及 calibration/evaluation handoff 均先关闭 GUI preview；确认新摄像头时会终止持有旧 camera config 的 pipeline。camera enumeration/open/read、pipeline 初始化和 desktop shutdown 的原异常 identity/traceback 可见且无 retry/fallback。YAML 保存从原 mapping 更新，保留未知字段与 `camera_backend["win32"] == "opencv"`。desktop 仅由 `run_gui` 在应用启动/退出时 initialize/close，pipeline 所有权未改；GUI 顶层 `keyboard`/DirectShow 路径已移除。未修改 `learn/`，未开始 Task 8。
+Task 7 将 GUI 摄像头链路改为显式平台配置：Linux 后端选择直接调用 `list_cameras` / `open_camera`，Orbbec model/serial 与 V4L2 device label 的 backend/device ID 保存在 combo item data；preview 直接以 ndarray 的 BGR 通道、真实宽高和 stride 构造 `QImage`。backend 切换先在阻断信号时清空并禁用 device IDs，再尝试关闭旧 preview；close 失败保留原 camera/异常且不枚举、不打开、不重试。calibration/evaluation handoff 先关闭 GUI preview；确认新摄像头会终止持有旧 camera config 的 pipeline。camera enumeration/open/read、pipeline 初始化、calibration preview restart 和 desktop shutdown 的原异常 identity/traceback 可见且无 retry/fallback。YAML 保存直接在各层原 mapping 的深拷贝上覆盖 UI 所有字段，完整 hydration nullable path、screen size、颜色与 gaze bias，保留各 section/expression condition/priority/key item 的未知嵌套键、未触碰值及 `camera_backend["win32"] == "opencv"`。desktop 仅由 `run_gui` 在应用启动/退出时 initialize/close，pipeline 所有权未改；GUI 顶层 `keyboard`/DirectShow 路径已移除。未修改 `learn/`，未开始 Task 8。
 
 ## 验证日志
 
@@ -218,6 +218,12 @@ Task 7 将 GUI 摄像头链路改为显式平台配置：Linux 后端选择直�
 | 2026-07-26 | Task 7 Task 5/6 focused regression | GUI/overlay/controller/runtime/keyboard/camera：144 passed，7.14s。 |
 | 2026-07-26 | Task 7 完整 offscreen non-X11 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 QT_QPA_PLATFORM=offscreen .../python -m pytest -m 'not x11' -q`：210 passed / 18 deselected，7.37s；未连接实时 `DISPLAY=:1`。 |
 | 2026-07-26 | Task 7 static/scope/import gates | `py_compile`、`git diff --check`、Linux import isolation、无 GUI `keyboard`/`self.cap`/DirectShow/cv2、无 `learn/` diff、无 `.orig/.rej` 均 exit 0。 |
+| 2026-07-26 | Task 7 formal-review RED | 新增 lossless YAML roundtrip、calibration restart 传播、backend close-failure 失效顺序三项确定性用例；exact focused command：3 failed，0.54s。分别暴露 nullable path 为 `"None"`/特殊 widgets 未 hydration 且 section 重建丢键、callback 宽泛捕获吞错、旧 device combo 在 close 前仍为 enabled/stale。 |
+| 2026-07-26 | Task 7 formal-review focused GREEN | direct deep-copy merge、完整 widget hydration、移除 callback 吞错边界、close 前 signal-blocked invalidate 后 exact focused command：3 passed，0.55s；增强的 blocked-signal/exactly-once-format 两项：2 passed，0.41s。 |
+| 2026-07-26 | Task 7 formal-review camera regression | `tests/test_config_gui_camera.py tests/test_camera_config.py tests/test_camera_sources.py -q`：54 passed，5.35s；无 Qt warning。 |
+| 2026-07-26 | Task 7 formal-review Task 5/6 regression | GUI/overlay/controller/runtime/keyboard/camera：147 passed，7.63s。 |
+| 2026-07-26 | Task 7 formal-review non-X11 | 完整 offscreen：213 passed / 18 deselected，7.86s；未连接实时 `DISPLAY=:1`。 |
+| 2026-07-26 | Task 7 formal-review static/scope/import | `py_compile`、`git diff --check`、Linux no-Win32 live import、GUI 禁用引用、`learn/`、artifact、changed-file scope 均 exit 0。 |
 
 
 ## 阻塞项

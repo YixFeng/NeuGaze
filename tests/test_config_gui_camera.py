@@ -270,6 +270,70 @@ def test_camera_close_failure_is_not_retried_before_opening_new_source(
     assert "RuntimeError: preview close failed" in messages[0][1]
 
 
+def test_backend_switch_invalidates_devices_before_preview_close_failure(
+    window_factory, monkeypatch
+):
+    list_calls = []
+    open_calls = []
+    window, _ = window_factory(list_events=list_calls)
+    error = RuntimeError("preview close blocked backend switch")
+    messages = []
+
+    close_states = []
+
+    class CloseFailureCamera:
+        def __init__(self):
+            self.close_calls = 0
+
+        def close(self):
+            self.close_calls += 1
+            close_states.append(
+                (
+                    window.camera_combo.count(),
+                    window.camera_combo.currentData(),
+                    window.camera_combo.isEnabled(),
+                )
+            )
+            raise error
+
+    device_signal_events = []
+    window.camera_combo.currentIndexChanged.connect(device_signal_events.append)
+    camera = CloseFailureCamera()
+    window.camera = camera
+    list_calls.clear()
+    monkeypatch.setattr(
+        gui,
+        "open_camera",
+        lambda config, platform: open_calls.append((config, platform)),
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "critical",
+        lambda parent, title, text: messages.append((title, text)),
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        window.on_camera_backend_changed(
+            combo_index(window.camera_backend_combo, "opencv")
+        )
+
+    retained_camera = window.camera
+    window.camera = None
+    assert caught.value is error
+    assert camera.close_calls == 1
+    assert retained_camera is camera
+    assert close_states == [(1, None, False)]
+    assert device_signal_events == []
+    assert list_calls == []
+    assert open_calls == []
+    assert window.camera_combo.count() == 1
+    assert window.camera_combo.currentData() is None
+    assert not window.camera_combo.isEnabled()
+    assert len(messages) == 1
+    assert messages[0][1].startswith("Traceback (most recent call last):")
+    assert "RuntimeError: preview close blocked backend switch" in messages[0][1]
+
+
 def test_camera_open_error_is_visible_and_preserves_exception(
     window_factory, monkeypatch
 ):
@@ -460,6 +524,140 @@ def test_save_preserves_windows_backend_and_unrelated_yaml(
         integrated["unrelated_integrated"]
         == original["integrated_config"]["unrelated_integrated"]
     )
+
+
+def test_save_roundtrip_changes_only_camera_and_edited_hydrated_widgets(
+    window_factory, config_mapping, tmp_path
+):
+    original = copy.deepcopy(config_mapping)
+    original["gaze_config"]["future_gaze"] = {
+        "sequence": [1, {"pair": [2, 3]}],
+    }
+    original["mouse_control_config"]["future_mouse"] = {"enabled": None}
+    original["wheel_config"]["future_wheel"] = {"shape": [3, 4]}
+    original["real_action_config"]["future_action"] = {"args": ["x", "y"]}
+    original["integrated_config"].update(
+        {
+            "regression_model_path": None,
+            "screen_size": [1600, 900],
+            "pred_point_color": [12, 34, 56],
+            "true_point_color": [78, 90, 123],
+            "gaze_bias": [-321, 654],
+            "future_integrated": {"nested": [True, None]},
+        }
+    )
+    original["head_angles_center"]["future_center"] = {"axis": [1, 2]}
+    original["head_angles_scale"]["future_scale"] = {"axis": [3, 4]}
+    expression_config = original["expression_evaluator_config"]
+    expression_config["future_expression_section"] = {"keep": [1, 2]}
+    expression_config["expressions"]["numlock"]["future_expression"] = {
+        "keep": [3, 4],
+    }
+    expression_config["expressions"]["numlock"]["conditions"][0][
+        "future_condition"
+    ] = {"keep": [5, 6]}
+    expression_config["priority_rules"][0]["future_rule"] = {
+        "keep": [7, 8],
+    }
+    original["key_config"]["future_mode"] = {
+        "future_key": {"future": ["unchanged"]},
+    }
+    original["key_config"]["game"]["numlock"]["future_key"] = {
+        "keep": [9, 10],
+    }
+
+    window, _ = window_factory(mapping=original)
+
+    assert window.integrated_widgets["regression_model_path"].text() == ""
+    assert [
+        widget.value()
+        for widget in window.integrated_widgets["screen_size"]
+    ] == [1600, 900]
+    assert [
+        widget.value()
+        for widget in window.integrated_widgets["pred_point_color"]
+    ] == [12, 34, 56]
+    assert [
+        widget.value()
+        for widget in window.integrated_widgets["true_point_color"]
+    ] == [78, 90, 123]
+    assert [
+        widget.value()
+        for widget in window.integrated_widgets["gaze_bias"]
+    ] == [-321, 654]
+
+    window.camera_backend_combo.setCurrentIndex(
+        combo_index(window.camera_backend_combo, "opencv")
+    )
+    window.camera_combo.setCurrentIndex(
+        combo_index(window.camera_combo, ("opencv", 7))
+    )
+    window.confirm_camera_selection()
+    window.gaze_widgets["point_radius"].setValue(61)
+    window.integrated_widgets["screen_size"][0].setValue(1728)
+    output_path = tmp_path / "lossless-saved.yaml"
+
+    window.save_config_to_file(output_path)
+
+    saved = yaml.safe_load(output_path.read_text(encoding="utf-8"))
+    expected = copy.deepcopy(original)
+    expected["gaze_config"]["point_radius"] = 61
+    expected["integrated_config"]["screen_size"] = [1728, 900]
+    expected["integrated_config"]["camera_backend"]["linux"] = "opencv"
+    expected["integrated_config"]["cam_id"] = 7
+    assert saved == expected
+
+    window.integrated_widgets["regression_model_path"].setText(
+        "model_weights/new/model.pkl"
+    )
+    window.save_config_to_file(output_path)
+    saved_after_edit = yaml.safe_load(output_path.read_text(encoding="utf-8"))
+    assert (
+        saved_after_edit["integrated_config"]["regression_model_path"]
+        == "model_weights/new/model.pkl"
+    )
+
+
+def test_calibration_restart_error_is_shown_once_and_propagates_same_object(
+    window_factory, monkeypatch
+):
+    window, _ = window_factory()
+    error = RuntimeError("restart preview open failed")
+    messages = []
+    format_calls = []
+    original_format_exc = gui.traceback.format_exc
+
+    window.pipeline = SimpleNamespace()
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *args: QMessageBox.Yes,
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "critical",
+        lambda parent, title, text: messages.append((title, text)),
+    )
+
+    def record_format_exc():
+        format_calls.append(None)
+        return original_format_exc()
+
+    monkeypatch.setattr(gui.traceback, "format_exc", record_format_exc)
+    monkeypatch.setattr(
+        gui,
+        "open_camera",
+        lambda config, platform: (_ for _ in ()).throw(error),
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        window.on_calibration_finished()
+
+    assert caught.value is error
+    assert len(format_calls) == 1
+    assert len(messages) == 1
+    assert messages[0][1].startswith("Traceback (most recent call last):")
+    assert "RuntimeError: restart preview open failed" in messages[0][1]
 
 
 @pytest.mark.parametrize(

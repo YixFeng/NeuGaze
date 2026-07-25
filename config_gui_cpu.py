@@ -766,17 +766,18 @@ class ConfigWindow(QMainWindow):
     def list_cameras(self):
         """Enumerate only the explicitly selected backend."""
         try:
+            signals_were_blocked = self.camera_combo.blockSignals(True)
+            try:
+                self.camera_combo.clear()
+                self.camera_combo.addItem("None", None)
+                self.camera_combo.setEnabled(False)
+            finally:
+                self.camera_combo.blockSignals(signals_were_blocked)
+
             self._close_camera_preview()
             backend = self.camera_backend_combo.currentData()
             if backend is None:
                 raise ValueError("camera backend selection is missing")
-            self.camera_combo.blockSignals(True)
-            try:
-                self.camera_combo.clear()
-                self.camera_combo.addItem("None", None)
-            finally:
-                self.camera_combo.blockSignals(False)
-            self.camera_combo.setEnabled(False)
 
             cameras = list_cameras(backend, self.camera_platform)
             self.camera_combo.blockSignals(True)
@@ -1181,34 +1182,31 @@ class ConfigWindow(QMainWindow):
 
     def get_gaze_config(self):
         """获取凝视配置"""
-        return {
-            field: widget.value()
-            for field, widget in self.gaze_widgets.items()
-        }
-    
+        config = copy.deepcopy(self.config.get('gaze_config', {}))
+        for field, widget in self.gaze_widgets.items():
+            config[field] = widget.value()
+        return config
+
     def get_mouse_control_config(self):
         """获取鼠标控制配置"""
-        return {
-            field: widget.value()
-            for field, widget in self.mouse_widgets.items()
-        }
-    
+        config = copy.deepcopy(self.config.get('mouse_control_config', {}))
+        for field, widget in self.mouse_widgets.items():
+            config[field] = widget.value()
+        return config
+
     def get_integrated_config(self):
         """Get integrated settings without dropping unknown YAML fields."""
         config = copy.deepcopy(self.config['integrated_config'])
 
         for field, widget in self.integrated_widgets.items():
             if isinstance(widget, tuple):
-                if field in ['screen_size', 'gaze_bias']:
-                    config[field] = [widget[0].value(), widget[1].value()]
-                elif field in ['pred_point_color', 'true_point_color']:
-                    config[field] = [
-                        widget[0].value(),
-                        widget[1].value(),
-                        widget[2].value(),
-                    ]
+                config[field] = [part.value() for part in widget]
             elif isinstance(widget, QLineEdit):
-                config[field] = widget.text()
+                text = widget.text()
+                if text == '' and self.config['integrated_config'].get(field) is None:
+                    config[field] = None
+                else:
+                    config[field] = text
             elif isinstance(widget, QCheckBox):
                 config[field] = widget.isChecked()
             elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
@@ -1229,170 +1227,152 @@ class ConfigWindow(QMainWindow):
 
     def get_head_angles_config(self):
         """获取头部角度配置"""
-        center_config = {
-            angle: widget.value()
-            for angle, widget in self.head_widgets['center'].items()
-        }
-        
-        scale_config = {
-            angle: widget.value()
-            for angle, widget in self.head_widgets['scale'].items()
-        }
-        
+        center_config = copy.deepcopy(self.config.get('head_angles_center', {}))
+        for angle, widget in self.head_widgets['center'].items():
+            center_config[angle] = widget.value()
+
+        scale_config = copy.deepcopy(self.config.get('head_angles_scale', {}))
+        for angle, widget in self.head_widgets['scale'].items():
+            scale_config[angle] = widget.value()
+
         return center_config, scale_config
-    
+
     def get_expression_config(self):
-        """获取表情配置"""
+        """获取表情配置，同时保留界面不认识的配置字段。"""
+        config = copy.deepcopy(
+            self.config.get('expression_evaluator_config', {})
+        )
+        original_expressions = config.get('expressions', {})
         expressions = {}
+        condition_fields = {
+            'feature', 'operator', 'threshold', 'min', 'max', 'compare_to'
+        }
         root = self.expression_tree.invisibleRootItem()
-        
+
         for i in range(root.childCount()):
             expr_item = root.child(i)
             expr_name = expr_item.text(0)
-            
-            # 获取条件容器
             conditions_widget = self.expression_tree.itemWidget(expr_item, 1)
             combine_widget = self.expression_tree.itemWidget(expr_item, 2)
-            
-            if conditions_widget and combine_widget:
-                conditions = []
-                layout = conditions_widget.layout()
-                if layout:  # 确保布局存在
-                    for j in range(layout.count()):
-                        layout_item = layout.itemAt(j)
-                        if layout_item and layout_item.widget():  # 确保项目和部件存在
-                            condition_widget = layout_item.widget()
-                            if isinstance(condition_widget, ExpressionRow):
-                                condition = condition_widget.get_condition()
-                                conditions.append(condition)
-                
-                expressions[expr_name] = {
-                    'conditions': conditions,
-                    'combine': combine_widget.currentText()
-                }
-        
-        # 获取优先级规则
+
+            if not conditions_widget or not combine_widget:
+                continue
+
+            original_expression = original_expressions.get(expr_name, {})
+            expression = copy.deepcopy(original_expression)
+            original_conditions = original_expression.get('conditions', [])
+            conditions = []
+            layout = conditions_widget.layout()
+            if layout:
+                for j in range(layout.count()):
+                    layout_item = layout.itemAt(j)
+                    condition_widget = (
+                        layout_item.widget() if layout_item else None
+                    )
+                    if not isinstance(condition_widget, ExpressionRow):
+                        continue
+
+                    if j < len(original_conditions):
+                        condition = copy.deepcopy(original_conditions[j])
+                    else:
+                        condition = {}
+                    for field in condition_fields:
+                        condition.pop(field, None)
+                    condition.update(condition_widget.get_condition())
+                    conditions.append(condition)
+
+            expression['conditions'] = conditions
+            expression['combine'] = combine_widget.currentText()
+            expressions[expr_name] = expression
+
+        config['expressions'] = expressions
+
+        original_rules = config.get('priority_rules', [])
         priority_rules = []
         for i in range(self.priority_table.rowCount()):
-            rule = {}
-            
-            # When
+            if i < len(original_rules):
+                rule = copy.deepcopy(original_rules[i])
+            else:
+                rule = {}
+            for field in ('when', 'disable', 'except'):
+                rule.pop(field, None)
+
             when_combo = self.priority_table.cellWidget(i, 0)
             if when_combo:
                 rule['when'] = when_combo.currentText()
-            
-            # Disable
+
             disable_widget = self.priority_table.cellWidget(i, 1)
             if disable_widget and disable_widget.layout():
                 disable_edit = disable_widget.layout().itemAt(0).widget()
                 if disable_edit:
-                    rule['disable'] = [x.strip() for x in disable_edit.text().split(',') if x.strip()]
-            
-            # Except
+                    rule['disable'] = [
+                        value.strip()
+                        for value in disable_edit.text().split(',')
+                        if value.strip()
+                    ]
+
             except_widget = self.priority_table.cellWidget(i, 2)
             if except_widget and except_widget.layout():
                 except_edit = except_widget.layout().itemAt(0).widget()
                 if except_edit:
-                    rule['except'] = [x.strip() for x in except_edit.text().split(',') if x.strip()]
-            
-            if rule:  # 只添加非空规则
+                    rule['except'] = [
+                        value.strip()
+                        for value in except_edit.text().split(',')
+                        if value.strip()
+                    ]
+
+            if rule:
                 priority_rules.append(rule)
-        
-        return {'expressions': expressions, 'priority_rules': priority_rules}
+
+        config['priority_rules'] = priority_rules
+        return config
 
     def get_keymap_config(self):
-        """获取按键映射配置"""
-        try:
-            print("Starting get_keymap_config")
-            config = {}
-            root = self.keymap_tree.invisibleRootItem()
-            
-            for i in range(root.childCount()):
-                try:
-                    mode_item = root.child(i)
-                    mode_name = mode_item.text(0)
-                    print(f"Processing mode: {mode_name}")
-                    mode_config = {}
-                    
-                    for j in range(mode_item.childCount()):
-                        try:
-                            key_item = mode_item.child(j)
-                            key_name = key_item.text(0)
-                            print(f"Processing key: {key_name}")
-                            actions_widget = self.keymap_tree.itemWidget(key_item, 1)
-                            
-                            if not actions_widget:
-                                print(f"Warning: No actions widget for key {key_name}")
-                                continue
-                            
-                            # print(f"Actions widget type: {type(actions_widget)}")
-                            # print(f"Actions widget attributes: {dir(actions_widget)}")
-                            
-                            key_data = {}
-                            
-                            # 获取 wheel actions
-                            try:
-                                if hasattr(actions_widget, 'symbol_list'):
-                                    symbol_list = actions_widget.symbol_list
-                                    # print(f"Symbol list type: {type(symbol_list)}")
-                                    # print(f"Symbol list attributes: {dir(symbol_list)}")
-                                    if symbol_list:
-                                        wheel_actions = symbol_list.get_symbols()
-                                        print(f"Wheel actions: {wheel_actions}")
-                                        if wheel_actions:
-                                            key_data['wheel'] = wheel_actions
-                                else:
-                                    print(f"No symbol_list attribute")
-                            except Exception as e:
-                                print(f"Error getting wheel actions: {str(e)}")
-                                import traceback
-                                traceback.print_exc()
-                            
-                            # 获取 layout_type
-                            try:
-                                if hasattr(actions_widget, 'layout_combo'):
-                                    layout_combo = actions_widget.layout_combo
-                                    if layout_combo:
-                                        key_data['layout_type'] = layout_combo.currentText()
-                            except Exception as e:
-                                print(f"Error getting layout_type: {str(e)}")
-                            
-                            # 获取 induce 配置
-                            try:
-                                if hasattr(actions_widget, 'key_config'):
-                                    if isinstance(actions_widget.key_config, dict) and 'induce' in actions_widget.key_config:
-                                        key_data['induce'] = actions_widget.key_config['induce']
-                            except Exception as e:
-                                print(f"Error getting induce config: {str(e)}")
-                            
-                            if key_data:
-                                mode_config[key_name] = key_data
-                                print(f"Added key_data for {key_name}: {key_data}")
-                        
-                        except Exception as e:
-                            print(f"Error processing key: {str(e)}")
-                            import traceback
-                            traceback.print_exc()
-                    
-                    if mode_config:
-                        config[mode_name] = mode_config
-                        print(f"Added mode_config for {mode_name}: {mode_config}")
-                    else:
-                        print(f"Warning: Empty mode_config for mode {mode_name}")
-                
-                except Exception as e:
-                    print(f"Error processing mode: {str(e)}")
-                    import traceback
-                    traceback.print_exc()
-            
-            print(f"Final config: {config}")
-            return config
-        
-        except Exception as e:
-            print(f"Error in get_keymap_config: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            return {}
+        """获取按键映射配置，同时保留界面不认识的配置字段。"""
+        original_config = self.config.get('key_config', {})
+        config = {}
+        root = self.keymap_tree.invisibleRootItem()
+
+        for i in range(root.childCount()):
+            mode_item = root.child(i)
+            mode_name = mode_item.text(0)
+            original_mode = original_config.get(mode_name, {})
+            mode_config = {}
+
+            for j in range(mode_item.childCount()):
+                key_item = mode_item.child(j)
+                key_name = key_item.text(0)
+                actions_widget = self.keymap_tree.itemWidget(key_item, 1)
+                if not actions_widget:
+                    continue
+
+                key_data = copy.deepcopy(original_mode.get(key_name, {}))
+                if hasattr(actions_widget, 'symbol_list'):
+                    wheel_actions = actions_widget.symbol_list.get_symbols()
+                    if wheel_actions or 'wheel' in key_data:
+                        key_data['wheel'] = wheel_actions
+
+                if hasattr(actions_widget, 'layout_combo'):
+                    key_data['layout_type'] = (
+                        actions_widget.layout_combo.currentText()
+                    )
+
+                if (
+                    hasattr(actions_widget, 'key_config')
+                    and isinstance(actions_widget.key_config, dict)
+                    and 'induce' in actions_widget.key_config
+                ):
+                    key_data['induce'] = copy.deepcopy(
+                        actions_widget.key_config['induce']
+                    )
+
+                if key_data:
+                    mode_config[key_name] = key_data
+
+            if mode_config:
+                config[mode_name] = mode_config
+
+        return config
 
     def save_config(self):
         """保存配置"""
@@ -1485,20 +1465,24 @@ class ConfigWindow(QMainWindow):
 
     def get_wheel_config(self):
         """获取轮盘配置"""
-        return {
-            field: (widget.text() if isinstance(widget, QLineEdit) else widget.value())
-            for field, widget in self.wheel_widgets.items()
-        }
+        config = copy.deepcopy(self.config.get('wheel_config', {}))
+        for field, widget in self.wheel_widgets.items():
+            config[field] = (
+                widget.text() if isinstance(widget, QLineEdit) else widget.value()
+            )
+        return config
 
     def get_real_action_config(self):
         """获取真实动作配置"""
-        return {
+        config = copy.deepcopy(self.config.get('real_action_config', {}))
+        config.update({
             'scroll_coef': self.real_action_widgets['scroll_coef'].value(),
             'sys_mode': self.real_action_widgets['sys_mode'].currentText(),
             'show_gaze': self.real_action_widgets['show_gaze'].isChecked(),
             'mouse_control': self.real_action_widgets['mouse_control'].isChecked(),
             'key_control': self.real_action_widgets['key_control'].isChecked()
-        }
+        })
+        return config
 
     def adjust_item_size(self, item):
         """调整项目大小以适应内容"""
@@ -1550,61 +1534,75 @@ class ConfigWindow(QMainWindow):
 
     def on_calibration_finished(self):
         """校准完成后的回调处理"""
-        try:
-            # 更新预览显示状态
-            if hasattr(self, 'preview_label'):
-                self.preview_label.setText("Calibration completed. Click 'Change Camera' to restart preview.")
-            
-            # 调试信息
-            print(f"on_calibration_finished called")
-            print(f"pipeline exists: {hasattr(self, 'pipeline') and self.pipeline is not None}")
-            if hasattr(self, 'pipeline') and self.pipeline:
-                print(f"pipeline calibration_time exists: {hasattr(self.pipeline, 'calibration_time')}")
-                if hasattr(self.pipeline, 'calibration_time'):
-                    print(f"calibration_time value: {self.pipeline.calibration_time}")
-            
-            # 更新配置文件中的权重路径
-            if hasattr(self, 'pipeline') and self.pipeline and hasattr(self.pipeline, 'calibration_time'):
-                # 构建新的权重路径
-                new_model_path = f'model_weights/{self.pipeline.calibration_time}/model.pkl'
-                print(f"Attempting to update regression_model_path to: {new_model_path}")
-                
-                # 检查权重文件是否存在
-                import os
-                if os.path.exists(new_model_path):
-                    print(f"Model file exists: {new_model_path}")
-                else:
-                    print(f"Warning: Model file does not exist yet: {new_model_path}")
-                
-                # 更新GUI中的权重路径输入框
-                if 'regression_model_path' in self.integrated_widgets:
-                    self.integrated_widgets['regression_model_path'].setText(new_model_path)
-                    print("Updated GUI widget")
-                    
-                    # 保存配置文件
-                    self.save_config()
-                    print(f"Configuration saved with new regression_model_path: {new_model_path}")
-                else:
-                    print("Warning: regression_model_path widget not found")
-            else:
-                print("Warning: Pipeline or calibration_time not available for updating config")
-            
-            # 询问用户是否要恢复预览（可选）
-            reply = QMessageBox.question(
-                self, 
-                "Calibration Complete", 
-                "Calibration completed successfully!\n\nWould you like to restart camera preview?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.Yes
+        if hasattr(self, 'preview_label'):
+            self.preview_label.setText(
+                "Calibration completed. Click 'Change Camera' to restart "
+                "preview."
             )
-            
-            if reply == QMessageBox.Yes:
-                self.restart_camera_preview()
-            
-        except Exception as e:
-            print(f"Error in calibration finished callback: {e}")
-            import traceback
-            traceback.print_exc()
+
+        print("on_calibration_finished called")
+        print(
+            "pipeline exists: "
+            f"{hasattr(self, 'pipeline') and self.pipeline is not None}"
+        )
+        if hasattr(self, 'pipeline') and self.pipeline:
+            print(
+                "pipeline calibration_time exists: "
+                f"{hasattr(self.pipeline, 'calibration_time')}"
+            )
+            if hasattr(self.pipeline, 'calibration_time'):
+                print(f"calibration_time value: {self.pipeline.calibration_time}")
+
+        if (
+            hasattr(self, 'pipeline')
+            and self.pipeline
+            and hasattr(self.pipeline, 'calibration_time')
+        ):
+            new_model_path = (
+                f'model_weights/{self.pipeline.calibration_time}/model.pkl'
+            )
+            print(
+                "Attempting to update regression_model_path to: "
+                f"{new_model_path}"
+            )
+
+            if os.path.exists(new_model_path):
+                print(f"Model file exists: {new_model_path}")
+            else:
+                print(
+                    "Warning: Model file does not exist yet: "
+                    f"{new_model_path}"
+                )
+
+            if 'regression_model_path' in self.integrated_widgets:
+                self.integrated_widgets['regression_model_path'].setText(
+                    new_model_path
+                )
+                print("Updated GUI widget")
+                self.save_config()
+                print(
+                    "Configuration saved with new regression_model_path: "
+                    f"{new_model_path}"
+                )
+            else:
+                print("Warning: regression_model_path widget not found")
+        else:
+            print(
+                "Warning: Pipeline or calibration_time not available for "
+                "updating config"
+            )
+
+        reply = QMessageBox.question(
+            self,
+            "Calibration Complete",
+            "Calibration completed successfully!\n\n"
+            "Would you like to restart camera preview?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes
+        )
+
+        if reply == QMessageBox.Yes:
+            self.restart_camera_preview()
 
 
     def closeEvent(self, event):
@@ -1943,7 +1941,7 @@ class ConfigWindow(QMainWindow):
             if 'integrated_config' in self.config and field in self.config['integrated_config']:
                 value = self.config['integrated_config'][field]
                 if isinstance(widget, QLineEdit):
-                    widget.setText(str(value))
+                    widget.setText('' if value is None else str(value))
                 elif isinstance(widget, QCheckBox):
                     widget.setChecked(value)
                 else:
@@ -1962,6 +1960,9 @@ class ConfigWindow(QMainWindow):
         screen_size_layout.addWidget(screen_size_x)
         screen_size_layout.addWidget(screen_size_y)
         integrated_layout.addRow('Screen Size:', screen_size_widget)
+        screen_size = self.config['integrated_config']['screen_size']
+        screen_size_x.setValue(screen_size[0])
+        screen_size_y.setValue(screen_size[1])
         self.integrated_widgets['screen_size'] = (screen_size_x, screen_size_y)
 
         # 添加颜色配置
@@ -1975,6 +1976,10 @@ class ConfigWindow(QMainWindow):
                 spin.setRange(0, 255)
                 color_layout.addWidget(spin)
             integrated_layout.addRow(f'{color_field}:', color_widget)
+            color = self.config['integrated_config'][color_field]
+            r.setValue(color[0])
+            g.setValue(color[1])
+            b.setValue(color[2])
             self.integrated_widgets[color_field] = (r, g, b)
 
         # 添加 gaze_bias 配置
@@ -1987,6 +1992,9 @@ class ConfigWindow(QMainWindow):
         gaze_bias_layout.addWidget(gaze_bias_x)
         gaze_bias_layout.addWidget(gaze_bias_y)
         integrated_layout.addRow('Gaze Bias:', gaze_bias_widget)
+        gaze_bias = self.config['integrated_config']['gaze_bias']
+        gaze_bias_x.setValue(gaze_bias[0])
+        gaze_bias_y.setValue(gaze_bias[1])
         self.integrated_widgets['gaze_bias'] = (gaze_bias_x, gaze_bias_y)
 
         integrated_group.setLayout(integrated_layout)
