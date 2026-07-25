@@ -22,6 +22,21 @@ from collections import deque
 from datetime import datetime, timedelta
 import random
 
+_ERROR_CLASS_DOES_NOT_EXIST = 1411
+
+
+def _unregister_gaze_overlay_class():
+    try:
+        win32gui.UnregisterClass("GazeOverlay", None)
+    except win32gui.error as error:
+        error_code = getattr(error, "winerror", None)
+        if error_code is None and error.args:
+            error_code = error.args[0]
+        if error_code != _ERROR_CLASS_DOES_NOT_EXIST:
+            raise
+
+
+
 # 定义 PAINTSTRUCT 结构
 class PAINTSTRUCT(ctypes.Structure):
     _fields_ = [
@@ -151,14 +166,13 @@ class GazeOverlay:
                  color_b=20,               # 点的蓝色分量
                  gaussian_sigma_ratio=1.0,   # 高斯函数的 sigma 比例
                  window_alpha=100):          # 窗口整体透明度
-        # 先尝试注销已存在的窗口类
-        try:
-            win32gui.UnregisterClass("GazeOverlay", None)
-        except Exception:
-            pass  # 忽略注销失败的错误
+        # 仅“窗口类不存在”是可忽略的预期状态。
+        _unregister_gaze_overlay_class()
             
         self.is_running = False
         self.history_duration = history_duration
+        self._message_loop_error = None
+        self._message_loop_traceback = None
         self.update_interval = update_interval
         self.point_radius = point_radius
         self.point_alpha = point_alpha
@@ -343,8 +357,9 @@ class GazeOverlay:
                 return 0
                 
             return win32gui.DefWindowProc(hwnd, msg, wparam, lparam)
-        except Exception as e:
-            print(f"窗口处理错误: {e}")
+        except BaseException as error:
+            self._message_loop_error = error
+            self._message_loop_traceback = error.__traceback__
             return 0
     
     def update_gaze_position(self, x, y):
@@ -428,8 +443,9 @@ class GazeOverlay:
                 while self.is_running:
                     win32gui.PumpWaitingMessages()
                     time.sleep(0.001)
-            except Exception as e:
-                print(f"消息循环错误: {e}")
+            except BaseException as error:
+                self._message_loop_error = error
+                self._message_loop_traceback = error.__traceback__
             finally:
                 print("消息循环结束")
                 
@@ -444,10 +460,14 @@ class GazeOverlay:
             if self.hwnd:
                 win32gui.DestroyWindow(self.hwnd)
                 self.hwnd = None
-            try:
-                win32gui.UnregisterClass("GazeOverlay", None)
-            except Exception:
-                pass  # 忽略注销失败的错误
+            _unregister_gaze_overlay_class()
+        self.raise_if_failed()
+
+    def raise_if_failed(self):
+        if self._message_loop_error is not None:
+            raise self._message_loop_error.with_traceback(
+                self._message_loop_traceback
+            )
 
 # 测试代码
 if __name__ == "__main__":

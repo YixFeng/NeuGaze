@@ -187,7 +187,20 @@ Task 5 第三轮 review 判定 persistent action worker、condition/token genera
 | 2026-07-25 | formal-review fix compile/diff/scope gate | `pipeline.py` 与 `test_pipeline_runtime.py` `py_compile` 通过；`git diff --check` exit 0；旧 worker/token 名称仅存在于 absence test；无 live Win32 import、无 `learn/` diff、无 `.orig/.rej` |
 | 2026-07-25 | Task 5 final re-review | Spec compliant，Critical 0、Important 0，Task quality Approved；Minor source-string-test 建议留待 final branch review |
 
+| 2026-07-25 | Task 6 依赖状态 | 已在非 root 环境 `/home/yixiao/miniconda3/envs/neugaze` 安装 `PySide6==6.11.1`；`xvfb-run` 可用；系统仍缺 `xcompmgr` 与 Qt xcb 所需 `libxcb-cursor0`。 |
+| 2026-07-25 | Task 6 process RED | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .../python -m pytest tests/test_gaze_overlay_process.py -v`：0 collected / 1 collection error；缺少 `gaze_overlay_x11`。 |
+| 2026-07-25 | Task 6 X11 RED | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .../python -m pytest tests/test_gaze_overlay_x11.py -v`：0 collected / 1 collection error；缺少 `gaze_overlay_x11`。 |
+| 2026-07-25 | Task 6 focused GREEN | `tests/test_gaze_overlay_process.py -v`：16 passed，1.99s；覆盖 spawn、ready/error/death、latest point、stop ack/timeout、lazy selector、无 parent gaze thread。 |
+| 2026-07-25 | Task 6 process lifetime self-review RED/GREEN | child error 后仍存活进程测试先 1 failed，最小 terminate/join 修复后 1 passed，1.98s。 |
+| 2026-07-25 | Task 6 Xvfb 初次诊断 | Qt xcb 初始化 abort；`ldd libqxcb.so` 精确定位唯一缺失 `libxcb-cursor.so.0`，未切 offscreen/备用实现。 |
+| 2026-07-25 | Task 6 Xvfb negative GREEN | 隔离 `xvfb-run -a ...::test_start_fails_visibly_when_x11_compositor_owner_is_missing -v`：1 passed，0.12s；真实 child traceback 显式返回 compositor gate 错误。 |
+| 2026-07-25 | Task 6 X11 dependency-aware result | 隔离 `tests/test_gaze_overlay_x11.py -m x11 -v`：1 passed / 2 skipped，0.17s；仅 negative 通过，widget/positive 因真实系统依赖缺失而阻塞，未计为正向成功。 |
+| 2026-07-25 | Task 6 focused regression GREEN | overlay/controller/runtime/keyboard/camera：106 passed，2.22s。 |
+| 2026-07-25 | Task 6 完整 non-X11 GREEN | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .../python -m pytest -m "not x11" -v`：172 passed / 18 deselected，2.40s。 |
+
+
 ## 阻塞项
 
 - Orbbec Python wheel 当前加载其内置 SDK 2.8.6，而非设计指定的系统 SDK v2.9.3。实机采集已通过，但 ABI/库来源不符合设计；后续运行时诊断和依赖任务必须显式判定并解决，禁止通过隐式 `LD_LIBRARY_PATH` 改写或静默继续。
+- Task 6 compositor 正向门禁 BLOCKED：缺少系统包 `xcompmgr` 和 `libxcb-cursor0`。依赖就绪后必须原样运行 `xvfb-run -a sh -c 'xcompmgr -a & /home/yixiao/miniconda3/envs/neugaze/bin/python -m pytest tests/test_gaze_overlay_x11.py -m x11 -v'`，不得用 offscreen 或 live `DISPLAY=:1` 替代。
 - 系统包或 udev 调整若需要 `sudo`，必须先请求用户批准。

@@ -31,6 +31,7 @@ def _pipeline_without_constructor():
 def _real_action_without_constructor():
     pipeline = object.__new__(RealAction)
     pipeline._lifecycle_lock = threading.RLock()
+    pipeline.gaze_overlay = None
     return pipeline
 
 
@@ -1531,7 +1532,7 @@ def test_windows_desktop_and_overlay_routes_remain_lazy_on_linux():
     pipeline_tree = ast.parse(pipeline_source)
 
     assert '"my_model_arch.cpu_fast.desktop.win32"' in desktop_source
-    assert "from .gaze_show_utils import GazeOverlay" in inspect.getsource(
+    assert "from .gaze_overlay import GazeOverlay" in inspect.getsource(
         RealAction.start_gaze_display
     )
     assert not any(

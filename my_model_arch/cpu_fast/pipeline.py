@@ -2321,8 +2321,6 @@ class RealAction(BindKeys):
         self.show_gaze = show_gaze
         self.gaze_config = gaze_config
         self.gaze_overlay = None
-        self.gaze_thread = None
-        self.gaze_running = False
         self.scroll_coef = scroll_coef
 
 
@@ -2362,30 +2360,16 @@ class RealAction(BindKeys):
         self.scroll_throttle_interval = 0.2  # 0.2秒间隔
 
     def start_gaze_display(self):
-        """启动凝视点显示线程"""
-        if self.gaze_thread is not None:
+        """启动凝视点显示。"""
+        if self.gaze_overlay is not None:
             raise RuntimeError("gaze display is already started")
         self.show_gaze = True
 
-        from .gaze_show_utils import GazeOverlay
-        self.gaze_overlay = GazeOverlay(**self.gaze_config)
-        self.gaze_overlay.start()
-        self.gaze_running = True
+        from .gaze_overlay import GazeOverlay
+        overlay = GazeOverlay(**self.gaze_config)
+        overlay.start()
+        self.gaze_overlay = overlay
 
-        def gaze_loop():
-            # try:
-            while self.gaze_running:
-                if self.show_gaze and self.predicted_position is not None:
-                    self.gaze_overlay.update_gaze_position(int(self.predicted_position[0]), int(self.predicted_position[1]))
-                time.sleep(self.gaze_config['update_interval'])  # 约60fps
-            # except Exception as e:
-            #     print(f"凝视点显示错误: {e}")
-            # finally:
-            #     if self.gaze_overlay:
-            #         self.gaze_overlay.stop()
-
-        self.gaze_thread = threading.Thread(target=gaze_loop)
-        self.gaze_thread.start()
 
     def stop_gaze_display(self):
         """停止凝视点显示"""
@@ -2393,17 +2377,12 @@ class RealAction(BindKeys):
         self._stop_gaze_display()
 
     def _stop_gaze_display(self):
-        self.gaze_running = False
-        gaze_thread = self.gaze_thread
-        if (
-            gaze_thread is not None
-            and gaze_thread is not threading.current_thread()
-        ):
-            gaze_thread.join()
-        self.gaze_thread = None
-        if self.gaze_overlay:
-            self.gaze_overlay.stop()
-            self.gaze_overlay = None
+        overlay = self.gaze_overlay
+        if overlay is None:
+            return
+        overlay.stop()
+        self.gaze_overlay = None
+
 
     def set_show_gaze(self, show):
         """设置是否显示凝视点"""
@@ -2744,6 +2723,14 @@ class RealAction(BindKeys):
         t0 = time.time()
         super().call_after_each_eval_loop()
         t1 = time.time()
+        overlay = self.gaze_overlay
+        if overlay is not None:
+            if self.predicted_position is not None:
+                overlay.update_gaze_position(
+                    int(self.predicted_position[0]),
+                    int(self.predicted_position[1]),
+                )
+            overlay.raise_if_failed()
         # now take real actions
         # call out wheel, press keys, lock
         # use different configuration of actions
