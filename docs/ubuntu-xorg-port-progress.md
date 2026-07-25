@@ -1,6 +1,6 @@
 # Ubuntu 24.04 Xorg 移植进度
 
-最后更新：2026-07-25
+最后更新：2026-07-26
 
 ## 协作规则
 
@@ -58,8 +58,8 @@
 | 设计评审 | 完成 | 用户分三部分批准设计 |
 | 设计文档 | 完成 | 摄像头后端修订提交 `62dc98a`，用户已批准 |
 | 实施计划 | 完成 | 8 个 TDD 任务已写入，提交 `6bf86ed`，待选择执行方式 |
-| 实现 | 进行中（Task 1–6 完成） | Task 6 formal-review Critical/Important findings 已修复；未开始 Task 7 |
-| 自动化验证 | 进行中 | Task 6 process 36 passed、focused regression 126 passed、完整 non-X11 192 passed / 18 deselected；正向 compositor 2 passed / 1 skipped，隔离 compositor 完整集合 208 passed / 1 skipped / 1 deselected |
+| 实现 | 进行中（Task 1–7 完成） | Task 7 GUI 已接入显式 camera backend、直接 BGR preview、应用级 desktop 生命周期与配置 roundtrip；未开始 Task 8 |
+| 自动化验证 | 进行中 | Task 7 camera regression 51 passed、Task 5/6 focused regression 144 passed、完整 offscreen non-X11 210 passed / 18 deselected；Task 6 隔离 compositor 门禁保持通过 |
 | Gemini 335 实机验收 | 未开始 | 需要连接设备和 Xorg 会话 |
 
 ## 任务进度
@@ -72,10 +72,11 @@
 | Task 4：X11/XTest/XFixes 后端 | 完成（final safety re-review 修复） | 纯测试 49 passed；隔离 Xvfb 集成 14 passed；安全集合 99 passed / 15 deselected；Xvfb 完整默认集合 113 passed / 1 deselected |
 | Task 5：生产 pipeline 接入摄像头与桌面边界 | 完成（redesign final re-review clean） | controller/runtime 57 passed；camera/action 回归 90 passed；隔离 Xvfb 完整默认集合 170 passed / 1 deselected |
 | Task 6：受监督的 Xorg gaze overlay | 完成（external gate resolved） | process 36 passed；focused regression 126 passed；non-X11 192 passed / 18 deselected；isolated negative 1 passed；positive compositor 2 passed / 1 skipped；compositor 完整集合 208 passed / 1 skipped / 1 deselected |
+| Task 7：GUI 摄像头后端、预览与配置 roundtrip | 完成 | GUI/camera 51 passed；Task 5/6 ownership/overlay regression 144 passed；offscreen non-X11 210 passed / 18 deselected；static/scope/import gates 通过 |
 
 ## 当前工作
 
-Task 6 formal review 的四个根因已直接修复：所有 acquisition/transport/join/close 进入同一 cleanup boundary，保留原异常 identity/traceback 并逐项尝试清理；存活 child 依次 terminate、bounded join、kill、bounded join，仍存活或 close 失败时保留句柄并以 note 报告；child 仅在 Qt loop 和 Queue shutdown 成功后发送 `stopped`，parent join 后继续 drain control messages；timer 在无新点时仍推进非空 history。后续 re-review 的 compound-failure gap 也已修复：callback traceback 延迟到 child Queue cleanup 完成，若两者均失败则合并成一个 exact `("error", formatted_traceback)` tuple 且只发送一次。安装 `xcompmgr` 与 `libxcb-cursor0` 后，正向 widget/handshake 和隔离 compositor 完整集合均通过，Task 6 外部门禁已解除。实现保持单模块直接控制流、Linux lazy Win32 route 与 Task 5 边界，未新增 manager/factory/base 抽象，未使用 offscreen、备用实现或实时 `DISPLAY=:1`。
+Task 7 将 GUI 摄像头链路改为显式平台配置：Linux 后端选择直接调用 `list_cameras` / `open_camera`，Orbbec model/serial 与 V4L2 device label 的 backend/device ID 保存在 combo item data；preview 直接以 ndarray 的 BGR 通道、真实宽高和 stride 构造 `QImage`。backend 切换、重新打开以及 calibration/evaluation handoff 均先关闭 GUI preview；确认新摄像头时会终止持有旧 camera config 的 pipeline。camera enumeration/open/read、pipeline 初始化和 desktop shutdown 的原异常 identity/traceback 可见且无 retry/fallback。YAML 保存从原 mapping 更新，保留未知字段与 `camera_backend["win32"] == "opencv"`。desktop 仅由 `run_gui` 在应用启动/退出时 initialize/close，pipeline 所有权未改；GUI 顶层 `keyboard`/DirectShow 路径已移除。未修改 `learn/`，未开始 Task 8。
 
 ## 验证日志
 
@@ -208,6 +209,15 @@ Task 6 formal review 的四个根因已直接修复：所有 acquisition/transpo
 | 2026-07-25 | Task 6 compound re-review X11/static | isolated negative 1 passed，0.12s；dependency-aware 1 passed / 2 skipped，0.16s；`py_compile`、diff/scope/artifact gates exit 0；模块 534 行。 |
 | 2026-07-26 | Task 6 positive compositor gate | 原样运行 `xvfb-run -a sh -c 'xcompmgr -a & ... tests/test_gaze_overlay_x11.py -m x11 -v'`：exit 0，2 passed / 1 skipped，0.32s；skip 仅为需要无 compositor 的 negative 用例；无 warning，child stderr 仅为 Xvfb 关闭连接提示。 |
 | 2026-07-26 | Task 6 isolated compositor full suite | 原样运行 `xvfb-run -a sh -c 'xcompmgr -a & ... -m pytest -v'`：exit 0，208 passed / 1 skipped / 1 deselected，2.77s；无 warning，child stderr 仅为 Xvfb 关闭连接提示；无残留 Xvfb/xcompmgr/pytest 进程，git status/diff gates clean。 |
+| 2026-07-26 | Task 7 GUI RED | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 QT_QPA_PLATFORM=offscreen .../python -m pytest tests/test_config_gui_camera.py -v`：exit 2，0 collected / 1 collection error；顶层 `import keyboard` 触发 `ModuleNotFoundError`。 |
+| 2026-07-26 | Task 7 首次 focused GREEN | offscreen GUI 15 passed，2.65s；backend/default/order/item-data、direct BGR preview、visible traceback、roundtrip、hotkey 与 desktop lifecycle 均通过。 |
+| 2026-07-26 | Task 7 compound lifecycle RED/GREEN | camera read + cleanup 与 event-loop + desktop-close compound 用例先 2 failed，最小修复后 2 passed，0.39s；保留主异常并把 cleanup failure 放入同一 visible traceback/note。 |
+| 2026-07-26 | Task 7 stale pipeline RED/GREEN | 更换 camera 后旧 pipeline retirement 用例先 1 failed，最小修复后 1 passed，0.31s。 |
+| 2026-07-26 | Task 7 independent review RED/GREEN | no-retry close 与 stale device enumeration 两项 Important 用例先 2 failed；拆分 close/open boundary 并在 enumeration 前清空/禁用 device combo 后 2 passed，0.44s；Critical 0。 |
+| 2026-07-26 | Task 7 最终 camera regression | `tests/test_config_gui_camera.py tests/test_camera_config.py tests/test_camera_sources.py -v`：51 passed，4.69s；无 Qt warning。 |
+| 2026-07-26 | Task 7 Task 5/6 focused regression | GUI/overlay/controller/runtime/keyboard/camera：144 passed，7.14s。 |
+| 2026-07-26 | Task 7 完整 offscreen non-X11 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 QT_QPA_PLATFORM=offscreen .../python -m pytest -m 'not x11' -q`：210 passed / 18 deselected，7.37s；未连接实时 `DISPLAY=:1`。 |
+| 2026-07-26 | Task 7 static/scope/import gates | `py_compile`、`git diff --check`、Linux import isolation、无 GUI `keyboard`/`self.cap`/DirectShow/cv2、无 `learn/` diff、无 `.orig/.rej` 均 exit 0。 |
 
 
 ## 阻塞项

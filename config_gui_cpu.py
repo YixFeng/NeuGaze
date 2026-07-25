@@ -19,14 +19,20 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QTabWidget,
                               QTreeWidgetItemIterator, QTableWidget, QHeaderView, QCheckBox, QProgressDialog)
 from PySide6.QtCore import Qt, QTimer, QSize, QRect, QPoint, QEvent
 from PySide6.QtGui import QAction, QIcon, QPainter, QPen, QColor
+import copy
 import sys
+import traceback
 import yaml
 import os
 from pathlib import Path
-import cv2
 from PySide6.QtGui import QImage, QPixmap
-import keyboard  # 添加到文件开头的导入部分
-import time  # 添加到文件开头的导入部分
+from my_model_arch.cpu_fast import desktop
+from my_model_arch.cpu_fast.camera import (
+    CameraConfig,
+    camera_config_from_mapping,
+    list_cameras,
+    open_camera,
+)
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -340,8 +346,13 @@ class ConfigWindow(QMainWindow):
         
         # 初始化变量
         self.pipeline = None
-        self.cap = None  # 添加摄像头对象初始化
+        self.camera = None
+        self.camera_config = None
+        self.camera_platform = (
+            "linux" if sys.platform.startswith("linux") else sys.platform
+        )
         self.current_config_path = None  # 添加当前配置文件路径追踪
+        self.esc_pressed = False
         
         # 启动检查热键的定时器
         self.hotkey_timer = QTimer(self)
@@ -354,10 +365,14 @@ class ConfigWindow(QMainWindow):
         # 加载配置
         try:
             self.load_config()
-        except Exception as e:
-            QMessageBox.critical(self, "Configuration Error", 
-                               f"Failed to load configuration:\n{str(e)}\n\nPlease check your configuration files.")
-            sys.exit(1)  # 退出程序
+        except Exception:
+            formatted_traceback = traceback.format_exc()
+            QMessageBox.critical(
+                self,
+                "Configuration Error",
+                formatted_traceback,
+            )
+            raise
         
         # 获取所有可用的表情名称和特征
         self.expression_list = list(self.config.get('expression_evaluator_config', {}).get('expressions', {}).keys())
@@ -606,30 +621,26 @@ class ConfigWindow(QMainWindow):
         main_layout.addWidget(save_btn)
 
     def setup_camera_tab(self):
-        """设置摄像头标签页"""
+        """Set up explicit camera backend selection and preview."""
         camera_tab = QScrollArea()
         camera_tab.setWidgetResizable(True)
-        
+
         content_widget = QWidget()
         layout = QVBoxLayout(content_widget)
-        
-        # 添加预览标签
+
         self.preview_label = QLabel()
         self.preview_label.setMinimumSize(640, 480)
         self.preview_label.setAlignment(Qt.AlignCenter)
         self.preview_label.setText("No camera preview")
         layout.addWidget(self.preview_label)
-        
-        # 创建预览定时器
+
         self.preview_timer = QTimer(self)
         self.preview_timer.timeout.connect(self.update_preview)
-        
-        # 创建可折叠的摄像头选择组
+
         self.camera_group = QWidget()
         camera_layout = QVBoxLayout(self.camera_group)
         camera_layout.setContentsMargins(0, 0, 0, 0)
-        
-        # 标题栏
+
         header = QPushButton("▼ Camera Selection")
         header.setStyleSheet("""
             QPushButton {
@@ -643,264 +654,313 @@ class ConfigWindow(QMainWindow):
             }
         """)
         header.clicked.connect(self.toggle_camera_section)
-        
-        # 内容区域
+
         self.camera_content = QWidget()
         content_layout = QVBoxLayout(self.camera_content)
         content_layout.setContentsMargins(10, 0, 10, 0)
-        
-        # 摄像头选择区域
+
+        backend_layout = QHBoxLayout()
+        self.camera_backend_combo = QComboBox()
+        backend_choices = [("OpenCV", "opencv")]
+        if self.camera_platform == "linux":
+            backend_choices.insert(0, ("Orbbec", "orbbec"))
+        for label, backend in backend_choices:
+            self.camera_backend_combo.addItem(label, backend)
+        configured_backend_index = self.camera_backend_combo.findData(
+            self.camera_config.backend
+        )
+        if configured_backend_index < 0:
+            raise ValueError(
+                f"camera backend {self.camera_config.backend!r} is not available "
+                f"on {self.camera_platform!r}"
+            )
+        self.camera_backend_combo.setCurrentIndex(configured_backend_index)
+        self.camera_backend_combo.currentIndexChanged.connect(
+            self.on_camera_backend_changed
+        )
+        backend_layout.addWidget(QLabel("Camera Backend:"))
+        backend_layout.addWidget(self.camera_backend_combo)
+        content_layout.addLayout(backend_layout)
+
         select_layout = QHBoxLayout()
         self.camera_combo = QComboBox()
         self.camera_combo.currentIndexChanged.connect(self.on_camera_selected)
         select_layout.addWidget(QLabel("Select Camera:"))
         select_layout.addWidget(self.camera_combo)
         content_layout.addLayout(select_layout)
-        
-        # 确认按钮
+
         confirm_layout = QHBoxLayout()
         self.camera_confirm_btn = QPushButton("Confirm Selection")
         self.camera_confirm_btn.clicked.connect(self.confirm_camera_selection)
         confirm_layout.addWidget(self.camera_confirm_btn)
-        
-        # 重新选择按钮
+
         self.camera_change_btn = QPushButton("Change Camera")
         self.camera_change_btn.clicked.connect(self.change_camera_selection)
-        self.camera_change_btn.setEnabled(False)
         confirm_layout.addWidget(self.camera_change_btn)
-        
         content_layout.addLayout(confirm_layout)
-        
-        # 将所有元素添加到布局
+
         camera_layout.addWidget(header)
         camera_layout.addWidget(self.camera_content)
         layout.addWidget(self.camera_group)
-        
-        # 校准和评估按钮
+
         buttons_layout = QHBoxLayout()
-        
         self.calibrate_btn = QPushButton("Start Calibration")
         self.calibrate_btn.clicked.connect(self.start_calibration)
         buttons_layout.addWidget(self.calibrate_btn)
-        
         self.evaluate_btn = QPushButton("Start Evaluation")
         self.evaluate_btn.clicked.connect(self.start_evaluation)
         buttons_layout.addWidget(self.evaluate_btn)
-        
         layout.addLayout(buttons_layout)
-        
+
         camera_tab.setWidget(content_widget)
-        
-        # 获取可用摄像头列表并初始化按钮状态
+        self.camera_section_expanded = True
         self.list_cameras()
-        
-        # 初始状态：禁用所有按钮
+
+        configured_data = (
+            self.camera_config.backend,
+            self.camera_config.device_id,
+        )
+        configured_index = self.camera_combo.findData(configured_data)
+        configured_camera_is_available = configured_index >= 0
+        if configured_camera_is_available:
+            self.camera_combo.setCurrentIndex(configured_index)
+            self.selected_camera_id = self.camera_config.device_id
+            self.preview_label.setText(
+                f"Camera {self.camera_config.device_id} confirmed from "
+                "configuration. Ready for calibration/evaluation."
+            )
         self.camera_confirm_btn.setEnabled(False)
-        self.calibrate_btn.setEnabled(False)
-        self.evaluate_btn.setEnabled(False)
-        
-        # 根据配置文件中的cam_id设置初始状态
-        configured_cam_id = self.config['integrated_config'].get('cam_id')
-        if configured_cam_id is not None:
-            # 如果配置文件中有cam_id，尝试选择对应的摄像头
-            for i in range(self.camera_combo.count()):
-                if self.camera_combo.itemData(i) == configured_cam_id:
-                    self.camera_combo.setCurrentIndex(i)
-                    
-                    # 直接确认摄像头选择，不显示预览
-                    self.config['integrated_config']['cam_id'] = configured_cam_id
-                    self.selected_camera_id = configured_cam_id
-                    
-                    # 更新界面状态
-                    self.camera_confirm_btn.setEnabled(False)
-                    self.camera_combo.setEnabled(False)
-                    self.camera_change_btn.setEnabled(True)
-                    self.calibrate_btn.setEnabled(True)
-                    self.evaluate_btn.setEnabled(True)
-                    
-                    # 显示确认信息
-                    self.preview_label.setText(f"Camera {configured_cam_id} confirmed from configuration. Ready for calibration/evaluation.")
-                    
-                    # 自动折叠摄像头选择区域
-                    self.camera_section_expanded = False
-                    self.camera_content.setVisible(False)
-                    header = self.camera_group.layout().itemAt(0).widget()
-                    header.setText("▶ Camera Selection")
-                    
-                    print(f"Auto-confirmed camera {configured_cam_id} from configuration")
-                    break
-        
+        self.camera_change_btn.setEnabled(configured_camera_is_available)
+        self.calibrate_btn.setEnabled(configured_camera_is_available)
+        self.evaluate_btn.setEnabled(configured_camera_is_available)
+
         self.tabs.insertTab(0, camera_tab, "Camera Setup")
         self.tabs.setCurrentIndex(0)
 
+    def _disable_camera_actions(self):
+        self.camera_confirm_btn.setEnabled(False)
+        self.calibrate_btn.setEnabled(False)
+        self.evaluate_btn.setEnabled(False)
+
+    def _close_camera_preview(self):
+        self.preview_timer.stop()
+        if self.camera is not None:
+            camera = self.camera
+            camera.close()
+            self.camera = None
+
+    def _discard_camera_after_failure(self, error):
+        self.preview_timer.stop()
+        camera = self.camera
+        self.camera = None
+        if camera is None:
+            return
+        try:
+            camera.close()
+        except BaseException as close_error:
+            error.add_note(
+                "camera cleanup after failure also failed: "
+                f"{close_error!r}"
+            )
+
     def list_cameras(self):
-        """列出可用摄像头"""
-        self.camera_combo.clear()
-        self.camera_combo.addItem("None", None)
-        
-        # 首先尝试使用 DirectShow 后端
-        for i in range(10):
+        """Enumerate only the explicitly selected backend."""
+        try:
+            self._close_camera_preview()
+            backend = self.camera_backend_combo.currentData()
+            if backend is None:
+                raise ValueError("camera backend selection is missing")
+            self.camera_combo.blockSignals(True)
             try:
-                cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
-                if cap.isOpened():
-                    ret, _ = cap.read()
-                    if ret:
-                        self.camera_combo.addItem(f"Camera {i}", i)
-                    cap.release()
-            except Exception as e:
-                print(f"Error checking camera {i}: {str(e)}")
-                continue
-        
-        # 如果没有找到摄像头，尝试使用其他后端
-        if self.camera_combo.count() <= 1:  # 只有 "None" 选项
-            backends = [
-                cv2.CAP_MSMF,  # Microsoft Media Foundation
-                cv2.CAP_DSHOW,  # DirectShow
-                cv2.CAP_ANY  # 自动选择
-            ]
-            
-            for backend in backends:
-                for i in range(10):
-                    try:
-                        cap = cv2.VideoCapture(i, backend)
-                        if cap.isOpened():
-                            ret, _ = cap.read()
-                            if ret:
-                                self.camera_combo.addItem(f"Camera {i} ({backend})", i)
-                            cap.release()
-                    except Exception as e:
-                        print(f"Error checking camera {i} with backend {backend}: {str(e)}")
-                        continue
-        
-        # 连接选择变化信号
-        self.camera_combo.currentIndexChanged.connect(self.on_camera_selected)
+                self.camera_combo.clear()
+                self.camera_combo.addItem("None", None)
+            finally:
+                self.camera_combo.blockSignals(False)
+            self.camera_combo.setEnabled(False)
+
+            cameras = list_cameras(backend, self.camera_platform)
+            self.camera_combo.blockSignals(True)
+            try:
+                for camera_info in cameras:
+                    self.camera_combo.addItem(
+                        camera_info.label,
+                        (camera_info.backend, camera_info.device_id),
+                    )
+                configured = (
+                    self.camera_config.backend,
+                    self.camera_config.device_id,
+                )
+                configured_index = self.camera_combo.findData(configured)
+                if configured_index >= 0:
+                    self.camera_combo.setCurrentIndex(configured_index)
+            finally:
+                self.camera_combo.blockSignals(False)
+            self.camera_combo.setEnabled(True)
+            self._disable_camera_actions()
+            self.camera_change_btn.setEnabled(False)
+        except Exception:
+            formatted_traceback = traceback.format_exc()
+            self._disable_camera_actions()
+            QMessageBox.critical(
+                self,
+                "Camera Error",
+                formatted_traceback,
+            )
+            raise
+
+    def on_camera_backend_changed(self, index):
+        if self.camera_backend_combo.currentIndex() != index:
+            self.camera_backend_combo.blockSignals(True)
+            try:
+                self.camera_backend_combo.setCurrentIndex(index)
+            finally:
+                self.camera_backend_combo.blockSignals(False)
+        self.list_cameras()
 
     def on_camera_selected(self, index):
-        """当用户选择摄像头时"""
+        """Open exactly the selected backend/device for preview."""
         try:
-            camera_id = self.camera_combo.currentData()
-            
-            # 停止之前的预览
-            self.preview_timer.stop()
-            
-            # 如果已经有打开的摄像头，先关闭
-            if self.cap is not None:
-                self.cap.release()
-                self.cap = None
-            
-            if camera_id is not None:
-                # 打开新选择的摄像头，使用与 pipeline 相同的设置
-                self.cap = cv2.VideoCapture(camera_id, cv2.CAP_DSHOW)  # 使用 DirectShow 后端
-                if not self.cap.isOpened():
-                    QMessageBox.warning(self, "Warning", f"Failed to open camera {camera_id}")
-                    self.cap = None
-                    self.camera_confirm_btn.setEnabled(False)
-                    return
-                
-                # 设置摄像头属性，与 pipeline 保持一致
-                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1080)
-                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-                
-                # 尝试读取一帧来确认摄像头是否正常工作
-                ret, frame = self.cap.read()
-                if not ret:
-                    QMessageBox.warning(self, "Warning", f"Camera {camera_id} is not working properly")
-                    self.cap.release()
-                    self.cap = None
-                    self.camera_confirm_btn.setEnabled(False)
-                    return
-                
-                # 开始预览
-                self.preview_timer.start(30)  # 30ms 刷新一次，约 33fps
-                
-                # 启用确认按钮，但校准和评估按钮保持禁用直到确认
-                self.camera_confirm_btn.setEnabled(True)
-                self.camera_change_btn.setEnabled(True)  # 启用重新选择按钮
-            else:
-                # 如果选择None，清除预览并禁用所有按钮
+            self._close_camera_preview()
+        except Exception:
+            formatted_traceback = traceback.format_exc()
+            self._disable_camera_actions()
+            QMessageBox.critical(self, "Camera Error", formatted_traceback)
+            raise
+
+        try:
+            selected = self.camera_combo.itemData(index)
+            if selected is None:
                 self.preview_label.clear()
                 self.preview_label.setText("No camera preview")
-                self.camera_confirm_btn.setEnabled(False)
-                self.calibrate_btn.setEnabled(False)
-                self.evaluate_btn.setEnabled(False)
-                
-        except Exception as e:
-            QMessageBox.warning(self, "Error", f"Error handling camera: {str(e)}")
-            if self.cap is not None:
-                self.cap.release()
-                self.cap = None
-            self.preview_timer.stop()
-            self.camera_confirm_btn.setEnabled(False)
+                self._disable_camera_actions()
+                return
 
-    def update_preview(self):
-        """更新摄像头预览"""
-        if self.cap and self.cap.isOpened():
-            try:
-                ret, frame = self.cap.read()
-                if ret:
-                    # 转换为Qt图像
-                    rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    h, w, ch = rgb_image.shape
-                    bytes_per_line = ch * w
-                    qt_image = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format_RGB888)
-                    
-                    # 获取预览标签的大小
-                    label_size = self.preview_label.size()
-                    
-                    # 创建缩放后的图像，保持宽高比
-                    scaled_pixmap = QPixmap.fromImage(qt_image).scaled(
-                        label_size,
-                        Qt.KeepAspectRatio,
-                        Qt.SmoothTransformation
-                    )
-                    
-                    self.preview_label.setPixmap(scaled_pixmap)
-                    
-            except Exception as e:
-                print(f"Error updating preview: {str(e)}")
-                self.preview_timer.stop()
-
-    def confirm_camera_selection(self):
-        """确认摄像头选择并更新配置"""
-        camera_id = self.camera_combo.currentData()
-        
-        # 停止预览
-        if hasattr(self, 'preview_timer'):
-            self.preview_timer.stop()
-        
-        # 关闭摄像头预览
-        if self.cap is not None:
-            self.cap.release()
-            self.cap = None
-        
-        # 清除预览显示
-        self.preview_label.clear()
-        self.preview_label.setText("Camera confirmed. Preview stopped.")
-        
-        # 更新配置中的cam_id
-        self.config['integrated_config']['cam_id'] = camera_id
-        self.selected_camera_id = camera_id
-        
-        # 更新按钮状态
-        self.camera_confirm_btn.setEnabled(False)
-        self.camera_combo.setEnabled(False)  # 禁用摄像头选择，防止误操作
-        self.camera_change_btn.setEnabled(True)  # 启用重新选择按钮
-        
-        if camera_id is not None:
-            self.calibrate_btn.setEnabled(True)
-            self.evaluate_btn.setEnabled(True)
-            QMessageBox.information(self, "Success", f"Camera {camera_id} confirmed and ready for calibration/evaluation!")
-        else:
+            backend, device_id = selected
+            if backend != self.camera_backend_combo.currentData():
+                raise RuntimeError(
+                    "selected camera backend does not match backend combo"
+                )
+            preview_config = CameraConfig(
+                backend=backend,
+                device_id=device_id,
+                width=self.camera_config.width,
+                height=self.camera_config.height,
+                fps=self.camera_config.fps,
+            )
+            self.camera = open_camera(preview_config, self.camera_platform)
+            self.preview_timer.start(
+                max(1, round(1000 / preview_config.fps))
+            )
+            self.camera_confirm_btn.setEnabled(True)
+            self.camera_change_btn.setEnabled(True)
             self.calibrate_btn.setEnabled(False)
             self.evaluate_btn.setEnabled(False)
+        except Exception as error:
+            self._discard_camera_after_failure(error)
+            formatted_traceback = traceback.format_exc()
+            self._disable_camera_actions()
+            QMessageBox.critical(
+                self,
+                "Camera Error",
+                formatted_traceback,
+            )
+            raise
+
+    def update_preview(self):
+        """Render the camera API's contiguous BGR ndarray directly."""
+        if self.camera is None:
+            return
+        try:
+            frame = self.camera.read()
+            height, width, channels = frame.shape
+            if channels != 3 or not frame.flags.c_contiguous:
+                raise RuntimeError(
+                    "camera preview requires a contiguous HWC BGR frame"
+                )
+            qt_image = QImage(
+                frame.data,
+                width,
+                height,
+                frame.strides[0],
+                QImage.Format_BGR888,
+            )
+            scaled_pixmap = QPixmap.fromImage(qt_image).scaled(
+                self.preview_label.size(),
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation,
+            )
+            self.preview_label.setPixmap(scaled_pixmap)
+        except Exception as error:
+            self._discard_camera_after_failure(error)
+            formatted_traceback = traceback.format_exc()
+            self._disable_camera_actions()
+            QMessageBox.critical(
+                self,
+                "Camera Error",
+                formatted_traceback,
+            )
+            raise
+
+    def confirm_camera_selection(self):
+        """Confirm backend, device, and exact stream configuration."""
+        selected = self.camera_combo.currentData()
+        if selected is None:
+            self._disable_camera_actions()
             QMessageBox.information(self, "Info", "No camera selected.")
-        
-        # 折叠摄像头选择区域
-        if hasattr(self, 'camera_section_expanded'):
+            return
+
+        try:
+            self._close_camera_preview()
+            if self.pipeline is not None:
+                self.pipeline.quit_pipeline()
+                self.pipeline = None
+            backend, device_id = selected
+            self.camera_config = CameraConfig(
+                backend=backend,
+                device_id=device_id,
+                width=self.camera_config.width,
+                height=self.camera_config.height,
+                fps=self.camera_config.fps,
+            )
+            integrated = self.config["integrated_config"]
+            backend_mapping = integrated["camera_backend"]
+            backend_mapping[self.camera_platform] = backend
+            integrated["cam_id"] = device_id
+            integrated["camera_width"] = self.camera_config.width
+            integrated["camera_height"] = self.camera_config.height
+            integrated["camera_fps"] = self.camera_config.fps
+            if hasattr(self, "integrated_widgets"):
+                self.integrated_widgets["cam_id"].setValue(device_id)
+            self.selected_camera_id = device_id
+
+            self.preview_label.clear()
+            self.preview_label.setText("Camera confirmed. Preview stopped.")
+            self.camera_confirm_btn.setEnabled(False)
+            self.camera_backend_combo.setEnabled(False)
+            self.camera_combo.setEnabled(False)
+            self.camera_change_btn.setEnabled(True)
+            self.calibrate_btn.setEnabled(True)
+            self.evaluate_btn.setEnabled(True)
+            QMessageBox.information(
+                self,
+                "Success",
+                f"Camera {device_id} confirmed and ready for "
+                "calibration/evaluation!",
+            )
+
             self.camera_section_expanded = False
             self.camera_content.setVisible(False)
             header = self.camera_group.layout().itemAt(0).widget()
             header.setText("▶ Camera Selection")
+        except Exception:
+            formatted_traceback = traceback.format_exc()
+            self._disable_camera_actions()
+            QMessageBox.critical(
+                self,
+                "Camera Error",
+                formatted_traceback,
+            )
+            raise
 
     def toggle_camera_section(self):
         """切换摄像头选择区域的折叠状态"""
@@ -912,47 +972,36 @@ class ConfigWindow(QMainWindow):
         button.setText("▼ Camera Selection" if self.camera_section_expanded else "▶ Camera Selection")
 
     def start_evaluation(self):
-        """开始评估过程"""
+        """Hand camera ownership to the evaluation pipeline."""
         try:
-            # 在启动评估前，关闭GUI的摄像头预览以避免资源冲突
-            if hasattr(self, 'preview_timer') and self.preview_timer.isActive():
-                self.preview_timer.stop()
-                print("Stopped camera preview timer")
-            
-            # 如果存在摄像头对象，释放它
-            if self.cap is not None:
-                self.cap.release()
-                self.cap = None
-                print("Released camera resource from GUI")
-            
-            # 更新预览显示
-            if hasattr(self, 'preview_label'):
-                self.preview_label.clear()
-                self.preview_label.setText("Evaluation running... Camera in use by algorithm.")
-            
-            if not self.pipeline:
-                self.initialize_pipeline()
-            
-            if self.pipeline:
-                # self.pipeline.demo()
-                self.pipeline.start_evaluation()
-            else:
-                QMessageBox.warning(self, "Warning", "Failed to initialize pipeline!")
-            
-        except Exception as e:
-            error_msg = f"Failed to start evaluation:\n{str(e)}\n\nTraceback:\n"
-            import traceback
-            error_msg += "".join(traceback.format_exc())
-            QMessageBox.critical(self, "Error", error_msg)
-            print(error_msg)
+            self._close_camera_preview()
+        except Exception:
+            formatted_traceback = traceback.format_exc()
+            self._disable_camera_actions()
+            QMessageBox.critical(self, "Camera Error", formatted_traceback)
+            raise
+
+        self.preview_label.clear()
+        self.preview_label.setText(
+            "Evaluation running... Camera in use by algorithm."
+        )
+        if self.pipeline is None:
+            self.initialize_pipeline()
+        try:
+            self.pipeline.start_evaluation()
+        except Exception:
+            formatted_traceback = traceback.format_exc()
+            self._disable_camera_actions()
+            QMessageBox.critical(self, "Evaluation Error", formatted_traceback)
+            raise
 
     def initialize_pipeline(self):
-        """初始化 pipeline"""
+        """Initialize the pipeline and preserve the original failure."""
+        self.pipeline = None
         try:
-            print("\nCreating RealAction instance...")
             from my_model_arch.cpu_fast.pipeline import RealAction
-            # 创建新的 pipeline 实例
-            self.pipeline = RealAction(
+
+            pipeline = RealAction(
                 **self.config['real_action_config'],
                 gaze_config=self.config['gaze_config'],
                 mouse_control_config=self.config['mouse_control_config'],
@@ -963,17 +1012,18 @@ class ConfigWindow(QMainWindow):
                 expression_evaluator_config=self.config['expression_evaluator_config'],
                 **self.config['integrated_config']
             )
-
-            print("\nPipeline initialized successfully")
-            return True
-            
-        except Exception as e:
-            error_msg = f"Error initializing pipeline:\n{str(e)}\n\nTraceback:\n"
-            import traceback
-            error_msg += "".join(traceback.format_exc())
-            QMessageBox.critical(self, "Error", error_msg)
-            print(error_msg)
-            return False
+        except Exception:
+            formatted_traceback = traceback.format_exc()
+            self.pipeline = None
+            self._disable_camera_actions()
+            QMessageBox.critical(
+                self,
+                "Pipeline Error",
+                formatted_traceback,
+            )
+            raise
+        self.pipeline = pipeline
+        return pipeline
 
 
     def add_priority_rule_row(self, row, rule=None):
@@ -1144,18 +1194,19 @@ class ConfigWindow(QMainWindow):
         }
     
     def get_integrated_config(self):
-        """获取集成配置"""
-        config = {}
-        
-        # 处理普通字段
+        """Get integrated settings without dropping unknown YAML fields."""
+        config = copy.deepcopy(self.config['integrated_config'])
+
         for field, widget in self.integrated_widgets.items():
-            if isinstance(widget, tuple):  # 处理列表类型的配置
+            if isinstance(widget, tuple):
                 if field in ['screen_size', 'gaze_bias']:
-                    # 这些字段需要两个值
                     config[field] = [widget[0].value(), widget[1].value()]
                 elif field in ['pred_point_color', 'true_point_color']:
-                    # 颜色字段需要三个值
-                    config[field] = [widget[0].value(), widget[1].value(), widget[2].value()]
+                    config[field] = [
+                        widget[0].value(),
+                        widget[1].value(),
+                        widget[2].value(),
+                    ]
             elif isinstance(widget, QLineEdit):
                 config[field] = widget.text()
             elif isinstance(widget, QCheckBox):
@@ -1164,7 +1215,16 @@ class ConfigWindow(QMainWindow):
                 config[field] = widget.value()
             elif isinstance(widget, QComboBox):
                 config[field] = widget.currentText()
-        
+
+        if self.camera_config is not None:
+            camera_backends = copy.deepcopy(config['camera_backend'])
+            camera_backends[self.camera_platform] = self.camera_config.backend
+            config['camera_backend'] = camera_backends
+            config['cam_id'] = self.camera_config.device_id
+            config['camera_width'] = self.camera_config.width
+            config['camera_height'] = self.camera_config.height
+            config['camera_fps'] = self.camera_config.fps
+
         return config
 
     def get_head_angles_config(self):
@@ -1350,7 +1410,7 @@ class ConfigWindow(QMainWindow):
         """保存配置到指定文件"""
         try:
             print("Starting to save configuration...")
-            config = {}
+            config = copy.deepcopy(self.config)
             
             # 逐个获取配置，并添加错误检查
             try:
@@ -1421,7 +1481,7 @@ class ConfigWindow(QMainWindow):
             error_msg = f"Failed to save configuration:\n{str(e)}\n\n"
             error_msg += "Traceback:\n" + traceback.format_exc()
             print(error_msg)
-            raise Exception(error_msg)
+            raise
 
     def get_wheel_config(self):
         """获取轮盘配置"""
@@ -1458,52 +1518,34 @@ class ConfigWindow(QMainWindow):
         layout.insertWidget(layout.count() - 1, row)
 
     def start_calibration(self):
-        """开始校准过程"""
+        """Hand camera ownership to the calibration pipeline."""
         try:
-            # 在启动校准前，关闭GUI的摄像头预览以避免资源冲突
-            if hasattr(self, 'preview_timer') and self.preview_timer.isActive():
-                self.preview_timer.stop()
-                print("Stopped camera preview timer")
-            
-            # 如果存在摄像头对象，释放它
-            if self.cap is not None:
-                self.cap.release()
-                self.cap = None
-                print("Released camera resource from GUI")
-            
-            # 更新预览显示
-            if hasattr(self, 'preview_label'):
-                self.preview_label.clear()
-                self.preview_label.setText("Calibration running... Camera in use by algorithm.")
-            
-            if not self.pipeline:
-                self.initialize_pipeline()
-            
-            if self.pipeline:
-                try:
-                    result = self.pipeline.start_calibration()
-                    # 总是调用完成回调，无论校准成功还是失败
-                    QTimer.singleShot(100, self.on_calibration_finished)
-                    if result is None:
-                        print("Calibration failed or was interrupted")
-                    else:
-                        print("Calibration completed successfully")
-                except Exception as e:
-                    print(f"Calibration error: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    # 即使出现异常也要调用回调函数
-                    QTimer.singleShot(100, self.on_calibration_finished)
-                
-            else:
-                QMessageBox.warning(self, "Warning", "Failed to initialize pipeline!")
-            
-        except Exception as e:
-            error_msg = f"Failed to start calibration:\n{str(e)}\n\nTraceback:\n"
-            import traceback
-            error_msg += "".join(traceback.format_exc())
-            QMessageBox.critical(self, "Error", error_msg)
-            print(error_msg)
+            self._close_camera_preview()
+        except Exception:
+            formatted_traceback = traceback.format_exc()
+            self._disable_camera_actions()
+            QMessageBox.critical(self, "Camera Error", formatted_traceback)
+            raise
+
+        self.preview_label.clear()
+        self.preview_label.setText(
+            "Calibration running... Camera in use by algorithm."
+        )
+        if self.pipeline is None:
+            self.initialize_pipeline()
+        try:
+            result = self.pipeline.start_calibration()
+        except Exception:
+            formatted_traceback = traceback.format_exc()
+            self._disable_camera_actions()
+            QMessageBox.critical(
+                self,
+                "Calibration Error",
+                formatted_traceback,
+            )
+            raise
+        QTimer.singleShot(100, self.on_calibration_finished)
+        return result
 
 
     def on_calibration_finished(self):
@@ -1566,27 +1608,11 @@ class ConfigWindow(QMainWindow):
 
 
     def closeEvent(self, event):
-        """关闭窗口时清理资源"""
-        try:
-            # 停止预览定时器
-            if hasattr(self, 'preview_timer'):
-                self.preview_timer.stop()
-            
-            # 如果存在摄像头，关闭它
-            if self.cap is not None:
-                self.cap.release()
-                self.cap = None
-            
-            # 如果存在 pipeline，关闭它
-            if hasattr(self, 'pipeline') and self.pipeline:
-                self.pipeline.quit_pipeline()
-                self.pipeline = None
-                
-        except Exception as e:
-            print(f"Error closing resources: {str(e)}")
-            import traceback
-            traceback.print_exc()
-        
+        """Close GUI-owned camera and pipeline resources."""
+        self._close_camera_preview()
+        if self.pipeline is not None:
+            self.pipeline.quit_pipeline()
+            self.pipeline = None
         super().closeEvent(event)
 
 
@@ -1613,14 +1639,22 @@ class ConfigWindow(QMainWindow):
         if not config_path.exists():
             raise FileNotFoundError(f"Configuration file not found: {config_path}")
         
-        try:
-            with open(config_path, 'r', encoding='utf-8') as f:
-                self.config = yaml.safe_load(f)
-                print(f"Loaded config from: {config_path}")
-                self.current_config_path = str(config_path)
-                self.update_window_title()
-        except Exception as e:
-            raise Exception(f"Failed to load configuration from {config_path}: {str(e)}")
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = yaml.safe_load(f)
+        camera_platform = getattr(
+            self,
+            'camera_platform',
+            'linux' if sys.platform.startswith('linux') else sys.platform,
+        )
+        camera_config = camera_config_from_mapping(
+            config['integrated_config'],
+            camera_platform,
+        )
+        self.config = config
+        self.camera_config = camera_config
+        self.current_config_path = str(config_path)
+        self.update_window_title()
+        print(f"Loaded config from: {config_path}")
 
 
 
@@ -2106,7 +2140,7 @@ class ConfigWindow(QMainWindow):
 
     def check_hotkeys(self):
         """检查热键组合"""
-        if keyboard.is_pressed('esc+q'):
+        if desktop.are_keys_down(('esc', 'q')):
             if hasattr(self, 'pipeline') and self.pipeline:
                 self.pipeline.quit_pipeline()
                 self.pipeline = None
@@ -2183,58 +2217,63 @@ class ConfigWindow(QMainWindow):
                 QMessageBox.critical(self, "Error", f"Failed to load configuration:\n{str(e)}")
 
     def change_camera_selection(self):
-        """重新选择摄像头"""
+        """Stop preview and unlock explicit backend/device selection."""
         reply = QMessageBox.question(
-            self, 
-            "Change Camera", 
-            "This will stop the current camera and allow you to select a new one. Continue?",
+            self,
+            "Change Camera",
+            "This will stop the current camera and allow you to select a "
+            "new one. Continue?",
             QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
+            QMessageBox.No,
         )
-        
-        if reply == QMessageBox.Yes:
-            # 重新启用摄像头选择
-            self.camera_combo.setEnabled(True)
-            self.camera_confirm_btn.setEnabled(False)
-            self.camera_change_btn.setEnabled(False)
-            
-            # 禁用校准和评估按钮
-            self.calibrate_btn.setEnabled(False)
-            self.evaluate_btn.setEnabled(False)
-            
-            # 清除预览显示
-            self.preview_label.clear()
-            self.preview_label.setText("Please select a camera")
-            
-            # 展开摄像头选择区域
-            if hasattr(self, 'camera_section_expanded'):
-                self.camera_section_expanded = True
-                self.camera_content.setVisible(True)
-                header = self.camera_group.layout().itemAt(0).widget()
-                header.setText("▼ Camera Selection")
+        if reply != QMessageBox.Yes:
+            return
+
+        try:
+            self._close_camera_preview()
+        except Exception:
+            formatted_traceback = traceback.format_exc()
+            self._disable_camera_actions()
+            QMessageBox.critical(self, "Camera Error", formatted_traceback)
+            raise
+
+        self.camera_backend_combo.setEnabled(True)
+        self.camera_combo.setEnabled(True)
+        self.camera_confirm_btn.setEnabled(False)
+        self.camera_change_btn.setEnabled(False)
+        self.calibrate_btn.setEnabled(False)
+        self.evaluate_btn.setEnabled(False)
+        self.preview_label.clear()
+        self.preview_label.setText("Please select a camera")
+        self.camera_section_expanded = True
+        self.camera_content.setVisible(True)
+        header = self.camera_group.layout().itemAt(0).widget()
+        header.setText("▼ Camera Selection")
 
     def restart_camera_preview(self):
-        """重新启动摄像头预览（在算法结束后可选择调用）"""
+        """Restart the confirmed backend without retry or fallback."""
         try:
-            camera_id = self.config['integrated_config'].get('cam_id')
-            if camera_id is not None:
-                # 重新打开摄像头
-                self.cap = cv2.VideoCapture(camera_id, cv2.CAP_DSHOW)
-                if self.cap.isOpened():
-                    # 设置摄像头属性
-                    self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1080)
-                    self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-                    
-                    # 重新启动预览定时器
-                    self.preview_timer.start(30)
-                    print("Restarted camera preview")
-                else:
-                    self.preview_label.setText("Failed to restart camera preview")
-            else:
-                self.preview_label.setText("No camera configured for preview")
-        except Exception as e:
-            print(f"Error restarting camera preview: {str(e)}")
-            self.preview_label.setText("Error restarting camera preview")
+            self._close_camera_preview()
+        except Exception:
+            formatted_traceback = traceback.format_exc()
+            self._disable_camera_actions()
+            QMessageBox.critical(self, "Camera Error", formatted_traceback)
+            raise
+
+        try:
+            self.camera = open_camera(
+                self.camera_config,
+                self.camera_platform,
+            )
+            self.preview_timer.start(
+                max(1, round(1000 / self.camera_config.fps))
+            )
+        except Exception as error:
+            self._discard_camera_after_failure(error)
+            formatted_traceback = traceback.format_exc()
+            self._disable_camera_actions()
+            QMessageBox.critical(self, "Camera Error", formatted_traceback)
+            raise
 
 
 class KeyItemWidget(QWidget):
@@ -2490,12 +2529,27 @@ class ExpressionRow(QWidget):
             parent = parent.parent()
         return None
 
+def run_gui(app):
+    """Run the GUI with application-owned desktop lifetime."""
+    desktop.initialize()
+    try:
+        app.setStyle("Fusion")
+        window = ConfigWindow()
+        window.show()
+        exit_code = app.exec()
+    except BaseException as error:
+        try:
+            desktop.close()
+        except BaseException as close_error:
+            error.add_note(
+                "desktop.close() also failed during GUI shutdown: "
+                f"{close_error!r}"
+            )
+        raise
+    desktop.close()
+    return exit_code
+
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    
-    # 设置样式
-    app.setStyle("Fusion")
-    
-    window = ConfigWindow()
-    window.show()
-    sys.exit(app.exec())
+    sys.exit(run_gui(app))
