@@ -59,7 +59,7 @@
 | 设计文档 | 完成 | 摄像头后端修订提交 `62dc98a`，用户已批准 |
 | 实施计划 | 完成 | 8 个 TDD 任务已写入，提交 `6bf86ed`，待选择执行方式 |
 | 实现 | 进行中（Task 1–6 完成） | Task 6 formal-review Critical/Important findings 已修复；未开始 Task 7 |
-| 自动化验证 | 进行中 | Task 6 process 36 passed、focused regression 126 passed、完整 non-X11 192 passed / 18 deselected；正向 compositor 门禁受系统依赖阻塞 |
+| 自动化验证 | 进行中 | Task 6 process 36 passed、focused regression 126 passed、完整 non-X11 192 passed / 18 deselected；正向 compositor 2 passed / 1 skipped，隔离 compositor 完整集合 208 passed / 1 skipped / 1 deselected |
 | Gemini 335 实机验收 | 未开始 | 需要连接设备和 Xorg 会话 |
 
 ## 任务进度
@@ -71,11 +71,11 @@
 | Task 3：平台中立动作与显式桌面选择 | 完成 | selector/action 17 个测试通过（含 cleanup/lifecycle 并发回归）；common modules 编译通过；完整默认测试 50 passed / 1 deselected |
 | Task 4：X11/XTest/XFixes 后端 | 完成（final safety re-review 修复） | 纯测试 49 passed；隔离 Xvfb 集成 14 passed；安全集合 99 passed / 15 deselected；Xvfb 完整默认集合 113 passed / 1 deselected |
 | Task 5：生产 pipeline 接入摄像头与桌面边界 | 完成（redesign final re-review clean） | controller/runtime 57 passed；camera/action 回归 90 passed；隔离 Xvfb 完整默认集合 170 passed / 1 deselected |
-| Task 6：受监督的 Xorg gaze overlay | 完成（formal-review fixes verified） | process 36 passed；focused regression 126 passed；non-X11 192 passed / 18 deselected；isolated negative 1 passed，positive compositor gate BLOCKED |
+| Task 6：受监督的 Xorg gaze overlay | 完成（external gate resolved） | process 36 passed；focused regression 126 passed；non-X11 192 passed / 18 deselected；isolated negative 1 passed；positive compositor 2 passed / 1 skipped；compositor 完整集合 208 passed / 1 skipped / 1 deselected |
 
 ## 当前工作
 
-Task 6 formal review 的四个根因已直接修复：所有 acquisition/transport/join/close 进入同一 cleanup boundary，保留原异常 identity/traceback 并逐项尝试清理；存活 child 依次 terminate、bounded join、kill、bounded join，仍存活或 close 失败时保留句柄并以 note 报告；child 仅在 Qt loop 和 Queue shutdown 成功后发送 `stopped`，parent join 后继续 drain control messages；timer 在无新点时仍推进非空 history。后续 re-review 的 compound-failure gap 也已修复：callback traceback 延迟到 child Queue cleanup 完成，若两者均失败则合并成一个 exact `("error", formatted_traceback)` tuple 且只发送一次。实现保持单模块直接控制流、Linux lazy Win32 route 与 Task 5 边界，未新增 manager/factory/base 抽象。正向 compositor 集成仍被 `xcompmgr` 与 `libxcb-cursor0` 缺失阻塞，未用 offscreen、备用实现或实时 `DISPLAY=:1` 掩盖。
+Task 6 formal review 的四个根因已直接修复：所有 acquisition/transport/join/close 进入同一 cleanup boundary，保留原异常 identity/traceback 并逐项尝试清理；存活 child 依次 terminate、bounded join、kill、bounded join，仍存活或 close 失败时保留句柄并以 note 报告；child 仅在 Qt loop 和 Queue shutdown 成功后发送 `stopped`，parent join 后继续 drain control messages；timer 在无新点时仍推进非空 history。后续 re-review 的 compound-failure gap 也已修复：callback traceback 延迟到 child Queue cleanup 完成，若两者均失败则合并成一个 exact `("error", formatted_traceback)` tuple 且只发送一次。安装 `xcompmgr` 与 `libxcb-cursor0` 后，正向 widget/handshake 和隔离 compositor 完整集合均通过，Task 6 外部门禁已解除。实现保持单模块直接控制流、Linux lazy Win32 route 与 Task 5 边界，未新增 manager/factory/base 抽象，未使用 offscreen、备用实现或实时 `DISPLAY=:1`。
 
 ## 验证日志
 
@@ -206,10 +206,11 @@ Task 6 formal review 的四个根因已直接修复：所有 acquisition/transpo
 | 2026-07-25 | Task 6 compound re-review RED/GREEN | callback + Queue-close compound 与 retained send-failure 聚焦 RED：2 failed；最小 deferred traceback 修复后，compound/adjacent 4 passed，1.96s，exactly one error tuple 同时包含两段 traceback。 |
 | 2026-07-25 | Task 6 compound re-review regression | process 36 passed，1.93s；overlay/controller/runtime/keyboard/camera 126 passed，2.08s；non-X11 192 passed / 18 deselected，2.32s。 |
 | 2026-07-25 | Task 6 compound re-review X11/static | isolated negative 1 passed，0.12s；dependency-aware 1 passed / 2 skipped，0.16s；`py_compile`、diff/scope/artifact gates exit 0；模块 534 行。 |
+| 2026-07-26 | Task 6 positive compositor gate | 原样运行 `xvfb-run -a sh -c 'xcompmgr -a & ... tests/test_gaze_overlay_x11.py -m x11 -v'`：exit 0，2 passed / 1 skipped，0.32s；skip 仅为需要无 compositor 的 negative 用例；无 warning，child stderr 仅为 Xvfb 关闭连接提示。 |
+| 2026-07-26 | Task 6 isolated compositor full suite | 原样运行 `xvfb-run -a sh -c 'xcompmgr -a & ... -m pytest -v'`：exit 0，208 passed / 1 skipped / 1 deselected，2.77s；无 warning，child stderr 仅为 Xvfb 关闭连接提示；无残留 Xvfb/xcompmgr/pytest 进程，git status/diff gates clean。 |
 
 
 ## 阻塞项
 
 - Orbbec Python wheel 当前加载其内置 SDK 2.8.6，而非设计指定的系统 SDK v2.9.3。实机采集已通过，但 ABI/库来源不符合设计；后续运行时诊断和依赖任务必须显式判定并解决，禁止通过隐式 `LD_LIBRARY_PATH` 改写或静默继续。
-- Task 6 compositor 正向门禁 BLOCKED：缺少系统包 `xcompmgr` 和 `libxcb-cursor0`。依赖就绪后必须原样运行 `xvfb-run -a sh -c 'xcompmgr -a & /home/yixiao/miniconda3/envs/neugaze/bin/python -m pytest tests/test_gaze_overlay_x11.py -m x11 -v'`，不得用 offscreen 或 live `DISPLAY=:1` 替代。
 - 系统包或 udev 调整若需要 `sudo`，必须先请求用户批准。
