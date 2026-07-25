@@ -58,8 +58,8 @@
 | 设计评审 | 完成 | 用户分三部分批准设计 |
 | 设计文档 | 完成 | 摄像头后端修订提交 `62dc98a`，用户已批准 |
 | 实施计划 | 完成 | 8 个 TDD 任务已写入，提交 `6bf86ed`，待选择执行方式 |
-| 实现 | 进行中（Task 1–5 完成） | 摄像头与桌面边界已接入生产 pipeline；X11 后端、双摄像头源、平台选择器和平台中立动作验证通过 |
-| 自动化验证 | 进行中 | Task 5 second re-review 最终：controller/runtime 47 passed、要求的回归集合 80 passed、隔离 Xvfb 完整默认集合 160 passed / 1 deselected |
+| 实现 | 进行中（Task 1–4 完成；Task 5 redesign 待 formal review） | Task 5 已按用户批准的简化生命周期重构；新 formal review 通过前不标记完成 |
+| 自动化验证 | 进行中 | Task 5 redesign：controller/runtime 51 passed、要求的回归集合 84 passed、隔离 Xvfb 完整默认集合 164 passed / 1 deselected |
 | Gemini 335 实机验收 | 未开始 | 需要连接设备和 Xorg 会话 |
 
 ## 任务进度
@@ -70,11 +70,11 @@
 | Task 2：Fail-fast OpenCV/V4L2 与 Orbbec RGB 源 | 完成（有 SDK ABI 偏差） | 33 个 Task 1/2 单元测试通过；Gemini 335 读取 100 帧、关闭、重开后再读 1 帧通过 |
 | Task 3：平台中立动作与显式桌面选择 | 完成 | selector/action 17 个测试通过（含 cleanup/lifecycle 并发回归）；common modules 编译通过；完整默认测试 50 passed / 1 deselected |
 | Task 4：X11/XTest/XFixes 后端 | 完成（final safety re-review 修复） | 纯测试 49 passed；隔离 Xvfb 集成 14 passed；安全集合 99 passed / 15 deselected；Xvfb 完整默认集合 113 passed / 1 deselected |
-| Task 5：生产 pipeline 接入摄像头与桌面边界 | 完成（second formal re-review 修复） | controller/runtime 47 passed；camera/action 回归 80 passed；隔离 Xvfb 完整默认集合 160 passed / 1 deselected |
+| Task 5：生产 pipeline 接入摄像头与桌面边界 | 进行中（redesign 已实现，待 formal review） | controller/runtime 51 passed；camera/action 回归 84 passed；隔离 Xvfb 完整默认集合 164 passed / 1 deselected |
 
 ## 当前工作
 
-Task 5 已完成生产 pipeline 的显式 CameraConfig/source、平台中立桌面输入、同步动作执行、worker 错误监督和可观察 cleanup。camera 归 pipeline 且 `self.camera` 是采集的唯一 source of truth：calibration/evaluation 成功结束时停止并监督本轮 `GazeMouseController`、清空陈旧 gaze、关闭 camera/window，但保持 `self.quit=False`、唯一 action worker 与 wheel thread，因而同一实例可用新 camera 连续运行；calibration 内部 ESC/ESC+Q、demo 内部 calibration 取消和 demo ESC+Q 均是 terminal cancellation，返回非成功结果并设置 quit、停止 wheel、唤醒/join action worker、`release_all()` 后清理 controller/camera/window。action worker 使用 condition 与 published/completed generation：每个 token 完成、idle、quit 和 failure 都通知等待方；正常 `_finish_run()` 等待最后 generation 并再次监督原始 worker 异常，terminal quit 则先唤醒再 join，不 busy-poll。controller `stop()` 按 running=false、join、drain、重抛原异常/traceback 的顺序执行，失败 controller 不能重启。`gaze_config` 现在必须由 GUI/config 显式传入，缺失时在任何 overlay/Win32 import 前直接报错。hotkey keydown 失败会逆序释放已按下按键并保留主异常，多项 keyup 失败聚合暴露。desktop 保持应用级生命周期，Task 7 GUI 将负责 initialize/close。Task 5 实施时发现计划行号范围已陈旧：仍存活的 `BindKeys.move_mouse` 与 `ObserverWithSectorWheel` pyautogui 调用位于标注范围外；仅做了两处直接 desktop 委托替换，未重组类。下一步执行 Task 6 的受监督 Xorg gaze overlay。
+Task 5 第三轮 review 判定 persistent action worker、condition/token generation 协议和匿名 Tk thread 仍有边界竞态，旧“已完成”结论失效。用户批准的 redesign 已移除该协议：`queue.Queue` 仅承担 wheel/Tk callback 到 evaluation thread 的窄交接；evaluation 每个边界同步 drain 全部动作；normal finish 与 terminal quit 都先停止并 join wheel producer，再 drain 最终动作，动作失败保留同一异常对象和 traceback，队列不跨 reusable run。wheel 现在有显式 `start()`/`stop()`、存储的 non-daemon thread 和每轮重置状态，`stop()` 通过 Tk `root.after(0, root.destroy)` 请求销毁并 join。一个直接 `threading.RLock` 串行化 public start、normal finish 与 terminal cleanup，防止 terminal quit 后资源复活；normal completion 保持可复用，explicit quit/cancellation/error 保持 terminal。camera 仍由 pipeline 独占且 `self.camera` 是唯一 frame source；desktop 仍由应用拥有，pipeline 不 initialize/close，只在 terminal cleanup 调用 `release_all()`。Windows desktop 与 lazy overlay 路径继续保留，Linux 无 live Win32 import。新 focused、要求的回归和隔离 Xvfb 全量集合均通过，但 Task 5 在新的 formal review clean 前保持“进行中”。
 
 ## 验证日志
 
@@ -168,6 +168,12 @@ Task 5 已完成生产 pipeline 的显式 CameraConfig/source、平台中立桌�
 | 2026-07-25 | Task 5 second re-review camera/action 回归 GREEN | `tests/test_gaze_mouse_controller.py tests/test_pipeline_runtime.py tests/test_keyboard_actions.py tests/test_camera_sources.py -v`：80 passed，1.85s |
 | 2026-07-25 | Task 5 second re-review 隔离完整默认集合 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 xvfb-run -a ... -m pytest -v`：160 passed / 1 deselected，2.44s；未连接实时 `DISPLAY=:1` |
 | 2026-07-25 | Task 5 second re-review compile/diff gate | `pipeline.py` 与 `test_pipeline_runtime.py` 的 `py_compile` 通过；最终 focused repeat 39 passed，1.82s；`git diff --check` exit 0 |
+| 2026-07-25 | Task 5 third review | persistent action worker/token protocol 与匿名 Tk thread 再次暴露生命周期竞态；旧完成状态撤销，用户批准 direct `RLock` + synchronous drain redesign |
+| 2026-07-25 | Task 5 redesign focused RED | controller/runtime 55 collected，48 passed / 7 failed；暴露缺少同步 drain、旧 condition barrier、quit/start race、wheel 无显式 start，以及 persistent worker/token 残留 |
+| 2026-07-25 | Task 5 redesign self-review RED/GREEN | wheel/controller 每 iteration 监督与 per-run wheel state：2 failed 后 2 passed；demo terminal quit 防止下一轮 evaluation：1 failed 后 1 passed；wheel worker 与 destroy-request 双失败时原错误优先：1 failed 后 1 passed |
+| 2026-07-25 | Task 5 redesign focused GREEN | `tests/test_gaze_mouse_controller.py tests/test_pipeline_runtime.py -v`：51 passed，1.91s |
+| 2026-07-25 | Task 5 redesign camera/action 回归 GREEN | `tests/test_gaze_mouse_controller.py tests/test_pipeline_runtime.py tests/test_keyboard_actions.py tests/test_camera_sources.py -v`：84 passed，1.92s |
+| 2026-07-25 | Task 5 redesign 隔离完整默认集合 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 xvfb-run -a ... -m pytest -v`：164 passed / 1 deselected，2.47s；未连接实时 `DISPLAY=:1` |
 
 ## 阻塞项
 

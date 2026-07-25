@@ -12,6 +12,7 @@
 
 import os
 import pathlib
+import queue
 import sys
 from typing import Union
 import cv2
@@ -290,6 +291,7 @@ class IntegratedRegressionMediaPipeline:
         # init a list to store step_results
         # init a list to store step_results
         self.lock = threading.Lock()
+        self._lifecycle_lock = threading.RLock()
 
         self.open_windows = []
 
@@ -1265,11 +1267,14 @@ class IntegratedRegressionMediaPipeline:
     
     
     def start_service(self):
-        if self.camera is not None:
-            raise RuntimeError("camera service is already started")
-        self.screen_size = self.get_screen_resolution()
-        self.mid_point = (self.screen_size[0] // 2, self.screen_size[1] // 2)
-        self.camera = open_camera(self.camera_config, sys.platform)
+        with self._lifecycle_lock:
+            if self.quit:
+                raise RuntimeError("pipeline has been shut down")
+            if self.camera is not None:
+                raise RuntimeError("camera service is already started")
+            self.screen_size = self.get_screen_resolution()
+            self.mid_point = (self.screen_size[0] // 2, self.screen_size[1] // 2)
+            self.camera = open_camera(self.camera_config, sys.platform)
 
     def _close_camera(self):
         if self.camera is None:
@@ -1279,16 +1284,22 @@ class IntegratedRegressionMediaPipeline:
         camera.close()
 
     def _finish_run(self):
-        if hasattr(self, "gaze_mouse_controller"):
-            self.gaze_mouse_controller.stop()
-        self._close_camera()
-        self.destroy_window()
+        with self._lifecycle_lock:
+            if self.quit:
+                return
+            if hasattr(self, "gaze_mouse_controller"):
+                self.gaze_mouse_controller.stop()
+            self._close_camera()
+            self.destroy_window()
 
     def start_calibration(self):
         cancelled = False
         try:
-            if self.camera is None:
-                self.start_service()
+            with self._lifecycle_lock:
+                if self.quit:
+                    raise RuntimeError("pipeline has been shut down")
+                if self.camera is None:
+                    self.start_service()
             self.setup_window()
             cv2.waitKey(2000)
             self.calibrate(self.camera)
@@ -1308,12 +1319,15 @@ class IntegratedRegressionMediaPipeline:
 
     def start_evaluation(self):
         try:
-            if self.camera is None:
-                self.start_service()
-            self.end_calibration_signal = False
+            with self._lifecycle_lock:
+                if self.quit:
+                    raise RuntimeError("pipeline has been shut down")
+                if self.camera is None:
+                    self.start_service()
+                self.end_calibration_signal = False
+                self.call_before_while_loop()
             count = 0
             tl = []
-            self.call_before_while_loop()
             while True:
                 t_start = time.time()
                 if self.render_in_eval and len(self.open_windows) == 0:
@@ -1329,76 +1343,72 @@ class IntegratedRegressionMediaPipeline:
                 per_duration = sum(used_tl) / len(used_tl)
                 self.FPS = 1 / per_duration
                 self.call_after_each_eval_loop()
-            self.call_after_while_loop()
-            self._finish_run()
+            with self._lifecycle_lock:
+                if not self.quit:
+                    self.call_after_while_loop()
+                    self._finish_run()
         except BaseException as error:
             self.quit_pipeline(error)
 
     def quit_pipeline(self, primary_error: BaseException | None = None):
         """Stop pipeline-owned resources without closing the shared desktop."""
-        primary_traceback = (
-            primary_error.__traceback__ if primary_error is not None else None
-        )
-        action_condition = getattr(self, "_action_condition", None)
-        if action_condition is None:
+        with self._lifecycle_lock:
+            primary_traceback = (
+                primary_error.__traceback__ if primary_error is not None else None
+            )
             self.quit = True
-        else:
-            with action_condition:
-                self.quit = True
-                action_condition.notify_all()
-        self.end_calibration_signal = True
-        if hasattr(self, "wheel"):
-            self.wheel.should_run = False
+            self.end_calibration_signal = True
 
-        cleanup_errors = []
+            cleanup_errors = []
 
-        def cleanup(operation, callback):
-            try:
-                callback()
-            except BaseException as error:
-                cleanup_errors.append((operation, error))
+            def cleanup(operation, callback):
+                try:
+                    callback()
+                except BaseException as error:
+                    cleanup_errors.append((operation, error))
 
-        action_thread = getattr(self, "_action_thread", None)
-        if (
-            action_thread is not None
-            and action_thread is not threading.current_thread()
-        ):
-            cleanup("action_worker.join", action_thread.join)
-
-        action_worker_error = getattr(self, "_action_worker_error", None)
-        if action_worker_error is not None:
-            _, worker_error, worker_traceback = action_worker_error
-            if primary_error is None:
-                primary_error = worker_error
-                primary_traceback = worker_traceback
-            elif worker_error is not primary_error:
-                cleanup_errors.append(("action worker", worker_error))
-
-        cleanup("desktop.release_all", desktop.release_all)
-        if hasattr(self, "gaze_mouse_controller"):
-            cleanup(
-                "gaze_mouse_controller.stop",
-                self.gaze_mouse_controller.stop,
-            )
-        cleanup("camera.close", self._close_camera)
-        cleanup("destroy_window", self.destroy_window)
-        if hasattr(self, "gaze_overlay") and self.gaze_overlay:
-            cleanup("gaze_overlay.stop", self.gaze_overlay.stop)
-        if hasattr(self, "gaze_thread"):
-            self.gaze_thread = None
-
-        if primary_error is not None:
-            for operation, error in cleanup_errors:
-                primary_error.add_note(
-                    f"{operation} failed with "
-                    f"{type(error).__name__}: {error}"
+            if hasattr(self, "wheel"):
+                cleanup(
+                    "wheel.stop",
+                    self.wheel.stop,
                 )
-            raise primary_error.with_traceback(primary_traceback)
-        if cleanup_errors:
-            raise BaseExceptionGroup(
-                "pipeline cleanup failed",
-                [error for _, error in cleanup_errors],
-            )
+
+            if hasattr(self, "_drain_actions"):
+                try:
+                    self._drain_actions()
+                except BaseException as error:
+                    if primary_error is None:
+                        primary_error = error
+                        primary_traceback = error.__traceback__
+                    elif error is not primary_error:
+                        cleanup_errors.append(("action drain", error))
+
+            cleanup("desktop.release_all", desktop.release_all)
+            if hasattr(self, "gaze_mouse_controller"):
+                cleanup(
+                    "gaze_mouse_controller.stop",
+                    self.gaze_mouse_controller.stop,
+                )
+            if hasattr(self, "_stop_gaze_display"):
+                cleanup(
+                    "gaze_overlay.stop",
+                    self._stop_gaze_display,
+                )
+            cleanup("camera.close", self._close_camera)
+            cleanup("destroy_window", self.destroy_window)
+
+            if primary_error is not None:
+                for operation, error in cleanup_errors:
+                    primary_error.add_note(
+                        f"{operation} failed with "
+                        f"{type(error).__name__}: {error}"
+                    )
+                raise primary_error.with_traceback(primary_traceback)
+            if cleanup_errors:
+                raise BaseExceptionGroup(
+                    "pipeline cleanup failed",
+                    [error for _, error in cleanup_errors],
+                )
 
     def enter_calibration(self):
         self.is_calibrating = True
@@ -1425,13 +1435,16 @@ class IntegratedRegressionMediaPipeline:
     def demo(self):
         cancelled = False
         try:
-            if self.camera is None:
-                self.start_service()
+            with self._lifecycle_lock:
+                if self.quit:
+                    raise RuntimeError("pipeline has been shut down")
+                if self.camera is None:
+                    self.start_service()
+                self.call_before_while_loop()
             is_calibrating = self.start_with_calibration
             is_testing = False
             count = 0
             tl = []
-            self.call_before_while_loop()
             while True:
                 t_start = time.time()
                 if is_calibrating:
@@ -1450,6 +1463,9 @@ class IntegratedRegressionMediaPipeline:
                         self.setup_window()
                     self.evaluate(self.camera)
                 cv2.waitKey(1)
+                if self.quit:
+                    cancelled = True
+                    break
                 if desktop.are_keys_down(("esc", "q")):
                     cancelled = True
                     break
@@ -1469,9 +1485,10 @@ class IntegratedRegressionMediaPipeline:
                     f"FPS: {self.FPS:.2f} duration: {per_duration:.2f}"
                 )
                 self.call_after_each_eval_loop()
-            if not cancelled:
-                self.call_after_while_loop()
-                self._finish_run()
+            with self._lifecycle_lock:
+                if not cancelled and not self.quit:
+                    self.call_after_while_loop()
+                    self._finish_run()
         except BaseException as error:
             self.quit_pipeline(error)
         if cancelled:
@@ -2301,15 +2318,7 @@ class RealAction(BindKeys):
         self.down_keys_list = []  # 当is_key_down==True,这里就会开始加入接下来被按下的键。
         # 当is_key_down==False时，这里就会逐个反向释放key，并且清空这个列表。
         self.wheel = ObserverWithSectorWheel(self, **wheel_config)
-        threading.Thread(target=self.wheel.run_sector_wheel,daemon=True).start()
-        self.action_queue = []
-        self.loop_queue = []  # this is used for control the speed of taking real actions
-        self._action_thread = None
-        self._action_worker_error = None
-        self._action_condition = threading.Condition()
-        self._published_action_tokens = 0
-        self._completed_action_tokens = 0
-        self._action_worker_idle = False
+        self.action_queue = queue.Queue()
         self.lock_eye_controlled_mouse_move_until_time = time.time()
         self.lock_eye_controlled_mouse_move_with_head_until_time = time.time()
 
@@ -2325,6 +2334,8 @@ class RealAction(BindKeys):
 
     def start_gaze_display(self):
         """启动凝视点显示线程"""
+        if self.gaze_thread is not None:
+            raise RuntimeError("gaze display is already started")
         self.show_gaze = True
 
         from .gaze_show_utils import GazeOverlay
@@ -2345,18 +2356,25 @@ class RealAction(BindKeys):
             #         self.gaze_overlay.stop()
 
         self.gaze_thread = threading.Thread(target=gaze_loop)
-        self.gaze_thread.daemon = True
         self.gaze_thread.start()
 
     def stop_gaze_display(self):
         """停止凝视点显示"""
         self.show_gaze = False
+        self._stop_gaze_display()
+
+    def _stop_gaze_display(self):
         self.gaze_running = False
+        gaze_thread = self.gaze_thread
+        if (
+            gaze_thread is not None
+            and gaze_thread is not threading.current_thread()
+        ):
+            gaze_thread.join()
+        self.gaze_thread = None
         if self.gaze_overlay:
             self.gaze_overlay.stop()
             self.gaze_overlay = None
-        if self.gaze_thread:
-            self.gaze_thread = None
 
     def set_show_gaze(self, show):
         """设置是否显示凝视点"""
@@ -2457,43 +2475,42 @@ class RealAction(BindKeys):
         return configuration
 
     def call_before_while_loop(self):
-        super().call_before_while_loop()
-        self.raise_action_worker_if_failed()
-        if self.quit:
-            raise RuntimeError("pipeline has been shut down")
-        if self._action_thread is None:
-            self._action_thread = Thread(target=self.loop_key, daemon=True)
-            self._action_thread.start()
-        elif not self._action_thread.is_alive():
-            raise RuntimeError("action worker stopped unexpectedly")
-        if self.show_gaze:
-            self.start_gaze_display()
-        self.gaze_mouse_controller.update_screen_size(
-            self.screen_size[0], self.screen_size[1]
-        )
-        self.gaze_mouse_controller.start()
-
-    def _publish_action_token(self):
-        with self._action_condition:
-            self.loop_queue.append(1)
-            self._published_action_tokens += 1
-            self._action_condition.notify_all()
-
-    def _wait_for_action_boundary(self):
-        with self._action_condition:
-            target = self._published_action_tokens
-            self._action_condition.wait_for(
-                lambda: (
-                    self._completed_action_tokens >= target
-                    or self._action_worker_error is not None
-                    or self.quit
-                )
+        with self._lifecycle_lock:
+            super().call_before_while_loop()
+            if self.quit:
+                raise RuntimeError("pipeline has been shut down")
+            self.wheel.start()
+            if self.show_gaze:
+                self.start_gaze_display()
+            self.gaze_mouse_controller.update_screen_size(
+                self.screen_size[0], self.screen_size[1]
             )
+            self.gaze_mouse_controller.start()
+
+    def _drain_actions(self):
+        while True:
+            try:
+                action = self.action_queue.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                self._execute_action(action)
+            except BaseException:
+                while True:
+                    try:
+                        self.action_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                raise
 
     def _finish_run(self):
-        self._wait_for_action_boundary()
-        self.raise_action_worker_if_failed()
-        super()._finish_run()
+        with self._lifecycle_lock:
+            if self.quit:
+                return
+            self.wheel.stop()
+            self._drain_actions()
+            self._stop_gaze_display()
+            super()._finish_run()
 
     def set_mouse_control(self,mouse_control):
         self.mouse_control = mouse_control
@@ -2672,45 +2689,9 @@ class RealAction(BindKeys):
                 )
                 self.last_scroll_time = current_time
 
-    def loop_key(self):
-        try:
-            while True:
-                with self._action_condition:
-                    while not self.quit and not self.loop_queue:
-                        self._action_worker_idle = True
-                        self._action_condition.notify_all()
-                        self._action_condition.wait()
-                    if self.quit:
-                        self._action_worker_idle = True
-                        self._action_condition.notify_all()
-                        return
-                    self._action_worker_idle = False
-                    self.loop_queue.pop(0)
-                    action = (
-                        self.action_queue.pop(0)
-                        if self.action_queue
-                        else None
-                    )
-                self._execute_action(action)
-                with self._action_condition:
-                    self._completed_action_tokens += 1
-                    self._action_worker_idle = not self.loop_queue
-                    self._action_condition.notify_all()
-        except BaseException:
-            with self._action_condition:
-                self._action_worker_error = sys.exc_info()
-                self.quit = True
-                self._action_worker_idle = True
-                self._action_condition.notify_all()
-
-    def raise_action_worker_if_failed(self):
-        if self._action_worker_error is None:
-            return
-        _, error, traceback = self._action_worker_error
-        raise error.with_traceback(traceback)
 
     def call_after_each_eval_loop(self):
-        self.raise_action_worker_if_failed()
+        self.wheel.raise_if_failed()
         self.gaze_mouse_controller.raise_if_failed()
         t0 = time.time()
         super().call_after_each_eval_loop()
@@ -2727,10 +2708,7 @@ class RealAction(BindKeys):
         t2 = time.time()
         if self.mouse_dict is not None:
             self.gaze_mouse_controller.update_gaze(self.mouse_dict['x'], self.mouse_dict['y'])
-        if self.quit:
-            self.gaze_mouse_controller.stop()
-        # print(f'main loop:{round(t1-t0,4)}, extra control:{round(t2-t1,4)}')
-        self._publish_action_token()
+        self._drain_actions()
 
 
     def set_key_control(self,key_control):
@@ -2811,14 +2789,14 @@ class RealAction(BindKeys):
                             if key_to_press.startswith('scroll'):
                                 action=Action(key_to_press, OpType.NONE)
                         if action is not None:
-                            self.action_queue.append(action)
+                            self._execute_action(action)
                 else:
                     if d['cp'] == 'FT':
                         # 只有在最初触发的时候会改变这个轮盘
                         self.wheel_categories = wheel
                         self.wheel_layout_type = layout_type
                         self.key_keeps_wheel_opening = k
-                        # 这里的 action_queue append 在下面的ObserverWithSectorWheel中实现
+                        # Wheel callbacks hand selections to action_queue.
 
 
 
@@ -2958,6 +2936,72 @@ class ObserverWithSectorWheel:
         self.subject = subject
         self.radius = radius
         self.sector_wheel_config = sector_wheel_config
+        self.lock = Lock()
+        self._thread = None
+        self._worker_error = None
+        self.root = None
+        self.messagebox = None
+        self.sector_wheel = None
+        self.should_run = False
+        self.current_categories = None
+        self.selected_sector = None
+        self.is_hidden = True
+
+    def start(self):
+        self.raise_if_failed()
+        self.current_categories = None
+        self.selected_sector = None
+        self.is_hidden = True
+        if self._thread is not None:
+            raise RuntimeError("wheel is already started")
+        self.should_run = True
+        self._thread = Thread(
+            target=self.run_sector_wheel,
+            daemon=False,
+        )
+        try:
+            self._thread.start()
+        except BaseException:
+            self.should_run = False
+            self._thread = None
+            raise
+
+    def raise_if_failed(self):
+        if self._worker_error is None:
+            return
+        _, error, traceback = self._worker_error
+        raise error.with_traceback(traceback)
+
+    def stop(self):
+        self.should_run = False
+        wheel_thread = self._thread
+        if wheel_thread is None:
+            self.raise_if_failed()
+            return
+        if wheel_thread is threading.current_thread():
+            raise RuntimeError("wheel thread cannot join itself")
+        request_error = None
+        root = self.root
+        if root is not None:
+            try:
+                root.after(0, root.destroy)
+            except BaseException:
+                request_error = sys.exc_info()
+        wheel_thread.join()
+        self._thread = None
+        try:
+            self.raise_if_failed()
+        except BaseException as error:
+            if request_error is not None:
+                _, request_exception, _ = request_error
+                error.add_note(
+                    "wheel root destroy request failed with "
+                    f"{type(request_exception).__name__}: {request_exception}"
+                )
+            raise
+        if request_error is not None:
+            _, error, traceback = request_error
+            raise error.with_traceback(traceback)
 
     def setup_messagebox(self):
         screen_width = self.messagebox.winfo_screenwidth()
@@ -2967,69 +3011,67 @@ class ObserverWithSectorWheel:
         self.messagebox.geometry(f"{2 * self.radius}x{2 * self.radius}+{x_cordinate}+{y_cordinate}")
 
     def run_sector_wheel(self):
-        self.root = tk.Tk()
-        self.root.withdraw()
+        try:
+            self.root = tk.Tk()
+            self.root.withdraw()
 
-        self.messagebox = tk.Toplevel(self.root)
-        self.messagebox.overrideredirect(True)
-        self.messagebox.attributes('-topmost', True)
-        self.messagebox.attributes('-alpha', 0.5)
-        self.messagebox.withdraw()  # Initially hidden
- 
-        self.sector_wheel = SectorWheel(self.messagebox, radius=self.radius, subject=self.subject,**self.sector_wheel_config)
-        self.lock = Lock()
-        self.should_run = True
-        self.current_categories = None
-        self.selected_sector = None
-        self.is_hidden = True
-        self.setup_messagebox()
-        main_thread = Thread(target=self.sector_wheel_main_loop,daemon=True)
-        main_thread.start()
-        self.root.mainloop()
-        main_thread.join()
+            self.messagebox = tk.Toplevel(self.root)
+            self.messagebox.overrideredirect(True)
+            self.messagebox.attributes('-topmost', True)
+            self.messagebox.attributes('-alpha', 0.5)
+            self.messagebox.withdraw()
+
+            self.sector_wheel = SectorWheel(
+                self.messagebox,
+                radius=self.radius,
+                subject=self.subject,
+                **self.sector_wheel_config,
+            )
+            self.setup_messagebox()
+            if self.should_run:
+                self.root.after(5000, self.sector_wheel_main_loop)
+            else:
+                self.root.after(0, self.root.destroy)
+            self.root.mainloop()
+        except BaseException:
+            self._worker_error = sys.exc_info()
+            self.should_run = False
+        finally:
+            self.should_run = False
+            self.root = None
+            self.messagebox = None
+            self.sector_wheel = None
 
     def sector_wheel_main_loop(self):
-        # 这个并不会阻塞主线程，所以可以在这个里面操作。
-        # 我懂了，这个多线程，是在用空闲时间去执行其他的操作从而减少时间，
-        # 但是一旦两个死循环里面，有一个循环是极快的，没有休息时间给另一个循环操作，那么就会抢占所有时间，导致陷入死循环。
-
-        # 这个执行的逻辑是什么呢？
-        # 就是一直扫描某个key是否激活，如果激活
-        count = 0
-        time.sleep(5)  # 不知道为什么加了个延时就可以两个class都跑了。
-        while self.should_run:
-            time.sleep(0.02)
-            count += 1
-            selected = None  # clear state
+        try:
+            if not self.should_run or self.subject.quit:
+                self.root.destroy()
+                return
             if self.subject.keys_dict is not None:
                 with self.lock:
-                    if self.subject.wheel_categories is None or \
-                            self.subject.key_keeps_wheel_opening is None:
-                        # if wheel has not been assigned a value, just continue
-                        continue
-                    else:
+                    categories = self.subject.wheel_categories
+                    key = self.subject.key_keeps_wheel_opening
+                    if categories is not None and key is not None:
                         new_categories = self.subject.wheel_categories
-                    # print(f"self.check_state('numlock'):{self.check_state('numlock')}")
-
-                    if self.subject.keys_dict.state_dict[self.subject.key_keeps_wheel_opening]['v']:
-                        if self.is_hidden:
-                            # 这是激活的情况，只有在原来就隐藏的时候才会调出来，所以不用担心重复调用
-                            # open
-                            # 调出来之后，先让鼠标回到中心，因为游戏中的鼠标并不在中心位置，而是在不确定的位置，这样就不容易去选了。
-                            desktop.move_pointer(
-                                *self.subject.mid_point, relative=False
-                            )
-                            self.sector_wheel.update_categories(new_categories,
-                                                                layout_type=self.subject.wheel_layout_type)
-                            self.is_hidden = False
-                    else:
-                        if not self.is_hidden:
-                            # close and get result
+                        if self.subject.keys_dict.state_dict[key]['v']:
+                            if self.is_hidden:
+                                desktop.move_pointer(
+                                    *self.subject.mid_point, relative=False
+                                )
+                                self.sector_wheel.update_categories(
+                                    new_categories,
+                                    layout_type=self.subject.wheel_layout_type,
+                                )
+                                self.is_hidden = False
+                        elif not self.is_hidden:
                             self.sector_wheel.hide()
                             selected = self.sector_wheel.selected_sector
                             action = Action(str(selected), OpType.KEYPRESS)
-                            self.subject.action_queue.append(action)
+                            self.subject.action_queue.put(action)
                             self.is_hidden = True
-            if self.subject.quit:
-                self.root.destroy()
-                quit()
+            if self.should_run and not self.subject.quit:
+                self.root.after(20, self.sector_wheel_main_loop)
+        except BaseException:
+            self._worker_error = sys.exc_info()
+            self.should_run = False
+            self.root.destroy()
