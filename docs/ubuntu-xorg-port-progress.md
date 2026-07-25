@@ -58,8 +58,8 @@
 | 设计评审 | 完成 | 用户分三部分批准设计 |
 | 设计文档 | 完成 | 摄像头后端修订提交 `62dc98a`，用户已批准 |
 | 实施计划 | 完成 | 8 个 TDD 任务已写入，提交 `6bf86ed`，待选择执行方式 |
-| 实现 | 进行中（Task 1–5 完成） | Task 5 redesign 的 Critical/Important review findings 已修复并通过 clean re-review；下一步 Task 6 |
-| 自动化验证 | 进行中 | Task 5 final re-review clean；controller/runtime 57 passed、要求的回归集合 90 passed、隔离 Xvfb 完整默认集合 170 passed / 1 deselected |
+| 实现 | 进行中（Task 1–6 完成） | Task 6 formal-review Critical/Important findings 已修复；未开始 Task 7 |
+| 自动化验证 | 进行中 | Task 6 process 35 passed、focused regression 125 passed、完整 non-X11 191 passed / 18 deselected；正向 compositor 门禁受系统依赖阻塞 |
 | Gemini 335 实机验收 | 未开始 | 需要连接设备和 Xorg 会话 |
 
 ## 任务进度
@@ -71,12 +71,11 @@
 | Task 3：平台中立动作与显式桌面选择 | 完成 | selector/action 17 个测试通过（含 cleanup/lifecycle 并发回归）；common modules 编译通过；完整默认测试 50 passed / 1 deselected |
 | Task 4：X11/XTest/XFixes 后端 | 完成（final safety re-review 修复） | 纯测试 49 passed；隔离 Xvfb 集成 14 passed；安全集合 99 passed / 15 deselected；Xvfb 完整默认集合 113 passed / 1 deselected |
 | Task 5：生产 pipeline 接入摄像头与桌面边界 | 完成（redesign final re-review clean） | controller/runtime 57 passed；camera/action 回归 90 passed；隔离 Xvfb 完整默认集合 170 passed / 1 deselected |
+| Task 6：受监督的 Xorg gaze overlay | 完成（formal-review fixes verified） | process 35 passed；focused regression 125 passed；non-X11 191 passed / 18 deselected；isolated negative 1 passed，positive compositor gate BLOCKED |
 
 ## 当前工作
 
-Task 5 第三轮 review 判定 persistent action worker、condition/token generation 协议和匿名 Tk thread 仍有边界竞态，旧“已完成”结论失效。用户批准的 redesign 已移除该协议：`queue.Queue` 仅承担 wheel/Tk callback 到 evaluation thread 的窄交接；evaluation 每个边界同步 drain 全部动作；normal finish 与 terminal quit 都先停止并 join wheel producer，再 drain 最终动作，动作失败保留同一异常对象和 traceback，队列不跨 reusable run。wheel 现在有显式 `start()`/`stop()`、存储的 non-daemon thread 和每轮重置状态，`stop()` 通过 Tk `root.after(0, root.destroy)` 请求销毁并 join。一个直接 `threading.RLock` 串行化 public start、normal finish 与 terminal cleanup，防止 terminal quit 后资源复活；normal completion 保持可复用，explicit quit/cancellation/error 保持 terminal。camera 仍由 pipeline 独占且 `self.camera` 是唯一 frame source；desktop 仍由应用拥有，pipeline 不 initialize/close，只在 terminal cleanup 调用 `release_all()`。Windows desktop 与 lazy overlay 路径继续保留，Linux 无 live Win32 import。新 focused、要求的回归和隔离 Xvfb 全量集合均通过，Task 5 final re-review 已批准。
-
-本轮 formal review 返回 Needs fixes：Action 失败后 wheel 仍可能提交迟到动作并在 terminal cleanup 中被执行；public run 释放 lifecycle lock 后，terminal cleanup 可能在首个 `evaluate`/`calibrate` 前关闭 camera。修复后，queued 和 direct Action 共用同一失败边界：先 stop/join wheel producer，再 discard 队列，原 Action 异常对象/traceback 保持 primary，stop/discard 失败以 note 暴露。`quit_pipeline()` 先发布 terminal 信号，再等待同一个 RLock 做 cleanup；evaluation、standalone calibration 与 demo 的 camera-consuming boundary 在锁内检查 terminal，因此 active consumer 完成前 camera 不会关闭，而外部 quit 无需等到拿锁才发出终止信号。review 的 Minor source-string-test 建议按要求不在本轮实现，留待 final branch review ledger。
+Task 6 formal review 的四个根因已直接修复：所有 acquisition/transport/join/close 进入同一 cleanup boundary，保留原异常 identity/traceback 并逐项尝试清理；存活 child 依次 terminate、bounded join、kill、bounded join，仍存活或 close 失败时保留句柄并以 note 报告；child 仅在 Qt loop 和 Queue shutdown 成功后发送 `stopped`，parent join 后继续 drain control messages；timer 在无新点时仍推进非空 history。实现保持单模块直接控制流、Linux lazy Win32 route 与 Task 5 边界，未新增 manager/factory/base 抽象。正向 compositor 集成仍被 `xcompmgr` 与 `libxcb-cursor0` 缺失阻塞，未用 offscreen、备用实现或实时 `DISPLAY=:1` 掩盖。
 
 ## 验证日志
 
@@ -197,6 +196,13 @@ Task 5 第三轮 review 判定 persistent action worker、condition/token genera
 | 2026-07-25 | Task 6 X11 dependency-aware result | 隔离 `tests/test_gaze_overlay_x11.py -m x11 -v`：1 passed / 2 skipped，0.17s；仅 negative 通过，widget/positive 因真实系统依赖缺失而阻塞，未计为正向成功。 |
 | 2026-07-25 | Task 6 focused regression GREEN | overlay/controller/runtime/keyboard/camera：106 passed，2.22s。 |
 | 2026-07-25 | Task 6 完整 non-X11 GREEN | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .../python -m pytest -m "not x11" -v`：172 passed / 18 deselected，2.40s。 |
+| 2026-07-25 | Task 6 formal-review RED | 新增 15 个确定性 supervision 用例后 `tests/test_gaze_overlay_process.py -q`：16 passed / 15 failed；分别命中 partial acquisition、start/runtime/stop transport、join/close、terminate→kill、ack-without-exit、stopped→error、child shutdown 与 history tick。 |
+| 2026-07-25 | Task 6 formal-review pre-commit RED/GREEN | EOF-aware clean stop 1 failed，callback error-send shutdown 1 failed；修复后两项与 stopped→error 合跑 3 passed，1.86s。EOF 仅在 ack + confirmed exit 后终止 drain，Qt shutdown 全部先尝试再传 error。 |
+| 2026-07-25 | Task 6 formal-review process GREEN | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .../python -m pytest tests/test_gaze_overlay_process.py -q`：35 passed，1.87s；原异常 identity 保留，所有清理操作均尝试，失败 close/live process 句柄保留。 |
+| 2026-07-25 | Task 6 formal-review focused regression | overlay/controller/runtime/keyboard/camera：125 passed，2.09s。 |
+| 2026-07-25 | Task 6 formal-review non-X11 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .../python -m pytest -m 'not x11' -q`：191 passed / 18 deselected，2.29s。 |
+| 2026-07-25 | Task 6 formal-review isolated X11 | missing-compositor gate 1 passed，0.12s；dependency-aware X11 file 1 passed / 2 skipped，0.16s；未连接实时 `DISPLAY=:1`。 |
+| 2026-07-25 | Task 6 formal-review compile/scope | `py_compile`、`git diff --check`、`learn/` scope 与 `.orig/.rej` artifact gates 均 exit 0；系统仍缺 `xcompmgr` 与 `libxcb-cursor.so.0`，正向 compositor 门禁继续 BLOCKED。 |
 
 
 ## 阻塞项

@@ -70,6 +70,12 @@ class _GazeOverlayWidget(QWidget):
         self._discard_expired_points(now)
         self.update()
 
+    def advance_history(self):
+        if not self._history:
+            return
+        self._discard_expired_points(time.monotonic())
+        self.update()
+
     def _discard_expired_points(self, now):
         oldest_allowed = now - self._history_duration
         while self._history and self._history[0][2] < oldest_allowed:
@@ -131,16 +137,30 @@ def _run_qt_overlay(control_connection, point_queue, config):
 
     timer = QTimer()
     callback_failed = False
+    stop_requested = False
 
     def fail_callback():
         nonlocal callback_failed
         callback_failed = True
-        control_connection.send(("error", traceback.format_exc()))
-        timer.stop()
-        widget.close()
-        app.exit(1)
+        formatted_traceback = traceback.format_exc()
+        shutdown_failures = []
+        for label, operation in (
+            ("timer stop", timer.stop),
+            ("widget close", widget.close),
+            ("application exit", lambda: app.exit(1)),
+        ):
+            try:
+                operation()
+            except BaseException:
+                shutdown_failures.append((label, traceback.format_exc()))
+        for label, shutdown_traceback in shutdown_failures:
+            formatted_traceback += (
+                f"\nDuring gaze overlay {label}:\n{shutdown_traceback}"
+            )
+        control_connection.send(("error", formatted_traceback))
 
     def poll_parent():
+        nonlocal stop_requested
         try:
             while control_connection.poll():
                 message = control_connection.recv()
@@ -148,7 +168,7 @@ def _run_qt_overlay(control_connection, point_queue, config):
                     raise RuntimeError(
                         f"unexpected gaze overlay control message: {message!r}"
                     )
-                control_connection.send(("stopped", None))
+                stop_requested = True
                 timer.stop()
                 widget.close()
                 app.quit()
@@ -162,6 +182,8 @@ def _run_qt_overlay(control_connection, point_queue, config):
                     break
             if latest_point is not None:
                 widget.update_gaze_position(*latest_point)
+            else:
+                widget.advance_history()
         except BaseException:
             fail_callback()
 
@@ -169,20 +191,40 @@ def _run_qt_overlay(control_connection, point_queue, config):
     timer.start(max(1, round(config["update_interval"] * 1000)))
     control_connection.send(("ready", None))
     exit_code = app.exec()
-    if exit_code and not callback_failed:
+    if callback_failed:
+        return False
+    if exit_code:
         raise RuntimeError(
             f"X11 gaze overlay event loop exited with code {exit_code}"
         )
+    if not stop_requested:
+        raise RuntimeError("X11 gaze overlay event loop exited before stop")
+    return True
 
 
 def _overlay_process_main(control_connection, point_queue, config):
     try:
-        _run_qt_overlay(control_connection, point_queue, config)
+        stopped = _run_qt_overlay(control_connection, point_queue, config)
     except BaseException:
-        control_connection.send(("error", traceback.format_exc()))
+        formatted_traceback = traceback.format_exc()
+        try:
+            point_queue.close()
+        except BaseException:
+            formatted_traceback += (
+                "\nDuring gaze overlay queue cleanup:\n"
+                + traceback.format_exc()
+            )
+        control_connection.send(("error", formatted_traceback))
+    else:
+        try:
+            point_queue.close()
+        except BaseException:
+            control_connection.send(("error", traceback.format_exc()))
+        else:
+            if stopped:
+                control_connection.send(("stopped", None))
     finally:
         control_connection.close()
-        point_queue.close()
 
 
 class GazeOverlay:
@@ -213,6 +255,7 @@ class GazeOverlay:
         }
         self._process = None
         self._control_connection = None
+        self._child_control_connection = None
         self._point_queue = None
         self._failure = None
         self._started = False
@@ -223,57 +266,59 @@ class GazeOverlay:
         if self._failure is not None:
             raise self._failure
 
-        context = multiprocessing.get_context("spawn")
-        parent_control, child_control = context.Pipe(duplex=True)
-        point_queue = context.Queue(maxsize=1)
-        process = context.Process(
-            target=_overlay_process_main,
-            args=(child_control, point_queue, self._config),
-        )
-        self._process = process
-        self._control_connection = parent_control
-        self._point_queue = point_queue
-
         try:
-            process.start()
+            context = multiprocessing.get_context("spawn")
+            parent_control, child_control = context.Pipe(duplex=True)
+            self._control_connection = parent_control
+            self._child_control_connection = child_control
+            self._point_queue = context.Queue(maxsize=1)
+            self._process = context.Process(
+                target=_overlay_process_main,
+                args=(child_control, self._point_queue, self._config),
+            )
+            self._process.start()
+            self._child_control_connection.close()
+            self._child_control_connection = None
+
+            deadline = time.monotonic() + _START_TIMEOUT_SECONDS
+            while True:
+                message = self._receive_before_deadline(deadline)
+                if message is not None:
+                    if message == ("ready", None):
+                        self._started = True
+                        return
+                    raise self._control_message_error(message)
+
+                if not self._process.is_alive():
+                    raise self._unexpected_death_error()
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        "gaze overlay child did not become ready within "
+                        "5 seconds"
+                    )
         except BaseException as error:
-            self._close_after_start_failure(child_control, error)
+            self._fail_and_cleanup(error)
             raise
-        child_control.close()
-
-        deadline = time.monotonic() + _START_TIMEOUT_SECONDS
-        while True:
-            message = self._receive_before_deadline(deadline)
-            if message is not None:
-                if message == ("ready", None):
-                    self._started = True
-                    return
-                self._raise_control_failure(message)
-
-            if not process.is_alive():
-                self._raise_unexpected_death()
-            if time.monotonic() >= deadline:
-                error = TimeoutError(
-                    "gaze overlay child did not become ready within 5 seconds"
-                )
-                self._terminate_failed_process(error)
-                raise error
 
     def update_gaze_position(self, x, y):
         if not self._started:
             raise RuntimeError("gaze overlay is not running")
         self.raise_if_failed()
-        point = (int(x), int(y))
         try:
-            self._point_queue.put_nowait(point)
-        except queue.Full:
+            point = (int(x), int(y))
             try:
-                self._point_queue.get(
-                    timeout=_QUEUE_HANDOFF_TIMEOUT_SECONDS
-                )
-            except queue.Empty:
-                pass
-            self._point_queue.put_nowait(point)
+                self._point_queue.put_nowait(point)
+            except queue.Full:
+                try:
+                    self._point_queue.get(
+                        timeout=_QUEUE_HANDOFF_TIMEOUT_SECONDS
+                    )
+                except queue.Empty:
+                    pass
+                self._point_queue.put_nowait(point)
+        except BaseException as error:
+            self._fail_and_cleanup(error)
+            raise
 
     def raise_if_failed(self):
         if self._failure is not None:
@@ -281,63 +326,69 @@ class GazeOverlay:
         if self._process is None:
             return
 
-        while self._control_connection.poll():
-            self._raise_control_failure(self._control_connection.recv())
-        if not self._process.is_alive():
-            self._raise_unexpected_death()
+        try:
+            while self._control_connection.poll():
+                message = self._control_connection.recv()
+                raise self._control_message_error(message)
+            if not self._process.is_alive():
+                raise self._unexpected_death_error()
+        except BaseException as error:
+            self._fail_and_cleanup(error)
+            raise
 
     def stop(self):
         if self._failure is not None:
             raise self._failure
         if self._process is None:
             return
-        self.raise_if_failed()
 
         try:
+            self.raise_if_failed()
             self._control_connection.send(("stop", None))
-        except BaseException as error:
-            self._terminate_failed_process(error)
-            raise
 
-        deadline = time.monotonic() + _STOP_TIMEOUT_SECONDS
-        acknowledged = False
-        while not acknowledged:
-            message = self._receive_before_deadline(deadline)
-            if message is not None:
-                if message == ("stopped", None):
-                    acknowledged = True
-                    break
-                self._raise_control_failure(message)
-            if not self._process.is_alive():
-                self._raise_unexpected_death()
-            if time.monotonic() >= deadline:
-                error = TimeoutError(
-                    "gaze overlay child did not acknowledge stop within "
-                    "5 seconds"
+            deadline = time.monotonic() + _STOP_TIMEOUT_SECONDS
+            while True:
+                message = self._receive_before_deadline(deadline)
+                if message is not None:
+                    if message == ("stopped", None):
+                        break
+                    raise self._control_message_error(message)
+                if not self._process.is_alive():
+                    raise self._unexpected_death_error()
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        "gaze overlay child did not acknowledge stop within "
+                        "5 seconds"
+                    )
+
+            remaining = max(0.0, deadline - time.monotonic())
+            self._process.join(remaining)
+            if self._process.is_alive():
+                raise TimeoutError(
+                    "gaze overlay child acknowledged stop but did not exit "
+                    "within 5 seconds"
                 )
-                self._terminate_failed_process(error)
-                raise error
 
-        remaining = max(0.0, deadline - time.monotonic())
-        self._process.join(remaining)
-        if self._process.is_alive():
-            error = TimeoutError(
-                "gaze overlay child did not exit within 5 seconds after "
-                "stop acknowledgement"
-            )
-            self._terminate_failed_process(error)
-            raise error
-        if self._process.exitcode != 0:
-            error = RuntimeError(
-                "gaze overlay child exited after stop acknowledgement with "
-                f"code {self._process.exitcode}"
-            )
-            self._failure = error
-            self._dispose_parent_resources()
-            raise error
+            # Queued messages precede EOF after the acknowledged child exits.
+            # Earlier EOF remains a transport failure in start/runtime/stop.
+            while self._control_connection.poll():
+                try:
+                    message = self._control_connection.recv()
+                except EOFError:
+                    break
+                raise self._control_message_error(message)
 
-        self._started = False
-        self._dispose_parent_resources()
+            if self._process.exitcode != 0:
+                raise RuntimeError(
+                    "gaze overlay child exited after stop acknowledgement "
+                    f"with code {self._process.exitcode}"
+                )
+
+            self._started = False
+            self._cleanup_resources()
+        except BaseException as error:
+            self._fail_and_cleanup(error)
+            raise
 
     def _receive_before_deadline(self, deadline):
         remaining = deadline - time.monotonic()
@@ -349,87 +400,132 @@ class GazeOverlay:
             return self._control_connection.recv()
         return None
 
-    def _raise_control_failure(self, message):
+    def _control_message_error(self, message):
         if (
             isinstance(message, tuple)
             and len(message) == 2
             and message[0] == "error"
             and isinstance(message[1], str)
         ):
-            error = RuntimeError(
+            return RuntimeError(
                 f"gaze overlay child failed:\n{message[1]}"
             )
-        else:
-            error = RuntimeError(
-                f"unexpected gaze overlay child message: {message!r}"
-            )
-        self._terminate_failed_process(error)
-        raise error
-
-    def _raise_unexpected_death(self):
-        exitcode = self._process.exitcode
-        error = RuntimeError(
-            "gaze overlay child exited unexpectedly with code "
-            f"{exitcode}"
+        return RuntimeError(
+            f"unexpected gaze overlay child message: {message!r}"
         )
-        self._failure = error
-        self._dispose_parent_resources(error)
-        raise error
 
-    def _close_after_start_failure(self, child_control, primary_error):
-        try:
-            child_control.close()
-        except BaseException as cleanup_error:
-            primary_error.add_note(
-                "gaze overlay child connection cleanup failed with "
-                f"{type(cleanup_error).__name__}: {cleanup_error}"
-            )
-        self._dispose_parent_resources(primary_error)
+    def _unexpected_death_error(self):
+        return RuntimeError(
+            "gaze overlay child exited unexpectedly with code "
+            f"{self._process.exitcode}"
+        )
 
-    def _terminate_failed_process(self, primary_error):
+    def _fail_and_cleanup(self, primary_error):
         self._failure = primary_error
-        process = self._process
-        if process is not None:
-            try:
-                if process.is_alive():
-                    process.terminate()
-                process.join(1)
-            except BaseException as cleanup_error:
-                primary_error.add_note(
-                    "gaze overlay child termination failed with "
-                    f"{type(cleanup_error).__name__}: {cleanup_error}"
-                )
         self._started = False
-        self._dispose_parent_resources(primary_error)
+        self._cleanup_resources(primary_error, terminate=True)
 
-    def _close_point_queue(self, primary_error=None):
-        if self._point_queue is None:
-            return
-        operations = (self._point_queue.close, self._point_queue.join_thread)
-        for operation in operations:
+    def _cleanup_resources(self, primary_error=None, *, terminate=False):
+        cleanup_errors = []
+
+        def attempt(label, operation):
             try:
                 operation()
             except BaseException as cleanup_error:
-                if primary_error is None:
-                    raise
-                primary_error.add_note(
-                    "gaze overlay point queue cleanup failed with "
-                    f"{type(cleanup_error).__name__}: {cleanup_error}"
+                cleanup_errors.append((label, cleanup_error))
+                return False
+            return True
+
+        process = self._process
+        if process is not None:
+            alive = None
+            try:
+                alive = process.is_alive()
+            except BaseException as cleanup_error:
+                cleanup_errors.append(
+                    (
+                        "child state check",
+                        cleanup_error,
+                    )
                 )
 
-    def _dispose_parent_resources(self, primary_error=None):
-        control_connection = self._control_connection
-        if control_connection is not None:
-            try:
-                control_connection.close()
-            except BaseException as cleanup_error:
-                if primary_error is None:
-                    raise
-                primary_error.add_note(
-                    "gaze overlay control cleanup failed with "
-                    f"{type(cleanup_error).__name__}: {cleanup_error}"
+            if terminate and alive:
+                attempt("child terminate", process.terminate)
+                attempt(
+                    "child join after terminate",
+                    lambda: process.join(1),
                 )
-        self._close_point_queue(primary_error)
-        self._process = None
-        self._control_connection = None
-        self._point_queue = None
+                try:
+                    alive = process.is_alive()
+                except BaseException as cleanup_error:
+                    cleanup_errors.append(
+                        ("child state check after terminate", cleanup_error)
+                    )
+
+                if alive:
+                    kill = getattr(process, "kill", None)
+                    if callable(kill):
+                        attempt("child kill", kill)
+                        attempt(
+                            "child join after kill",
+                            lambda: process.join(1),
+                        )
+                    else:
+                        cleanup_errors.append(
+                            (
+                                "child kill",
+                                RuntimeError("process.kill is unavailable"),
+                            )
+                        )
+                    try:
+                        alive = process.is_alive()
+                    except BaseException as cleanup_error:
+                        cleanup_errors.append(
+                            ("child state check after kill", cleanup_error)
+                        )
+
+            if alive:
+                cleanup_errors.append(
+                    (
+                        "child cleanup",
+                        RuntimeError("gaze overlay child remains alive"),
+                    )
+                )
+            elif alive is False:
+                if attempt("child process close", process.close):
+                    self._process = None
+
+        child_control = self._child_control_connection
+        if child_control is not None:
+            if attempt("child control close", child_control.close):
+                self._child_control_connection = None
+
+        control = self._control_connection
+        if control is not None:
+            if attempt("parent control close", control.close):
+                self._control_connection = None
+
+        point_queue = self._point_queue
+        if point_queue is not None:
+            queue_closed = attempt("point queue close", point_queue.close)
+            queue_joined = attempt("point queue join", point_queue.join_thread)
+            if queue_closed and queue_joined:
+                self._point_queue = None
+
+        if not cleanup_errors:
+            return
+
+        raise_cleanup_error = primary_error is None
+        if raise_cleanup_error:
+            first_label, primary_error = cleanup_errors.pop(0)
+            primary_error.add_note(
+                f"gaze overlay cleanup operation failed: {first_label}"
+            )
+
+        for label, cleanup_error in cleanup_errors:
+            primary_error.add_note(
+                f"gaze overlay {label} failed with "
+                f"{type(cleanup_error).__name__}: {cleanup_error}"
+            )
+        if raise_cleanup_error:
+            raise primary_error
