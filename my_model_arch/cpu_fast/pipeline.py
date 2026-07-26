@@ -50,6 +50,7 @@ from .keyboard_utils import Action, OpType
 from .robot_actions import (
     RobotAction,
     emit_robot_action,
+    emit_robot_action_cancelled,
     resolve_robot_action,
     validate_robot_action_config,
 )
@@ -2651,6 +2652,18 @@ class RealAction(BindKeys):
             if self.quit:
                 quit()
 
+    def make_wheel_action(self, selected: object) -> Action | RobotAction | None:
+        if self.action_output == "robot_terminal":
+            if selected is None:
+                emit_robot_action_cancelled(
+                    reason="no_selection", source="wheel"
+                )
+                return None
+            if not isinstance(selected, RobotAction):
+                raise TypeError("Ubuntu robot wheel requires RobotAction")
+            return selected
+        return Action(str(selected), OpType.KEYPRESS)
+
     def _execute_action(self, action):
         try:
             return self._execute_action_once(action)
@@ -2800,12 +2813,22 @@ class RealAction(BindKeys):
     def _decode_robot_actions(self, state_dict):
         expressions = self.robot_action_config["expressions"]
         for expression_id, expression_config in expressions.items():
-            if "action" not in expression_config:
-                continue
             state = state_dict.get(expression_id)
             if state is None:
                 continue
-            if state["diff"] is True and state["cp"] == "FT":
+            if state["diff"] is not True or state["cp"] != "FT":
+                continue
+            if "wheel" in expression_config:
+                self.wheel_categories = [
+                    resolve_robot_action(
+                        self.robot_action_config, action_id, source="wheel"
+                    )
+                    for action_id in expression_config["wheel"]
+                ]
+                self.wheel_layout_type = "cardinal"
+                self.key_keeps_wheel_opening = expression_id
+                continue
+            if "action" in expression_config:
                 action = resolve_robot_action(
                     self.robot_action_config,
                     expression_config["action"],
@@ -2919,6 +2942,12 @@ class SectorWheel:
         self.n_col = 0
         self.layout_type = 'circle'
 
+    def _screen_to_canvas(self, screen_x: float, screen_y: float) -> tuple[float, float]:
+        return (
+            screen_x - self.messagebox.winfo_rootx(),
+            screen_y - self.messagebox.winfo_rooty(),
+        )
+
     def check_op_xy(self):
         if hasattr(self, 'last_op_xy') and self.subject.op_xy != self.last_op_xy:
             self.last_op_xy = self.subject.op_xy
@@ -2926,13 +2955,21 @@ class SectorWheel:
                 pass
 
             event = Event()
-            event.x = self.subject.op_xy[0]
-            event.y = self.subject.op_xy[1]
+            local_x, local_y = self._screen_to_canvas(*self.subject.op_xy)
+            event.x = local_x
+            event.y = local_y
             self.on_mouse_move(event)
             # print('check_op_xy on_mouse_moves')
         self.canvas.after(10, self.check_op_xy)  # 使用 canvas.after 而不是 self.after
 
+    def _category_label(self, category: object) -> str:
+        if isinstance(category, RobotAction):
+            return category.label
+        return str(category)
+
     def update_categories(self, categories, layout_type='circle'):
+        if layout_type == 'cardinal' and len(categories) != 4:
+            raise ValueError("cardinal layout requires exactly four categories")
         self.layout_type = layout_type
         if layout_type == 'square':
             self.n_row = int(len(categories) ** 0.5)
@@ -2943,7 +2980,37 @@ class SectorWheel:
             self.draw_sectors()
         elif layout_type == 'square':
             self.draw_square()
+        elif layout_type == 'cardinal':
+            self.draw_cardinal()
         self.messagebox.deiconify()
+
+    def draw_cardinal(self, highlighted_sector=None):
+        self.selected_sector = (
+            self.categories[highlighted_sector]
+            if highlighted_sector is not None
+            else None
+        )
+        self.canvas.delete("all")
+        sectors = (
+            (0, 45, self.radius, 0.3 * self.radius),
+            (1, 225, self.radius, 1.7 * self.radius),
+            (2, 135, 0.3 * self.radius, self.radius),
+            (3, 315, 1.7 * self.radius, self.radius),
+        )
+        for index, start, text_x, text_y in sectors:
+            fill_color = (
+                "lightgray" if index == highlighted_sector else "white"
+            )
+            self.canvas.create_arc(
+                0, 0, 2 * self.radius, 2 * self.radius,
+                start=start, extent=90, fill=fill_color, outline="white",
+                width=0, tags=f"sector{index}",
+            )
+            self.canvas.create_text(
+                text_x, text_y,
+                text=self._category_label(self.categories[index]),
+                font=(self.font, self.font_size * 3, "bold"), fill="red",
+            )
 
     def draw_square(self, highlighted_sector=None):
         self.selected_sector = self.categories[highlighted_sector] if highlighted_sector is not None else None
@@ -2960,7 +3027,7 @@ class SectorWheel:
                     y2 = y1 + square_size
                     fill_color = 'lightgray' if idx == highlighted_sector else 'white'
                     self.canvas.create_rectangle(x1, y1, x2, y2, fill=fill_color, outline='black')
-                    self.canvas.create_text((x1 + x2) / 2, (y1 + y2) / 2, text=self.categories[idx],
+                    self.canvas.create_text((x1 + x2) / 2, (y1 + y2) / 2, text=self._category_label(self.categories[idx]),
                                             font=(self.font, self.font_size, "bold"))
 
     def draw_sectors(self, highlighted_sector=None):
@@ -2979,7 +3046,7 @@ class SectorWheel:
             text_angle = math.radians(start_angle + 180 / self.num_sectors)
             text_x = self.radius + 0.7 * self.radius * math.cos(text_angle)
             text_y = self.radius - 0.7 * self.radius * math.sin(text_angle)
-            self.canvas.create_text(text_x, text_y, text=self.categories[i],
+            self.canvas.create_text(text_x, text_y, text=self._category_label(self.categories[i]),
                                     font=(self.font, self.font_size*3, "bold"), fill='red')
 
     def on_mouse_move(self, event):
@@ -2993,6 +3060,9 @@ class SectorWheel:
         elif self.layout_type == 'square':
             sector = self.get_square_from_mouse_position(event)
             self.draw_square(highlighted_sector=sector)
+        elif self.layout_type == 'cardinal':
+            sector = self.get_cardinal_from_mouse_position(event)
+            self.draw_cardinal(highlighted_sector=sector)
 
     def get_square_from_mouse_position(self, event):
         rows, cols = self.n_row, self.n_col
@@ -3004,6 +3074,17 @@ class SectorWheel:
             if idx < self.num_sectors:
                 return idx
         return None
+
+    def get_cardinal_from_mouse_position(self, event):
+        dx = event.x - self.radius
+        dy = event.y - self.radius
+        if dx == 0 and dy == 0:
+            return None
+        if dx * dx + dy * dy > self.radius * self.radius:
+            return None
+        if abs(dy) >= abs(dx):
+            return 0 if dy < 0 else 1
+        return 2 if dx < 0 else 3
 
     def get_angle_from_mouse_position(self, event):
         x = event.x - self.canvas.winfo_width() // 2
@@ -3146,9 +3227,10 @@ class ObserverWithSectorWheel:
                         new_categories = self.subject.wheel_categories
                         if self.subject.keys_dict.state_dict[key]['v']:
                             if self.is_hidden:
-                                desktop.move_pointer(
-                                    *self.subject.mid_point, relative=False
-                                )
+                                if self.subject.action_output == "desktop":
+                                    desktop.move_pointer(
+                                        *self.subject.mid_point, relative=False
+                                    )
                                 self.sector_wheel.update_categories(
                                     new_categories,
                                     layout_type=self.subject.wheel_layout_type,
@@ -3157,8 +3239,9 @@ class ObserverWithSectorWheel:
                         elif not self.is_hidden:
                             self.sector_wheel.hide()
                             selected = self.sector_wheel.selected_sector
-                            action = Action(str(selected), OpType.KEYPRESS)
-                            self.subject.action_queue.put(action)
+                            action = self.subject.make_wheel_action(selected)
+                            if action is not None:
+                                self.subject.action_queue.put(action)
                             self.is_hidden = True
             if self.should_run and not self.subject.quit:
                 self.root.after(20, self.sector_wheel_main_loop)

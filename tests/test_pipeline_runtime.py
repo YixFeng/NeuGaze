@@ -15,11 +15,13 @@ from my_model_arch.cpu_fast import desktop
 from my_model_arch.cpu_fast.camera import CameraConfig
 from my_model_arch.cpu_fast import pipeline as pipeline_module
 from my_model_arch.cpu_fast.keyboard_utils import Action, OpType
+from my_model_arch.cpu_fast.robot_actions import RobotAction
 from my_model_arch.cpu_fast.pipeline import (
     BindKeys,
     IntegratedRegressionMediaPipeline,
     ObserverWithSectorWheel,
     RealAction,
+    SectorWheel,
 )
 
 
@@ -410,6 +412,7 @@ def test_sector_wheel_centers_pointer_through_desktop(monkeypatch):
         key_keeps_wheel_opening="open",
         mid_point=(960, 540),
         wheel_layout_type="circle",
+        action_output="desktop",
         quit=False,
     )
     calls = []
@@ -424,6 +427,50 @@ def test_sector_wheel_centers_pointer_through_desktop(monkeypatch):
     wheel.sector_wheel_main_loop()
 
     assert calls == [(960, 540, False)]
+
+
+def _cardinal_wheel_without_tk(radius):
+    wheel = object.__new__(SectorWheel)
+    wheel.radius = radius
+    wheel.canvas = SimpleNamespace(
+        winfo_width=lambda: 2 * radius,
+        winfo_height=lambda: 2 * radius,
+    )
+    return wheel
+
+
+@pytest.mark.parametrize(
+    ("point", "expected_index"),
+    [
+        ((400, 100), 0),
+        ((400, 700), 1),
+        ((100, 400), 2),
+        ((700, 400), 3),
+        ((0, 0), None),
+    ],
+)
+def test_cardinal_wheel_maps_fixed_directions(point, expected_index):
+    wheel = _cardinal_wheel_without_tk(radius=400)
+    event = SimpleNamespace(x=point[0], y=point[1])
+
+    assert wheel.get_cardinal_from_mouse_position(event) == expected_index
+
+
+@pytest.mark.parametrize(
+    ("point", "expected_index"),
+    [
+        ((600, 200), 0),
+        ((200, 600), 1),
+        ((400, 400), None),
+    ],
+)
+def test_cardinal_wheel_uses_vertical_axis_for_ties_and_none_at_center(
+    point, expected_index
+):
+    wheel = _cardinal_wheel_without_tk(radius=400)
+    event = SimpleNamespace(x=point[0], y=point[1])
+
+    assert wheel.get_cardinal_from_mouse_position(event) == expected_index
 
 
 def test_pipeline_import_graph_is_platform_neutral_in_fresh_interpreter():
@@ -1843,3 +1890,185 @@ def test_default_robot_config_has_exact_action_contract():
         "num8": {"action": "dance"},
         "extra": {"action": "stop"},
     }
+
+
+def test_screen_to_canvas_subtracts_only_window_origin():
+    wheel = _cardinal_wheel_without_tk(radius=400)
+    wheel.messagebox = SimpleNamespace(
+        winfo_rootx=lambda: 560,
+        winfo_rooty=lambda: 140,
+    )
+
+    assert wheel._screen_to_canvas(960, 540) == (400, 400)
+
+
+@pytest.mark.parametrize(
+    ("screen_point", "expected_index"),
+    [
+        ((1400, 550), 0),
+        ((1400, 1150), 1),
+        ((1100, 850), 2),
+        ((1700, 850), 3),
+    ],
+)
+def test_screen_to_canvas_preserves_cardinal_positions_on_large_screen(
+    screen_point, expected_index
+):
+    wheel = _cardinal_wheel_without_tk(radius=400)
+    wheel.messagebox = SimpleNamespace(
+        winfo_rootx=lambda: 1000,
+        winfo_rooty=lambda: 450,
+    )
+
+    local_x, local_y = wheel._screen_to_canvas(*screen_point)
+
+    assert wheel.get_cardinal_from_mouse_position(
+        SimpleNamespace(x=local_x, y=local_y)
+    ) == expected_index
+
+
+def test_screen_to_canvas_propagates_window_origin_errors():
+    wheel = _cardinal_wheel_without_tk(radius=400)
+
+    def fail_rootx():
+        raise RuntimeError("Tk root coordinate failed")
+
+    wheel.messagebox = SimpleNamespace(
+        winfo_rootx=fail_rootx,
+        winfo_rooty=lambda: 140,
+    )
+
+    with pytest.raises(RuntimeError, match="Tk root coordinate failed"):
+        wheel._screen_to_canvas(960, 540)
+
+
+def test_robot_numlock_opens_cardinal_wheel_with_robot_actions():
+    pipeline = _robot_pipeline_without_constructor()
+    pipeline.keys_dict = SimpleNamespace(
+        state_dict={"numlock": transition("FT", value=True)}
+    )
+    pipeline.head_dict = SimpleNamespace(state_dict={})
+
+    pipeline.decode()
+
+    assert pipeline.wheel_layout_type == "cardinal"
+    assert pipeline.key_keeps_wheel_opening == "numlock"
+    assert pipeline.wheel_categories == [
+        RobotAction("move_forward_step", "前进一步", "wheel"),
+        RobotAction("move_backward_step", "后退一步", "wheel"),
+        RobotAction("turn_left", "左转", "wheel"),
+        RobotAction("turn_right", "右转", "wheel"),
+    ]
+
+
+def test_robot_wheel_open_does_not_move_desktop_pointer(monkeypatch):
+    wheel = object.__new__(ObserverWithSectorWheel)
+    wheel.should_run = True
+    wheel.lock = threading.Lock()
+    wheel.current_categories = None
+    wheel.selected_sector = None
+    wheel.is_hidden = True
+    updates = []
+
+    def update_categories(categories, layout_type):
+        updates.append((categories, layout_type))
+        wheel.should_run = False
+
+    wheel.sector_wheel = SimpleNamespace(update_categories=update_categories)
+    categories = [RobotAction("turn_left", "左转", "wheel")] * 4
+    wheel.subject = SimpleNamespace(
+        keys_dict=SimpleNamespace(state_dict={"numlock": {"v": True}}),
+        wheel_categories=categories,
+        key_keeps_wheel_opening="numlock",
+        mid_point=(960, 540),
+        wheel_layout_type="cardinal",
+        action_output="robot_terminal",
+        quit=False,
+    )
+    monkeypatch.setattr(pipeline_module.time, "sleep", lambda duration: None)
+    monkeypatch.setattr(
+        desktop,
+        "move_pointer",
+        lambda *args, **kwargs: pytest.fail("robot wheel moved the pointer"),
+    )
+
+    wheel.sector_wheel_main_loop()
+
+    assert updates == [(categories, "cardinal")]
+
+
+def test_robot_wheel_selection_keeps_robot_action_identity_and_emits_once(
+    capsys
+):
+    pipeline = _robot_pipeline_without_constructor()
+    selected = RobotAction("turn_left", "左转", "wheel")
+    pipeline.action_queue = queue.Queue()
+    pipeline.keys_dict = SimpleNamespace(state_dict={"numlock": {"v": False}})
+    pipeline.key_keeps_wheel_opening = "numlock"
+    pipeline.quit = False
+    pipeline.wheel_categories = [selected] * 4
+    pipeline.wheel_layout_type = "cardinal"
+    wheel = object.__new__(ObserverWithSectorWheel)
+    wheel.should_run = True
+    wheel.lock = threading.Lock()
+    wheel.current_categories = None
+    wheel.selected_sector = None
+    wheel.is_hidden = False
+    wheel.subject = pipeline
+    wheel.sector_wheel = SimpleNamespace(
+        selected_sector=selected,
+        hide=lambda: setattr(wheel, "should_run", False),
+    )
+
+    wheel.sector_wheel_main_loop()
+
+    assert pipeline.action_queue.get_nowait() is selected
+    pipeline.action_queue.put(selected)
+    pipeline._drain_actions()
+    assert capsys.readouterr().out == (
+        "[ROBOT_ACTION] id=turn_left label=左转 source=wheel\n"
+    )
+
+
+def test_robot_wheel_cancel_is_silent_except_for_explicit_cancel_line(capsys):
+    pipeline = _robot_pipeline_without_constructor()
+    pipeline.action_queue = queue.Queue()
+    pipeline.keys_dict = SimpleNamespace(state_dict={"numlock": {"v": False}})
+    pipeline.key_keeps_wheel_opening = "numlock"
+    pipeline.quit = False
+    pipeline.wheel_categories = []
+    wheel = object.__new__(ObserverWithSectorWheel)
+    wheel.should_run = True
+    wheel.lock = threading.Lock()
+    wheel.current_categories = None
+    wheel.selected_sector = None
+    wheel.is_hidden = False
+    wheel.subject = pipeline
+    wheel.sector_wheel = SimpleNamespace(
+        selected_sector=None,
+        hide=lambda: setattr(wheel, "should_run", False),
+    )
+
+    wheel.sector_wheel_main_loop()
+
+    assert pipeline.action_queue.empty()
+    assert capsys.readouterr().out == (
+        "[ROBOT_ACTION_CANCELLED] reason=no_selection source=wheel\n"
+    )
+
+
+def test_robot_wheel_rejects_non_robot_selection():
+    pipeline = _robot_pipeline_without_constructor()
+
+    with pytest.raises(TypeError, match="RobotAction"):
+        pipeline.make_wheel_action("turn_left")
+
+
+def test_windows_wheel_selection_remains_keypress_action():
+    pipeline = _real_action_without_constructor()
+
+    action = pipeline.make_wheel_action("turn_left")
+
+    assert isinstance(action, Action)
+    assert action.keyname == "turn_left"
+    assert action.op_type == OpType.KEYPRESS
