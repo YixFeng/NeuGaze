@@ -135,3 +135,9 @@ def test_action_propagates_backend_error(monkeypatch):
 
     with pytest.raises(OSError, match="injection failed"):
         Action("w", OpType.KEYDOWN).execute()
+
+
+
+def test_action_rejects_illegal_op_type():
+    with pytest.raises(ValueError, match="op_type"):
+        Action("w", object()).execute()

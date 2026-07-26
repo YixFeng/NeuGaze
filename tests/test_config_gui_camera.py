@@ -81,7 +81,13 @@ def window_factory(app, monkeypatch, tmp_path, config_mapping):
         available = cameras
         if available is None:
             available = [
-                CameraInfo("orbbec", 0, "Gemini 335 SN123", "SN123"),
+                CameraInfo(
+                    "orbbec",
+                    0,
+                    "Orbbec Gemini 335 serial SN123 index 0 "
+                    "RGB 1280x720 @ 30 FPS",
+                    "SN123",
+                ),
                 CameraInfo("opencv", 7, "/dev/video7"),
             ]
 
@@ -177,7 +183,10 @@ def test_device_combo_keeps_backend_and_device_id_in_item_data(window_factory):
     window, _ = window_factory()
 
     orbbec_index = combo_index(window.camera_combo, ("orbbec", 0))
-    assert window.camera_combo.itemText(orbbec_index) == "Gemini 335 SN123"
+    assert window.camera_combo.itemText(orbbec_index) == (
+        "Orbbec Gemini 335 serial SN123 index 0 "
+        "RGB 1280x720 @ 30 FPS"
+    )
 
     window.camera_backend_combo.setCurrentIndex(
         combo_index(window.camera_backend_combo, "opencv")
@@ -392,16 +401,29 @@ def test_camera_read_error_is_visible_and_preserves_exception(
 ):
     window, _ = window_factory()
     error = TimeoutError("RGB frame timed out")
+    source_traceback = []
     messages = []
 
     class FailingCamera:
+        def __init__(self):
+            self.close_calls = 0
+
         def read(self):
-            raise error
+            try:
+                raise error
+            except TimeoutError as source_error:
+                source_traceback.append(source_error.__traceback__)
+                raise
 
         def close(self):
-            raise AssertionError("read failure must not silently switch cameras")
+            self.close_calls += 1
+            if self.close_calls == 1:
+                raise AssertionError(
+                    "read failure cleanup could not close camera"
+                )
 
-    window.camera = FailingCamera()
+    camera = FailingCamera()
+    window.camera = camera
     monkeypatch.setattr(
         QMessageBox,
         "critical",
@@ -412,11 +434,20 @@ def test_camera_read_error_is_visible_and_preserves_exception(
         window.update_preview()
 
     assert caught.value is error
+    traceback = caught.value.__traceback__
+    traceback_chain = []
+    while traceback is not None:
+        traceback_chain.append(traceback)
+        traceback = traceback.tb_next
+    assert source_traceback[0] in traceback_chain
     assert len(messages) == 1
     assert messages[0][1].startswith("Traceback (most recent call last):")
     assert "TimeoutError: RGB frame timed out" in messages[0][1]
     assert "camera cleanup after failure also failed" in messages[0][1]
     assert "AssertionError" in messages[0][1]
+    assert window.camera is camera
+    window._discard_camera_after_failure(error)
+    assert camera.close_calls == 2
     assert window.camera is None
     assert not window.camera_confirm_btn.isEnabled()
     assert not window.calibrate_btn.isEnabled()

@@ -51,32 +51,33 @@ class OpenCVCamera:
                     f"{backend_name} camera {config.device_id} failed to open"
                 )
 
-            requested = (
-                (cv2.CAP_PROP_FRAME_WIDTH, config.width, "frame width"),
-                (cv2.CAP_PROP_FRAME_HEIGHT, config.height, "frame height"),
-                (cv2.CAP_PROP_FPS, config.fps, "FPS"),
-            )
-            for prop, value, label in requested:
-                if not capture.set(prop, value):
-                    raise RuntimeError(
-                        f"{backend_name} camera {config.device_id} "
-                        f"failed to set {label} to {value}"
-                    )
-
-            actual_width = capture.get(cv2.CAP_PROP_FRAME_WIDTH)
-            actual_height = capture.get(cv2.CAP_PROP_FRAME_HEIGHT)
-            actual_fps = capture.get(cv2.CAP_PROP_FPS)
-            if (
-                actual_width != config.width
-                or actual_height != config.height
-                or actual_fps != config.fps
-            ):
-                raise RuntimeError(
-                    f"{backend_name} camera {config.device_id} requested "
-                    f"{config.width}x{config.height} @ {config.fps} FPS, "
-                    f"got {actual_width:g}x{actual_height:g} @ "
-                    f"{actual_fps:g} FPS"
+            if platform == "linux":
+                requested = (
+                    (cv2.CAP_PROP_FRAME_WIDTH, config.width, "frame width"),
+                    (cv2.CAP_PROP_FRAME_HEIGHT, config.height, "frame height"),
+                    (cv2.CAP_PROP_FPS, config.fps, "FPS"),
                 )
+                for prop, value, label in requested:
+                    if not capture.set(prop, value):
+                        raise RuntimeError(
+                            f"{backend_name} camera {config.device_id} "
+                            f"failed to set {label} to {value}"
+                        )
+
+                actual_width = capture.get(cv2.CAP_PROP_FRAME_WIDTH)
+                actual_height = capture.get(cv2.CAP_PROP_FRAME_HEIGHT)
+                actual_fps = capture.get(cv2.CAP_PROP_FPS)
+                if (
+                    actual_width != config.width
+                    or actual_height != config.height
+                    or actual_fps != config.fps
+                ):
+                    raise RuntimeError(
+                        f"{backend_name} camera {config.device_id} requested "
+                        f"{config.width}x{config.height} @ {config.fps} FPS, "
+                        f"got {actual_width:g}x{actual_height:g} @ "
+                        f"{actual_fps:g} FPS"
+                    )
         except Exception as error:
             try:
                 capture.release()
@@ -106,7 +107,11 @@ class OpenCVCamera:
                 f"{self.backend_name} camera {self.config.device_id} "
                 f"frame must be HWC with 3 channels, got shape {frame.shape}"
             )
-        if frame.shape[:2] != (self.config.height, self.config.width):
+        if (
+            self.backend_name == "V4L2"
+            and frame.shape[:2]
+            != (self.config.height, self.config.width)
+        ):
             raise RuntimeError(
                 f"{self.backend_name} camera {self.config.device_id} "
                 f"frame expected {self.config.width}x{self.config.height}, "
@@ -134,16 +139,24 @@ class OrbbecColorCamera:
         width: int,
         height: int,
         fps: int,
+        rgb_format,
     ):
         self.pipeline = pipeline
         self.device_label = device_label
         self.width = width
         self.height = height
         self.fps = fps
+        self.rgb_format = rgb_format
         self._closed = False
 
     @classmethod
     def open(cls, config: CameraConfig) -> "OrbbecColorCamera":
+        if (config.width, config.height, config.fps) != (1280, 720, 30):
+            raise ValueError(
+                "Orbbec Gemini 335 requires RGB 1280x720 @ 30 FPS; "
+                f"got {config.width}x{config.height} @ {config.fps} FPS"
+            )
+
         import pyorbbecsdk
 
         context = pyorbbecsdk.Context()
@@ -159,27 +172,50 @@ class OrbbecColorCamera:
         info = device.get_device_info()
         name = info.get_name()
         serial = info.get_serial_number()
-        device_label = f"{name} {serial}".strip()
+        if name != "Orbbec Gemini 335":
+            raise RuntimeError(
+                f"Orbbec camera index {config.device_id} expected "
+                f"'Orbbec Gemini 335', got {name!r}"
+            )
+        stream = (
+            f"{name} serial {serial} index {config.device_id} RGB "
+            f"{config.width}x{config.height} @ {config.fps} FPS"
+        )
 
         pipeline = pyorbbecsdk.Pipeline(device)
-        profiles = pipeline.get_stream_profile_list(
-            pyorbbecsdk.OBSensorType.COLOR_SENSOR
-        )
-        profile = profiles.get_video_stream_profile(
-            config.width,
-            config.height,
-            pyorbbecsdk.OBFormat.RGB,
-            config.fps,
-        )
-        sdk_config = pyorbbecsdk.Config()
-        sdk_config.enable_stream(profile)
-        pipeline.start(sdk_config)
+        try:
+            profiles = pipeline.get_stream_profile_list(
+                pyorbbecsdk.OBSensorType.COLOR_SENSOR
+            )
+            profile = profiles.get_video_stream_profile(
+                config.width,
+                config.height,
+                pyorbbecsdk.OBFormat.RGB,
+                config.fps,
+            )
+        except Exception as error:
+            raise RuntimeError(
+                f"{stream} profile lookup failed"
+            ) from error
+
+        try:
+            sdk_config = pyorbbecsdk.Config()
+            sdk_config.enable_stream(profile)
+        except Exception as error:
+            raise RuntimeError(f"{stream} config failed") from error
+
+        try:
+            pipeline.start(sdk_config)
+        except Exception as error:
+            raise RuntimeError(f"{stream} start failed") from error
+
         return cls(
             pipeline,
-            device_label,
+            stream,
             config.width,
             config.height,
             config.fps,
+            pyorbbecsdk.OBFormat.RGB,
         )
 
     @classmethod
@@ -190,15 +226,20 @@ class OrbbecColorCamera:
         width: int,
         height: int,
         fps: int,
+        rgb_format,
     ) -> "OrbbecColorCamera":
-        return cls(pipeline, device_label, width, height, fps)
+        return cls(
+            pipeline,
+            device_label,
+            width,
+            height,
+            fps,
+            rgb_format,
+        )
 
     def read(self) -> np.ndarray:
         frames = self.pipeline.wait_for_frames(1000)
-        stream = (
-            f"{self.device_label} RGB {self.width}x{self.height} "
-            f"@ {self.fps} FPS"
-        )
+        stream = self.device_label
         if frames is None:
             raise TimeoutError(
                 f"{stream} did not return a FrameSet within 1000 ms"
@@ -206,6 +247,25 @@ class OrbbecColorCamera:
         color_frame = frames.get_color_frame()
         if color_frame is None:
             raise RuntimeError(f"{stream} FrameSet is missing a color frame")
+
+        try:
+            actual_format = color_frame.get_format()
+            actual_width = color_frame.get_width()
+            actual_height = color_frame.get_height()
+        except Exception as error:
+            raise RuntimeError(
+                f"{stream} failed to read color frame metadata"
+            ) from error
+        if actual_format != self.rgb_format:
+            raise RuntimeError(
+                f"{stream} expected format {self.rgb_format!r}, "
+                f"got {actual_format!r}"
+            )
+        if (actual_width, actual_height) != (self.width, self.height):
+            raise RuntimeError(
+                f"{stream} expected dimensions {self.width}x{self.height}, "
+                f"got {actual_width}x{actual_height}"
+            )
 
         data = color_frame.get_data()
         actual_bytes = memoryview(data).nbytes
@@ -238,11 +298,17 @@ def _list_orbbec() -> list[CameraInfo]:
         info = devices.get_device_by_index(device_id).get_device_info()
         name = info.get_name()
         serial = info.get_serial_number()
+        if name != "Orbbec Gemini 335":
+            raise RuntimeError(
+                f"Orbbec camera index {device_id} expected "
+                f"'Orbbec Gemini 335', got {name!r}"
+            )
         cameras.append(
             CameraInfo(
                 "orbbec",
                 device_id,
-                f"{name} {serial}".strip(),
+                f"{name} serial {serial} index {device_id} "
+                "RGB 1280x720 @ 30 FPS",
                 serial,
             )
         )
@@ -267,11 +333,28 @@ def _list_opencv(platform: str) -> list[CameraInfo]:
         cameras = []
         for device_id in range(10):
             capture = cv2.VideoCapture(device_id, cv2.CAP_DSHOW)
-            if capture.isOpened():
-                cameras.append(
-                    CameraInfo("opencv", device_id, f"Camera {device_id}")
-                )
-            capture.release()
+            try:
+                if capture.isOpened():
+                    ok, frame = capture.read()
+                    if ok and frame is not None:
+                        cameras.append(
+                            CameraInfo(
+                                "opencv",
+                                device_id,
+                                f"Camera {device_id}",
+                            )
+                        )
+            except BaseException as error:
+                try:
+                    capture.release()
+                except BaseException as release_error:
+                    error.add_note(
+                        "DirectShow probe cleanup failed with "
+                        f"{type(release_error).__name__}: {release_error}"
+                    )
+                raise
+            else:
+                capture.release()
         return cameras
     raise ValueError(f"unsupported OpenCV camera platform: {platform!r}")
 
@@ -323,8 +406,16 @@ def camera_config_from_mapping(
     values = {}
     for field in ("cam_id", "camera_width", "camera_height", "camera_fps"):
         value = integrated_config[field]
-        if not isinstance(value, int) or value < 0 or (field != "cam_id" and value == 0):
-            requirement = "a non-negative integer" if field == "cam_id" else "a positive integer"
+        if (
+            type(value) is not int
+            or value < 0
+            or (field != "cam_id" and value == 0)
+        ):
+            requirement = (
+                "a non-negative integer"
+                if field == "cam_id"
+                else "a positive integer"
+            )
             raise ValueError(f"{field} must be {requirement}")
         values[field] = value
     return CameraConfig(

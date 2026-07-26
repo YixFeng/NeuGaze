@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from my_model_arch.cpu_fast import desktop
 from my_model_arch.cpu_fast.camera import CameraConfig
@@ -474,10 +475,38 @@ def test_supported_action_executes_synchronously(monkeypatch):
     assert executed_on == [caller_thread]
 
 
+@pytest.mark.parametrize(
+    "key", ["w", "ctrl+a", "type", "scroll_up"]
+)
+def test_real_action_none_never_routes_input_or_changes_mode(
+    monkeypatch, key
+):
+    pipeline = _real_action_without_constructor()
+    pipeline.sys_mode = "game"
+    pipeline.sys_mode_list = ["type"]
+    pipeline.last_scroll_time = 0
+    pipeline.scroll_throttle_interval = 0
+    pipeline.head_angles = {"roll": 10}
+    pipeline.head_angles_scale = {"roll": 8}
+    pipeline.scroll_coef = 2
+    calls = []
+    monkeypatch.setattr(desktop, "supports_key", lambda value: value == "w")
+    monkeypatch.setattr(desktop, "key_down", lambda value: calls.append(("down", value)))
+    monkeypatch.setattr(desktop, "key_up", lambda value: calls.append(("up", value)))
+    monkeypatch.setattr(desktop, "scroll", lambda value: calls.append(("scroll", value)))
+
+    pipeline._execute_action_once(Action(key, OpType.NONE))
+
+    assert calls == []
+    assert pipeline.sys_mode == "game"
+    assert pipeline.last_scroll_time == 0
+
+
+
 def test_hotkey_uses_explicit_down_and_reverse_up(monkeypatch):
     pipeline = _real_action_without_constructor()
     calls = []
-    action = Action("ctrl+a", OpType.NONE)
+    action = Action("ctrl+a", OpType.KEYPRESS)
     monkeypatch.setattr(desktop, "supports_key", lambda key: False)
     monkeypatch.setattr(
         desktop, "key_down", lambda key: calls.append(("down", key))
@@ -518,7 +547,7 @@ def test_hotkey_keydown_failure_releases_pressed_keys_and_preserves_primary(
     monkeypatch.setattr(desktop, "key_up", key_up)
 
     with pytest.raises(OSError) as caught:
-        _run_one_action(pipeline, Action("ctrl+shift+a", OpType.NONE))
+        _run_one_action(pipeline, Action("ctrl+shift+a", OpType.KEYPRESS))
 
     assert caught.value is primary_error
     assert calls == [
@@ -554,7 +583,7 @@ def test_hotkey_multiple_keyup_failures_are_aggregated(monkeypatch):
     monkeypatch.setattr(desktop, "key_up", key_up)
 
     with pytest.raises(ExceptionGroup) as caught:
-        _run_one_action(pipeline, Action("ctrl+a", OpType.NONE))
+        _run_one_action(pipeline, Action("ctrl+a", OpType.KEYPRESS))
 
     assert calls == [
         ("down", "ctrl"),
@@ -579,7 +608,7 @@ def test_scroll_uses_desktop_synchronously(monkeypatch):
     monkeypatch.setattr(desktop, "supports_key", lambda key: False)
     monkeypatch.setattr(desktop, "scroll", calls.append)
 
-    _run_one_action(pipeline, Action("scroll_up", OpType.NONE))
+    _run_one_action(pipeline, Action("scroll_up", OpType.KEYPRESS))
 
     assert calls == [4]
 
@@ -1540,3 +1569,122 @@ def test_windows_desktop_and_overlay_routes_remain_lazy_on_linux():
         and "win32" in ast.unparse(node)
         for node in pipeline_tree.body
     )
+
+
+
+def test_pipeline_camera_close_failure_retains_ownership_for_retry():
+    close_error = RuntimeError("close failed")
+
+    class RetryCamera:
+        def __init__(self):
+            self.calls = 0
+
+        def close(self):
+            self.calls += 1
+            if self.calls == 1:
+                raise close_error
+
+    source = RetryCamera()
+    pipeline = _pipeline_without_constructor()
+    pipeline.camera = source
+
+    with pytest.raises(RuntimeError) as caught:
+        pipeline._close_camera()
+    assert caught.value is close_error
+    assert pipeline.camera is source
+
+    pipeline._close_camera()
+    assert source.calls == 2
+    assert pipeline.camera is None
+
+
+def test_terminal_quit_discards_queued_actions_before_release_all(
+    monkeypatch,
+):
+    events = []
+    pipeline = _real_action_without_constructor()
+    _initialize_redesigned_lifecycle(pipeline)
+    pipeline.quit = False
+    pipeline.end_calibration_signal = False
+    pipeline.camera = None
+    pipeline.destroy_window = lambda: events.append("destroy")
+
+    class Wheel:
+        def stop(self):
+            events.append("wheel.stop")
+            pipeline.action_queue.put(
+                SimpleNamespace(
+                    keyname="late-click",
+                    execute=lambda: events.append("late-click"),
+                )
+            )
+
+    pipeline.wheel = Wheel()
+    pipeline.action_queue.put(
+        SimpleNamespace(
+            keyname="queued-key",
+            execute=lambda: events.append("queued-key"),
+        )
+    )
+    monkeypatch.setattr(desktop, "supports_key", lambda key: True)
+    monkeypatch.setattr(
+        desktop,
+        "release_all",
+        lambda: events.append("release_all"),
+    )
+
+    pipeline.quit_pipeline()
+
+    assert events == ["wheel.stop", "release_all", "destroy"]
+    assert pipeline.action_queue.empty()
+
+
+@pytest.mark.parametrize(
+    ("alias", "canonical"),
+    [("caps", "caps_lock"), ("super", "win")],
+)
+def test_real_action_uses_direct_key_aliases(
+    monkeypatch, alias, canonical
+):
+    pipeline = _real_action_without_constructor()
+    pipeline.sys_mode_list = []
+    calls = []
+    monkeypatch.setattr(
+        desktop, "supports_key", lambda key: key == canonical
+    )
+    monkeypatch.setattr(
+        desktop, "key_down", lambda key: calls.append(("down", key))
+    )
+    monkeypatch.setattr(
+        desktop, "key_up", lambda key: calls.append(("up", key))
+    )
+    monkeypatch.setattr(time, "sleep", lambda duration: None)
+
+    _run_one_action(pipeline, Action(alias, OpType.KEYPRESS))
+
+    assert calls == [("down", canonical), ("up", canonical)]
+
+
+@pytest.mark.parametrize("key", ["fn", "definitely_unknown"])
+def test_real_action_rejects_unknown_key_at_execution(monkeypatch, key):
+    pipeline = _real_action_without_constructor()
+    pipeline.sys_mode_list = []
+    monkeypatch.setattr(desktop, "supports_key", lambda candidate: False)
+
+    with pytest.raises(ValueError, match=key):
+        pipeline._execute_action_once(Action(key, OpType.KEYPRESS))
+
+
+def test_default_yaml_with_fn_loads_but_fn_execution_fails(monkeypatch):
+    mapping = yaml.safe_load(
+        (Path(__file__).parents[1] / "configs" / "cpu.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert "fn" in mapping["key_config"]["type"]["num2"]["wheel"]
+    pipeline = _real_action_without_constructor()
+    pipeline.sys_mode_list = list(mapping["key_config"])
+    monkeypatch.setattr(desktop, "supports_key", lambda candidate: False)
+
+    with pytest.raises(ValueError, match="fn"):
+        pipeline._execute_action_once(Action("fn", OpType.KEYPRESS))

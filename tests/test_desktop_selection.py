@@ -44,11 +44,20 @@ def _load_win32_backend(monkeypatch, keybd_event):
     win32api.GetSystemMetrics = lambda index: (1920, 1080)[index]
     win32api.GetCursorPos = lambda: (0, 0)
     win32api.SetCursorPos = lambda position: None
+    win32gui = ModuleType("win32gui")
+    win32gui.GetDC = lambda hwnd: 1
+    win32gui.ReleaseDC = lambda hwnd, dc: 1
+    win32print = ModuleType("win32print")
+    win32print.GetDeviceCaps = lambda dc, index: (
+        1920 if index == win32con.DESKTOPHORZRES else 1080
+    )
 
     get_cursor_info = lambda cursor_info: True
     user32 = SimpleNamespace(GetCursorInfo=get_cursor_info)
     monkeypatch.setitem(sys.modules, "win32api", win32api)
     monkeypatch.setitem(sys.modules, "win32con", win32con)
+    monkeypatch.setitem(sys.modules, "win32gui", win32gui)
+    monkeypatch.setitem(sys.modules, "win32print", win32print)
     monkeypatch.setattr(
         ctypes, "WinDLL", lambda *args, **kwargs: user32, raising=False
     )
@@ -282,3 +291,35 @@ def test_win32_release_all_serializes_injection_and_tracking(monkeypatch):
     assert operation_errors == []
     assert injected_flags == [0, backend.win32con.KEYEVENTF_KEYUP]
     assert backend._held_inputs == set()
+
+
+
+def test_win32_screen_size_uses_desktop_device_caps_and_releases_dc(
+    monkeypatch,
+):
+    backend = _load_win32_backend(monkeypatch, lambda *args: None)
+    calls = []
+    backend.win32api.GetSystemMetrics = lambda index: pytest.fail(
+        "GetSystemMetrics fallback is forbidden"
+    )
+    backend.win32gui.GetDC = (
+        lambda hwnd: calls.append(("get_dc", hwnd)) or 77
+    )
+    backend.win32gui.ReleaseDC = (
+        lambda hwnd, dc: calls.append(("release_dc", hwnd, dc)) or 1
+    )
+    backend.win32print.GetDeviceCaps = (
+        lambda dc, index: calls.append(("caps", dc, index))
+        or {
+            backend.win32con.DESKTOPHORZRES: 2560,
+            backend.win32con.DESKTOPVERTRES: 1440,
+        }[index]
+    )
+
+    assert backend.get_screen_size() == (2560, 1440)
+    assert calls == [
+        ("get_dc", 0),
+        ("caps", 77, backend.win32con.DESKTOPHORZRES),
+        ("caps", 77, backend.win32con.DESKTOPVERTRES),
+        ("release_dc", 0, 77),
+    ]

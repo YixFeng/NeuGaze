@@ -752,7 +752,6 @@ class ConfigWindow(QMainWindow):
     def _discard_camera_after_failure(self, error):
         self.preview_timer.stop()
         camera = self.camera
-        self.camera = None
         if camera is None:
             return
         try:
@@ -762,6 +761,8 @@ class ConfigWindow(QMainWindow):
                 "camera cleanup after failure also failed: "
                 f"{close_error!r}"
             )
+            return
+        self.camera = None
 
     def list_cameras(self):
         """Enumerate only the explicitly selected backend."""

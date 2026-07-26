@@ -46,3 +46,21 @@ def test_camera_config_rejects_invalid_numeric_values(field, value):
     mapping[field] = value
     with pytest.raises(ValueError, match=field):
         camera_config_from_mapping(mapping, "linux")
+
+
+
+@pytest.mark.parametrize(
+    "field", ["cam_id", "camera_width", "camera_height", "camera_fps"]
+)
+def test_camera_config_rejects_bool_for_integer_fields(field):
+    mapping = {
+        "camera_backend": {"linux": "orbbec", "win32": "opencv"},
+        "cam_id": 0,
+        "camera_width": 1280,
+        "camera_height": 720,
+        "camera_fps": 30,
+    }
+    mapping[field] = True
+
+    with pytest.raises(ValueError, match=field):
+        camera_config_from_mapping(mapping, "linux")

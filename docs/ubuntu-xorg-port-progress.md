@@ -317,3 +317,13 @@ ELF 证据：扩展 `NEEDED` 为 `libOrbbecSDK.so.2` 且 `RUNPATH=$ORIGIN`，当
 
 - 自动化与 ABI authority 已无阻塞；GUI 视觉预览、九点校准、实时输入/overlay、ESC+Q cleanup 与物理断开仍需人工验收，未标记通过。
 - 后续系统包或 udev 调整若需要 `sudo`，必须先请求用户批准。
+
+
+## 最终全分支 review 修复波次（第 1 段）
+
+| 日期 | 证据 | 结果 |
+|---|---|---|
+| 2026-07-26 | A–F 初始行为 RED | 26 failed / 1 passed；生产未修改时精确暴露 Orbbec、ownership、terminal queue、bool、action 与 Win32 缺口。 |
+| 2026-07-26 | scoped review RED/GREEN | reviewer：Critical 0、Important 2、Minor 1；NONE routing 3 failed / 1 passed，Orbbec enumeration 3 failed；全部修复后 camera/pipeline 96 passed。 |
+| 2026-07-26 | 最终 focused / non-X11 | domain focused 152 passed，5.88s；完整 non-X11 301 passed / 18 deselected，6.22s。 |
+| 2026-07-26 | Windows 验收边界 | fake route 仅证明 DirectShow 与 GetDC/GetDeviceCaps/ReleaseDC 控制流；Windows 实机摄像头及 100%/125%/150% DPI 对齐仍需人工验收，未标记通过。 |

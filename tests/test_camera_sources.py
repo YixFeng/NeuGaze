@@ -60,9 +60,24 @@ class FakeCapture:
             raise self.release_errors.pop(0)
 
 
+FAKE_RGB_FORMAT = object()
+
+
 class FakeColorFrame:
-    def __init__(self, data):
+    def __init__(self, data, color_format, width, height):
         self._data = data
+        self._format = color_format
+        self._width = width
+        self._height = height
+
+    def get_format(self):
+        return self._format
+
+    def get_width(self):
+        return self._width
+
+    def get_height(self):
+        return self._height
 
     def get_data(self):
         if isinstance(self._data, np.ndarray):
@@ -71,21 +86,42 @@ class FakeColorFrame:
 
 
 class FakeFrameSet:
-    def __init__(self, color_data):
+    def __init__(self, color_data, color_format, width, height):
         self._color_data = color_data
+        self._color_format = color_format
+        self._width = width
+        self._height = height
 
     def get_color_frame(self):
         if self._color_data is MISSING_COLOR_FRAME:
             return None
-        return FakeColorFrame(self._color_data)
+        return FakeColorFrame(
+            self._color_data,
+            self._color_format,
+            self._width,
+            self._height,
+        )
 
 
 MISSING_COLOR_FRAME = object()
 
 
 class FakeOrbbecPipeline:
-    def __init__(self, color_data, *, stop_errors=None):
+    def __init__(
+        self,
+        color_data,
+        *,
+        color_format=FAKE_RGB_FORMAT,
+        frame_width=None,
+        frame_height=None,
+        stop_errors=None,
+    ):
         self.color_data = color_data
+        self.color_format = color_format
+        if isinstance(color_data, np.ndarray):
+            frame_height, frame_width = color_data.shape[:2]
+        self.frame_width = frame_width
+        self.frame_height = frame_height
         self.stop_errors = list(stop_errors or ())
         self.wait_calls = []
         self.stop_calls = 0
@@ -97,7 +133,12 @@ class FakeOrbbecPipeline:
         self.wait_calls.append(timeout_ms)
         if self.color_data is None:
             return None
-        return FakeFrameSet(self.color_data)
+        return FakeFrameSet(
+            self.color_data,
+            self.color_format,
+            self.frame_width,
+            self.frame_height,
+        )
 
     def stop(self):
         self.stop_calls += 1
@@ -259,11 +300,14 @@ def test_opencv_open_uses_only_the_platform_api(
 
     assert calls == [(3, expected_api)]
     assert source.backend_name == backend_name
-    assert capture.set_calls == [
-        (camera.cv2.CAP_PROP_FRAME_WIDTH, 1280),
-        (camera.cv2.CAP_PROP_FRAME_HEIGHT, 720),
-        (camera.cv2.CAP_PROP_FPS, 30),
-    ]
+    expected_set_calls = []
+    if platform == "linux":
+        expected_set_calls = [
+            (camera.cv2.CAP_PROP_FRAME_WIDTH, 1280),
+            (camera.cv2.CAP_PROP_FRAME_HEIGHT, 720),
+            (camera.cv2.CAP_PROP_FPS, 30),
+        ]
+    assert capture.set_calls == expected_set_calls
 
 
 def test_opencv_open_rejects_negotiated_v4l2_mismatch(monkeypatch):
@@ -377,7 +421,7 @@ def test_opencv_close_failure_leaves_cleanup_retryable():
 
 
 def test_orbbec_open_selects_exact_device_and_rgb_profile(monkeypatch):
-    device = FakeDevice("Gemini 335", "SN123")
+    device = FakeDevice("Orbbec Gemini 335", "SN123")
     sdk, context, pipelines, color_sensor, rgb_format = fake_orbbec_sdk(
         [device]
     )
@@ -396,25 +440,48 @@ def test_orbbec_open_selects_exact_device_and_rgb_profile(monkeypatch):
     assert pipeline.started_with.enabled_profiles == [
         pipeline.profiles.profile
     ]
-    assert source.device_label == "Gemini 335 SN123"
+    assert source.device_label == (
+        "Orbbec Gemini 335 serial SN123 index 0 "
+        "RGB 1280x720 @ 30 FPS"
+    )
 
 
-def test_orbbec_listing_returns_model_serial_and_index(monkeypatch):
-    devices = [
-        FakeDevice("Gemini 335", "SN123"),
-        FakeDevice("Femto Bolt", "SN456"),
-    ]
-    sdk, _, _, _, _ = fake_orbbec_sdk(devices)
+def test_orbbec_listing_returns_only_approved_full_stream_label(
+    monkeypatch,
+):
+    sdk, _, _, _, _ = fake_orbbec_sdk(
+        [FakeDevice("Orbbec Gemini 335", "SN123")]
+    )
     monkeypatch.setitem(sys.modules, "pyorbbecsdk", sdk)
 
     assert camera.list_cameras("orbbec", "linux") == [
-        CameraInfo("orbbec", 0, "Gemini 335 SN123", "SN123"),
-        CameraInfo("orbbec", 1, "Femto Bolt SN456", "SN456"),
+        CameraInfo(
+            "orbbec",
+            0,
+            "Orbbec Gemini 335 serial SN123 index 0 "
+            "RGB 1280x720 @ 30 FPS",
+            "SN123",
+        )
     ]
 
 
+
+def test_orbbec_listing_rejects_unapproved_model_with_index(monkeypatch):
+    sdk, _, _, _, _ = fake_orbbec_sdk(
+        [FakeDevice("Femto Bolt", "SN456")]
+    )
+    monkeypatch.setitem(sys.modules, "pyorbbecsdk", sdk)
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"index 0.*expected.*Orbbec Gemini 335.*Femto Bolt",
+    ):
+        camera.list_cameras("orbbec", "linux")
+
+
+
 def test_orbbec_listing_keeps_context_alive(monkeypatch):
-    device = FakeDevice("Gemini 335", "SN123")
+    device = FakeDevice("Orbbec Gemini 335", "SN123")
 
     class ContextBoundDeviceList(FakeDeviceList):
         def __init__(self, context):
@@ -434,7 +501,13 @@ def test_orbbec_listing_keeps_context_alive(monkeypatch):
     monkeypatch.setitem(sys.modules, "pyorbbecsdk", sdk)
 
     assert camera.list_cameras("orbbec", "linux") == [
-        CameraInfo("orbbec", 0, "Gemini 335 SN123", "SN123")
+        CameraInfo(
+            "orbbec",
+            0,
+            "Orbbec Gemini 335 serial SN123 index 0 "
+            "RGB 1280x720 @ 30 FPS",
+            "SN123",
+        )
     ]
 
 
@@ -446,6 +519,7 @@ def test_orbbec_rgb_is_converted_to_contiguous_bgr():
         width=2,
         height=1,
         fps=30,
+        rgb_format=FAKE_RGB_FORMAT,
     )
     bgr = source.read()
     assert bgr.tolist() == [[[3, 2, 1], [6, 5, 4]]]
@@ -459,6 +533,7 @@ def test_orbbec_timeout_is_an_error_not_an_empty_frame():
         width=1280,
         height=720,
         fps=30,
+        rgb_format=FAKE_RGB_FORMAT,
     )
     with pytest.raises(TimeoutError, match="1000 ms"):
         source.read()
@@ -471,6 +546,7 @@ def test_orbbec_missing_color_frame_is_an_error():
         width=1280,
         height=720,
         fps=30,
+        rgb_format=FAKE_RGB_FORMAT,
     )
 
     with pytest.raises(RuntimeError, match="missing a color frame"):
@@ -479,11 +555,16 @@ def test_orbbec_missing_color_frame_is_an_error():
 
 def test_orbbec_wrong_byte_length_is_an_error():
     source = OrbbecColorCamera.from_pipeline(
-        FakeOrbbecPipeline(b"\x00" * 5),
+        FakeOrbbecPipeline(
+            b"\x00" * 5,
+            frame_width=2,
+            frame_height=1,
+        ),
         device_label="Gemini 335 SN123",
         width=2,
         height=1,
         fps=30,
+        rgb_format=FAKE_RGB_FORMAT,
     )
 
     with pytest.raises(RuntimeError, match="expected 6 bytes, got 5"):
@@ -498,6 +579,7 @@ def test_orbbec_close_is_idempotent_after_success():
         width=1280,
         height=720,
         fps=30,
+        rgb_format=FAKE_RGB_FORMAT,
     )
 
     source.close()
@@ -516,6 +598,7 @@ def test_orbbec_close_failure_leaves_cleanup_retryable():
         width=1280,
         height=720,
         fps=30,
+        rgb_format=FAKE_RGB_FORMAT,
     )
 
     with pytest.raises(RuntimeError, match="stop failed"):
@@ -536,3 +619,199 @@ def test_dispatchers_reject_unknown_backends():
         camera.open_camera(
             CameraConfig("auto", 0, 1280, 720, 30), "linux"
         )
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        CameraConfig("orbbec", 0, 640, 720, 30),
+        CameraConfig("orbbec", 0, 1280, 480, 30),
+        CameraConfig("orbbec", 0, 1280, 720, 60),
+    ],
+)
+def test_orbbec_open_rejects_non_approved_stream(monkeypatch, config):
+    sdk, _, _, _, _ = fake_orbbec_sdk(
+        [FakeDevice("Orbbec Gemini 335", "SN123")]
+    )
+    monkeypatch.setitem(sys.modules, "pyorbbecsdk", sdk)
+
+    with pytest.raises(
+        ValueError, match=r"requires RGB 1280x720 @ 30 FPS"
+    ):
+        OrbbecColorCamera.open(config)
+
+
+def test_orbbec_open_rejects_non_approved_model(monkeypatch):
+    sdk, _, pipelines, _, _ = fake_orbbec_sdk(
+        [FakeDevice("Gemini 335", "SN123")]
+    )
+    monkeypatch.setitem(sys.modules, "pyorbbecsdk", sdk)
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            r"index 0.*expected.*Orbbec Gemini 335"
+            r".*got.*Gemini 335"
+        ),
+    ):
+        OrbbecColorCamera.open(
+            CameraConfig("orbbec", 0, 1280, 720, 30)
+        )
+
+    assert pipelines.instances == []
+
+
+@pytest.mark.parametrize("stage", ["profile", "config", "start"])
+def test_orbbec_open_chains_sdk_failure_with_full_stream_context(
+    monkeypatch, stage
+):
+    sdk, _, _, _, _ = fake_orbbec_sdk(
+        [FakeDevice("Orbbec Gemini 335", "SN123")]
+    )
+    source_error = OSError(f"{stage} failed")
+
+    if stage == "profile":
+        monkeypatch.setattr(
+            FakeProfileList,
+            "get_video_stream_profile",
+            lambda self, *args: (_ for _ in ()).throw(source_error),
+        )
+    elif stage == "config":
+        class FailingConfig(FakeConfig):
+            def enable_stream(self, profile):
+                raise source_error
+
+        sdk.Config = FailingConfig
+    else:
+        monkeypatch.setattr(
+            FakeOrbbecPipeline,
+            "start",
+            lambda self, config: (_ for _ in ()).throw(source_error),
+        )
+
+    monkeypatch.setitem(sys.modules, "pyorbbecsdk", sdk)
+
+    with pytest.raises(RuntimeError) as caught:
+        OrbbecColorCamera.open(
+            CameraConfig("orbbec", 0, 1280, 720, 30)
+        )
+
+    assert caught.value.__cause__ is source_error
+    message = str(caught.value)
+    assert stage in message
+    assert (
+        "Orbbec Gemini 335 serial SN123 index 0 "
+        "RGB 1280x720 @ 30 FPS"
+    ) in message
+
+
+@pytest.mark.parametrize(
+    ("pipeline", "message"),
+    [
+        (
+            FakeOrbbecPipeline(
+                b"\x00" * 6,
+                color_format=object(),
+                frame_width=2,
+                frame_height=1,
+            ),
+            "expected format",
+        ),
+        (
+            FakeOrbbecPipeline(
+                b"\x00" * 6,
+                frame_width=3,
+                frame_height=1,
+            ),
+            "expected dimensions 2x1, got 3x1",
+        ),
+    ],
+)
+def test_orbbec_read_rejects_wrong_frame_metadata(pipeline, message):
+    source = OrbbecColorCamera.from_pipeline(
+        pipeline,
+        device_label=(
+            "Orbbec Gemini 335 serial SN123 index 0 RGB 2x1 @ 30 FPS"
+        ),
+        width=2,
+        height=1,
+        fps=30,
+        rgb_format=FAKE_RGB_FORMAT,
+    )
+
+    with pytest.raises(RuntimeError, match=message):
+        source.read()
+
+
+def test_win32_opencv_uses_directshow_without_strict_stream_negotiation(
+    monkeypatch,
+):
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    capture = FakeCapture(
+        read_result=(True, frame),
+        set_results={
+            camera.cv2.CAP_PROP_FRAME_WIDTH: False,
+            camera.cv2.CAP_PROP_FRAME_HEIGHT: False,
+            camera.cv2.CAP_PROP_FPS: False,
+        },
+        negotiated={
+            camera.cv2.CAP_PROP_FRAME_WIDTH: 640.0,
+            camera.cv2.CAP_PROP_FRAME_HEIGHT: 480.0,
+            camera.cv2.CAP_PROP_FPS: 25.0,
+        },
+    )
+    calls = []
+    monkeypatch.setattr(
+        camera.cv2,
+        "VideoCapture",
+        lambda device, api: calls.append((device, api)) or capture,
+    )
+
+    source = OpenCVCamera.open(
+        CameraConfig("opencv", 2, 1280, 720, 30), "win32"
+    )
+
+    assert source.read() is frame
+    assert calls == [(2, camera.cv2.CAP_DSHOW)]
+    assert capture.set_calls == []
+
+
+def test_win32_listing_requires_successful_read_probe(monkeypatch):
+    captures = {
+        0: FakeCapture(read_result=(False, None)),
+        1: FakeCapture(
+            read_result=(
+                True,
+                np.zeros((480, 640, 3), dtype=np.uint8),
+            )
+        ),
+    }
+    monkeypatch.setattr(
+        camera.cv2,
+        "VideoCapture",
+        lambda device, api: captures.get(
+            device, FakeCapture(opened=False)
+        ),
+    )
+
+    assert camera.list_cameras("opencv", "win32") == [
+        CameraInfo("opencv", 1, "Camera 1")
+    ]
+    assert captures[0].release_calls == 1
+    assert captures[1].release_calls == 1
+
+
+def test_win32_listing_exposes_probe_close_failure(monkeypatch):
+    close_error = OSError("DirectShow release failed")
+    capture = FakeCapture(release_errors=[close_error])
+    monkeypatch.setattr(
+        camera.cv2,
+        "VideoCapture",
+        lambda device, api: capture,
+    )
+
+    with pytest.raises(OSError) as caught:
+        camera.list_cameras("opencv", "win32")
+
+    assert caught.value is close_error
+    assert capture.release_calls == 1

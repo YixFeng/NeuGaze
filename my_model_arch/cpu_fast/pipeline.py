@@ -1280,8 +1280,8 @@ class IntegratedRegressionMediaPipeline:
         if self.camera is None:
             return
         camera = self.camera
-        self.camera = None
         camera.close()
+        self.camera = None
 
     def _finish_run(self):
         with self._lifecycle_lock:
@@ -1386,15 +1386,8 @@ class IntegratedRegressionMediaPipeline:
                     self.wheel.stop,
                 )
 
-            if hasattr(self, "_drain_actions"):
-                try:
-                    self._drain_actions()
-                except BaseException as error:
-                    if primary_error is None:
-                        primary_error = error
-                        primary_traceback = error.__traceback__
-                    elif error is not primary_error:
-                        cleanup_errors.append(("action drain", error))
+            if hasattr(self, "_discard_actions"):
+                cleanup("action discard", self._discard_actions)
 
             cleanup("desktop.release_all", desktop.release_all)
             if hasattr(self, "gaze_mouse_controller"):
@@ -2656,8 +2649,15 @@ class RealAction(BindKeys):
     def _execute_action_once(self, action):
         if action is None or action.keyname is None:
             return
+        if getattr(action, "op_type", None) == OpType.NONE:
+            return
 
         action_key = str(action.keyname)
+        action_key = {
+            "caps": "caps_lock",
+            "super": "win",
+        }.get(action_key, action_key)
+        action.keyname = action_key
         print(f"action_key:{action_key} type:{type(action_key)}")
         if desktop.supports_key(action_key):
             action.execute()
@@ -2715,7 +2715,9 @@ class RealAction(BindKeys):
                     )
                 )
                 self.last_scroll_time = current_time
+            return
 
+        raise ValueError(f"unsupported action key: {action_key!r}")
 
     def call_after_each_eval_loop(self):
         self.wheel.raise_if_failed()
@@ -2822,7 +2824,9 @@ class RealAction(BindKeys):
                             # 如果状态没有改变，对于按键就什么都不做
                             # 只有鼠标滚轮需要处理
                             if key_to_press.startswith('scroll'):
-                                action=Action(key_to_press, OpType.NONE)
+                                action=Action(
+                                    key_to_press, OpType.KEYPRESS
+                                )
                         if action is not None:
                             self._execute_action(action)
                 else:

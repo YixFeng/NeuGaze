@@ -45,6 +45,10 @@ class Action:
                 self.timeout,
                 self.check_interval,
             )
+        elif self.op_type == OpType.NONE:
+            return None
+        else:
+            raise ValueError(f"unsupported op_type: {self.op_type!r}")
 
 
 def keydown(key):

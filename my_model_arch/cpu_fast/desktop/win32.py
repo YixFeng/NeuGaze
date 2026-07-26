@@ -6,6 +6,8 @@ from ctypes import wintypes
 
 import win32api
 import win32con
+import win32gui
+import win32print
 
 
 _LETTER_SCANS = {
@@ -173,7 +175,29 @@ def close():
 
 
 def get_screen_size():
-    return win32api.GetSystemMetrics(0), win32api.GetSystemMetrics(1)
+    desktop_dc = win32gui.GetDC(0)
+    if not desktop_dc:
+        raise RuntimeError("GetDC(0) failed")
+    try:
+        width = win32print.GetDeviceCaps(
+            desktop_dc, win32con.DESKTOPHORZRES
+        )
+        height = win32print.GetDeviceCaps(
+            desktop_dc, win32con.DESKTOPVERTRES
+        )
+    except BaseException as error:
+        try:
+            win32gui.ReleaseDC(0, desktop_dc)
+        except BaseException as release_error:
+            error.add_note(
+                "ReleaseDC after GetDeviceCaps failure also failed: "
+                f"{release_error!r}"
+            )
+        raise
+    released = win32gui.ReleaseDC(0, desktop_dc)
+    if not released:
+        raise RuntimeError("ReleaseDC(0, desktop_dc) failed")
+    return width, height
 
 
 def get_pointer_position():
