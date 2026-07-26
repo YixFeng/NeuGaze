@@ -27,6 +27,28 @@ real_action_config:
   show_gaze: false
   mouse_control: true
   key_control: true
+robot_action_config:
+  actions:
+    move_forward_step: 前进一步
+    move_backward_step: 后退一步
+    turn_left: 左转
+    turn_right: 右转
+    wave: 挥手
+    dance: 舞蹈
+    stop: 停止
+  expressions:
+    numlock:
+      wheel:
+      - move_forward_step
+      - move_backward_step
+      - turn_left
+      - turn_right
+    left_click:
+      action: wave
+    num8:
+      action: dance
+    extra:
+      action: stop
 integrated_config:
   weights: my_model_arch/cpu_fast/cpu_convert/mobileone_s0_224_fp16_pnnx.ncnn.param
   regression_model_type: lassocv

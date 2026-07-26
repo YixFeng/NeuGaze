@@ -47,6 +47,12 @@ from .camera import camera_config_from_mapping, open_camera
 import threading
 import tkinter as tk
 from .keyboard_utils import Action, OpType
+from .robot_actions import (
+    RobotAction,
+    emit_robot_action,
+    resolve_robot_action,
+    validate_robot_action_config,
+)
 import ncnn
 import torch.nn as nn
 import torchvision.transforms as transforms
@@ -2295,10 +2301,21 @@ class RealAction(BindKeys):
                  scroll_coef=2, sys_mode='type', 
                  gaze_config=None, mouse_control_config=None,
                  wheel_config=None,
-                 configuration=None, 
-                 head_angles_center=None, head_angles_scale=None, 
+                 configuration=None,
+                 head_angles_center=None, head_angles_scale=None,
                  expression_evaluator_config=None,
+                 robot_action_config=None,
+                 action_platform=None,
                  **kwargs):
+        platform_name = sys.platform if action_platform is None else action_platform
+        if platform_name == "win32":
+            self.action_output = "desktop"
+        elif platform_name.startswith("linux"):
+            self.action_output = "robot_terminal"
+        else:
+            raise RuntimeError(
+                f"unsupported action platform: {platform_name!r}"
+            )
         if gaze_config is None:
             raise ValueError("gaze_config is required")
         super().__init__(
@@ -2326,14 +2343,22 @@ class RealAction(BindKeys):
         )
         # from .expression_keyboard_control import ExpressionKeyboardController
         # self.keyboard_controller = ExpressionKeyboardController(self)
-        # we have 2 configuration now
-        # game,type
-        self.configuration = self.get_configuration(configuration)
-        # sys_mode_list
+        if self.action_output == "robot_terminal":
+            if robot_action_config is None:
+                raise ValueError("robot_action_config is required")
+            self.robot_action_config = validate_robot_action_config(
+                robot_action_config
+            )
+            self.configuration = {"robot": {}}
+            self.sys_mode = "robot"
+        else:
+            if configuration is None:
+                raise ValueError("configuration is required")
+            self.configuration = self.get_configuration(configuration)
+            self.sys_mode = sys_mode
         self.sys_mode_list = list(self.configuration.keys())
         self.wheel_categories = None
         self.key_keeps_wheel_opening = None
-        self.sys_mode = sys_mode  # 系统状态，控制不同的键盘映射和鼠标控制
         self.is_key_down = False  # 一些操作需要同时按下多个键，这就需要一个状态来记录是否用keyDown来按键，一个列表来记录按下的键。
         self.down_keys_list = []  # 当is_key_down==True,这里就会开始加入接下来被按下的键。
         # 当is_key_down==False时，这里就会逐个反向释放key，并且清空这个列表。
@@ -2647,6 +2672,13 @@ class RealAction(BindKeys):
             raise
 
     def _execute_action_once(self, action):
+        if self.action_output == "robot_terminal":
+            if not isinstance(action, RobotAction):
+                raise TypeError("Ubuntu robot output requires RobotAction")
+            emit_robot_action(action)
+            return
+        if isinstance(action, RobotAction):
+            raise TypeError("Windows desktop output rejects RobotAction")
         if action is None or action.keyname is None:
             return
         if getattr(action, "op_type", None) == OpType.NONE:
@@ -2755,13 +2787,33 @@ class RealAction(BindKeys):
             self.keys_dict = None
 
     def decode(self):
-        # some keys will press keys directly, some keys will call a wheel out.
-        # 本来打算用config弄的，但是感觉还是太麻烦了，先直接写了再说。
-        # 先改鼠标移动逻辑，因为在游戏里面，好像鼠标也会被捕捉，但是并不是中心点，所以我们需要重新计算需要移动的量。
-        # self.mouse_dict['real_rel']=(self.mouse_dict['x']-self.mid_point[0], self.mouse_dict['y']-self.mid_point[1])
         if not self.key_control:
             return
-        state_dict = combine_dicts(self.keys_dict.state_dict, self.head_dict.state_dict)
+        state_dict = combine_dicts(
+            self.keys_dict.state_dict, self.head_dict.state_dict
+        )
+        if self.action_output == "robot_terminal":
+            self._decode_robot_actions(state_dict)
+            return
+        self._decode_desktop_actions(state_dict)
+
+    def _decode_robot_actions(self, state_dict):
+        expressions = self.robot_action_config["expressions"]
+        for expression_id, expression_config in expressions.items():
+            if "action" not in expression_config:
+                continue
+            state = state_dict.get(expression_id)
+            if state is None:
+                continue
+            if state["diff"] is True and state["cp"] == "FT":
+                action = resolve_robot_action(
+                    self.robot_action_config,
+                    expression_config["action"],
+                    source="expression",
+                )
+                self._execute_action(action)
+
+    def _decode_desktop_actions(self, state_dict):
         for k, d in state_dict.items():
             # 如果在configuration里面的那个模式的keys里面才会进这个循环
             keys = self.configuration[self.sys_mode]

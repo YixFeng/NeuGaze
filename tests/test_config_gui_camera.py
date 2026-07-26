@@ -489,6 +489,35 @@ def test_pipeline_initialization_error_is_shown_once_and_re_raised(
     assert not window.evaluate_btn.isEnabled()
 
 
+def test_pipeline_receives_and_save_preserves_robot_action_config(
+    window_factory, monkeypatch, tmp_path
+):
+    window, _ = window_factory()
+    captured = {}
+
+    def capture_pipeline(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "my_model_arch.cpu_fast.pipeline",
+        SimpleNamespace(RealAction=capture_pipeline),
+    )
+
+    window.initialize_pipeline()
+
+    assert captured["robot_action_config"] == window.config[
+        "robot_action_config"
+    ]
+    output_path = tmp_path / "robot-action-roundtrip.yaml"
+    window.save_config_to_file(output_path)
+    saved = yaml.safe_load(output_path.read_text(encoding="utf-8"))
+    assert saved["robot_action_config"] == window.config[
+        "robot_action_config"
+    ]
+
+
 @pytest.mark.parametrize(
     ("entrypoint", "pipeline_event"),
     [

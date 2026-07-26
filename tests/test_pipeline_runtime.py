@@ -33,6 +33,7 @@ def _real_action_without_constructor():
     pipeline = object.__new__(RealAction)
     pipeline._lifecycle_lock = threading.RLock()
     pipeline.gaze_overlay = None
+    pipeline.action_output = "desktop"
     return pipeline
 
 
@@ -1659,3 +1660,186 @@ def test_default_yaml_with_fn_loads_but_fn_execution_fails(monkeypatch):
 
     with pytest.raises(ValueError, match="fn"):
         pipeline._execute_action_once(Action("fn", OpType.KEYPRESS))
+
+
+
+
+def _real_action_constructor_kwargs(monkeypatch):
+    monkeypatch.setattr(
+        IntegratedRegressionMediaPipeline,
+        "get_regression_model",
+        lambda self: setattr(self, "regression_model", None),
+    )
+    monkeypatch.setattr(
+        IntegratedRegressionMediaPipeline,
+        "load_model_from_weights",
+        lambda self: None,
+    )
+    monkeypatch.setattr(
+        IntegratedRegressionMediaPipeline,
+        "get_mediapipe",
+        lambda self: object(),
+    )
+    monkeypatch.setattr(
+        pipeline_module, "ExpressionEvaluator", lambda config: object()
+    )
+    return {
+        "gaze_config": {},
+        "mouse_control_config": {},
+        "wheel_config": {},
+        "head_angles_center": {},
+        "head_angles_scale": {},
+        "expression_evaluator_config": {},
+        "weights": "unused.param",
+        "device": "cpu",
+        "camera_backend": {"linux": "opencv", "win32": "opencv"},
+        "camera_width": 640,
+        "camera_height": 480,
+        "camera_fps": 30,
+        "screen_size": (1920, 1080),
+    }
+
+
+def test_real_action_routes_platforms_and_rejects_missing_config(
+    monkeypatch,
+):
+    mapping = yaml.safe_load(
+        (Path(__file__).parents[1] / "configs/cpu.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    common = _real_action_constructor_kwargs(monkeypatch)
+    robot_config = mapping["robot_action_config"]
+    windows_key_config = mapping["key_config"]
+
+    linux_pipeline = RealAction(
+        action_platform="linux",
+        robot_action_config=robot_config,
+        configuration=windows_key_config,
+        **common,
+    )
+    assert linux_pipeline.action_output == "robot_terminal"
+    assert linux_pipeline.sys_mode == "robot"
+    assert linux_pipeline.sys_mode_list == ["robot"]
+
+    windows_pipeline = RealAction(
+        action_platform="win32",
+        robot_action_config=robot_config,
+        configuration=windows_key_config,
+        sys_mode="game_cs",
+        **common,
+    )
+    assert windows_pipeline.action_output == "desktop"
+    assert windows_pipeline.sys_mode == "game_cs"
+
+    with pytest.raises(ValueError, match="robot_action_config is required"):
+        RealAction(action_platform="linux", **common)
+    with pytest.raises(ValueError, match="configuration is required"):
+        RealAction(
+            action_platform="win32",
+            robot_action_config=robot_config,
+            **common,
+        )
+    with pytest.raises(RuntimeError, match="unsupported action platform"):
+        RealAction(action_platform="darwin", **common)
+
+
+
+
+def _robot_pipeline_without_constructor():
+    mapping = yaml.safe_load(
+        (Path(__file__).parents[1] / "configs/cpu.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    pipeline = _real_action_without_constructor()
+    pipeline.action_output = "robot_terminal"
+    pipeline.key_control = True
+    pipeline.robot_action_config = mapping["robot_action_config"]
+    return pipeline
+
+
+def transition(cp, value):
+    return {
+        "diff": True,
+        "cp": cp,
+        "v": value,
+        "time_True": time.time(),
+    }
+
+
+@pytest.mark.parametrize(
+    ("expression_id", "expected_id", "expected_label"),
+    [
+        ("left_click", "wave", "挥手"),
+        ("num8", "dance", "舞蹈"),
+        ("extra", "stop", "停止"),
+    ],
+)
+def test_robot_direct_expression_emits_once_on_rising_edge(
+    capsys, expression_id, expected_id, expected_label
+):
+    pipeline = _robot_pipeline_without_constructor()
+    pipeline.keys_dict = SimpleNamespace(
+        state_dict={expression_id: transition("FT", value=True)}
+    )
+    pipeline.head_dict = SimpleNamespace(state_dict={})
+
+    pipeline.decode()
+    pipeline.keys_dict.state_dict[expression_id] = transition(
+        "TT", value=True
+    )
+    pipeline.decode()
+    pipeline.keys_dict.state_dict[expression_id] = transition(
+        "TF", value=False
+    )
+    pipeline.decode()
+
+    assert capsys.readouterr().out == (
+        f"[ROBOT_ACTION] id={expected_id} "
+        f"label={expected_label} source=expression\n"
+    )
+
+
+def test_robot_unconfigured_expression_is_silent(capsys):
+    pipeline = _robot_pipeline_without_constructor()
+    pipeline.keys_dict = SimpleNamespace(
+        state_dict={"num1": transition("FT", value=True)}
+    )
+    pipeline.head_dict = SimpleNamespace(state_dict={})
+
+    pipeline.decode()
+
+    assert capsys.readouterr().out == ""
+
+
+
+def test_default_robot_config_has_exact_action_contract():
+    mapping = yaml.safe_load(
+        (Path(__file__).parents[1] / "configs/cpu.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    robot = mapping["robot_action_config"]
+    assert robot["actions"] == {
+        "move_forward_step": "前进一步",
+        "move_backward_step": "后退一步",
+        "turn_left": "左转",
+        "turn_right": "右转",
+        "wave": "挥手",
+        "dance": "舞蹈",
+        "stop": "停止",
+    }
+    assert robot["expressions"] == {
+        "numlock": {
+            "wheel": [
+                "move_forward_step",
+                "move_backward_step",
+                "turn_left",
+                "turn_right",
+            ]
+        },
+        "left_click": {"action": "wave"},
+        "num8": {"action": "dance"},
+        "extra": {"action": "stop"},
+    }

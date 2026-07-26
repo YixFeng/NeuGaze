@@ -1009,6 +1009,7 @@ class ConfigWindow(QMainWindow):
                 mouse_control_config=self.config['mouse_control_config'],
                 wheel_config=self.config['wheel_config'],
                 configuration=self.config['key_config'],
+                robot_action_config=self.config.get("robot_action_config"),
                 head_angles_center=self.config['head_angles_center'],
                 head_angles_scale=self.config['head_angles_scale'],
                 expression_evaluator_config=self.config['expression_evaluator_config'],
