@@ -208,9 +208,7 @@ def _master_pointer(devices, display_name):
             f"X11 display {display_name!r} must expose exactly one enabled "
             f"master pointer, got {len(pointers)}"
         )
-    pointer = pointers[0]
-    _button_class(pointer, display_name)
-    return pointer
+    return pointers[0]
 
 
 def _cursor_image_visible(image, display_name):
@@ -303,6 +301,7 @@ def initialize():
                 xinput.AllMasterDevices
             ).devices
             master_pointer = _master_pointer(devices, display_name)
+            _button_class(master_pointer, display_name)
             master_pointer_id = master_pointer.deviceid
             root = candidate.screen().root
         except Exception as error:
@@ -492,16 +491,20 @@ def is_key_down(key):
         display, _ = _require_initialized()
         name = _normalized_name(key)
         if _is_button_name(name):
-            reply = display.xinput_query_device(_master_pointer_id)
-            if len(reply.devices) != 1:
+            display_name = _display_name(display)
+            devices = display.xinput_query_device(
+                xinput.AllMasterDevices
+            ).devices
+            master_pointer = _master_pointer(devices, display_name)
+            if master_pointer.deviceid != _master_pointer_id:
                 raise RuntimeError(
-                    f"XI2 query for device {_master_pointer_id} on display "
-                    f"{_display_name(display)!r} returned "
-                    f"{len(reply.devices)} devices"
+                    f"XI2 initialized master pointer id "
+                    f"{_master_pointer_id}, got {master_pointer.deviceid} "
+                    f"on display {display_name!r}"
                 )
             button_class = _button_class(
-                reply.devices[0],
-                _display_name(display),
+                master_pointer,
+                display_name,
                 expected_device_id=_master_pointer_id,
             )
             return bool(button_class.state[_button_number(name) - 1])

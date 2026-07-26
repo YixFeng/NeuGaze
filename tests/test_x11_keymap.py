@@ -790,6 +790,64 @@ def test_initialize_publishes_exact_master_pointer_only_after_validation(
 
 
 @pytest.mark.parametrize(
+    ("runtime_devices", "message"),
+    [
+        ([], "exactly one enabled master pointer, got 0"),
+        (
+            [fake_master_pointer(7), fake_master_pointer(9)],
+            "exactly one enabled master pointer, got 2",
+        ),
+        (
+            [fake_master_pointer(9)],
+            "initialized master pointer id 7, got 9",
+        ),
+    ],
+)
+def test_mouse_state_rejects_runtime_master_topology_drift(
+    monkeypatch,
+    runtime_devices,
+    message,
+):
+    monkeypatch.delenv("XDG_SESSION_TYPE", raising=False)
+    monkeypatch.setenv("DISPLAY", ":99")
+
+    class TopologyDriftDisplay(FakeLifecycleDisplay):
+        def __init__(self):
+            super().__init__(devices=[fake_master_pointer(7)])
+            self.all_master_queries = 0
+
+        def xinput_query_device(self, deviceid):
+            self.device_queries.append(deviceid)
+            if deviceid == xinput.AllMasterDevices:
+                self.all_master_queries += 1
+                devices = (
+                    self.devices
+                    if self.all_master_queries == 1
+                    else runtime_devices
+                )
+                return SimpleNamespace(devices=devices)
+            if deviceid == 7:
+                return SimpleNamespace(
+                    devices=[
+                        fake_master_pointer(
+                            7,
+                            classes=[fake_button_class(9, [9])],
+                        )
+                    ]
+                )
+            pytest.fail(f"unexpected XIQueryDevice id {deviceid}")
+
+    candidate = TopologyDriftDisplay()
+    monkeypatch.setattr(x11.xdisplay, "Display", lambda _name: candidate)
+    x11.initialize()
+    try:
+        with pytest.raises(RuntimeError, match=message):
+            x11.is_key_down("mouse_x2")
+    finally:
+        x11.close()
+
+
+@pytest.mark.parametrize(
     ("name", "button"),
     [
         ("mouse_left", 1),
@@ -811,17 +869,23 @@ def test_mouse_state_queries_saved_xi2_master_button(monkeypatch, name, button):
     monkeypatch.setattr(x11, "_master_pointer_id", 7)
 
     assert x11.is_key_down(name) is True
-    assert candidate.device_queries == [7]
+    assert candidate.device_queries == [xinput.AllMasterDevices]
 
 
 @pytest.mark.parametrize(
     ("device", "message"),
     [
-        (fake_master_pointer(8), "expected device id 7"),
-        (fake_master_pointer(7, enabled=False), "must be enabled"),
+        (
+            fake_master_pointer(8),
+            "initialized master pointer id 7, got 8",
+        ),
+        (
+            fake_master_pointer(7, enabled=False),
+            "exactly one enabled master pointer, got 0",
+        ),
         (
             fake_master_pointer(7, use=xinput.SlavePointer),
-            "must be a master pointer",
+            "exactly one enabled master pointer, got 0",
         ),
         (
             fake_master_pointer(7, classes=[]),
@@ -848,7 +912,7 @@ def test_mouse_state_revalidates_exact_xi2_device(monkeypatch, device, message):
     with pytest.raises(RuntimeError, match=message):
         x11.is_key_down("mouse_x2")
 
-    assert candidate.device_queries == [7]
+    assert candidate.device_queries == [xinput.AllMasterDevices]
 
 
 def test_key_up_owned_emits_nothing_for_unowned_input(monkeypatch):
