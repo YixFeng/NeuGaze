@@ -124,9 +124,32 @@ udev 规则属于一次性的管理员安装步骤；NeuGaze 日常诊断与运�
 conda create -n neugaze python=3.11.11
 conda activate neugaze
 python -m pip install -r requirements-ubuntu.txt
+python -m pip uninstall -y opencv-python
+python -m pip install --no-deps --force-reinstall opencv-contrib-python==4.11.0.86
 python scripts/check_ubuntu_runtime.py --config configs/cpu.yaml --require-overlay
 python config_gui_cpu.py
 ```
+
+`requirements-ubuntu.txt` 只直接固定
+`opencv-contrib-python==4.11.0.86`。它固定的两个上游依赖方仍会传递安装
+`opencv-python`，所以每次全新安装或更新 requirements 后都必须执行上方
+精确的卸载与 contrib 强制重装命令。不要让 `opencv-python` 与 contrib
+同时保留：两个 wheel 拥有同一批 `cv2` 文件。但固定版本的上游 wheel
+`pyorbbecsdk2==2.1.1` 与 `ncnn==1.0.20260526` 都无条件声明依赖分发名
+`opencv-python`，而 Python 包元数据没有让 contrib wheel 满足另一分发名的
+机制。因此 `python -m pip check` 预期以 1 退出，并原样报告以下两条上游
+分发名冲突：
+
+```text
+pyorbbecsdk2 2.1.1 requires opencv-python, which is not installed.
+ncnn 1.0.20260526 requires opencv-python, which is not installed.
+```
+
+这个经用户批准的上游分发名例外只适用于包元数据。不得过滤它、把
+`pip check` 记作通过、安装 alias/dummy 分发、改写已安装 metadata，或恢复
+存在文件冲突的 wheel。实际运行验证必须确认 OpenCV 4.11.0 可导入且
+metadata 中只存在 `opencv-contrib-python`，MediaPipe 与 Orbbec 可导入，
+只读诊断通过，并执行下方显式 Gemini 335 硬件测试。
 
 诊断脚本只读运行，逐项打印所有检查，并在任一前置条件错误时以非零状态
 退出。诊断退出 0 前不要启动 GUI。脚本会同时打印

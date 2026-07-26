@@ -22,7 +22,7 @@ import yaml
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_PYTHON = (3, 11)
+EXPECTED_PYTHON = (3, 11, 11)
 EXPECTED_ORBBEC_BINDING = "2.1.1"
 EXPECTED_ORBBEC_SDK = "2.8.6"
 INFORMATIONAL_SYSTEM_ORBBEC_LIBRARY = Path(
@@ -78,9 +78,10 @@ def execute_checks(
 def check_python(version_info: Sequence[int]) -> str:
     version = tuple(int(value) for value in version_info[:3])
     actual = ".".join(str(value) for value in version)
-    if version[:2] != EXPECTED_PYTHON:
+    if version != EXPECTED_PYTHON:
+        required = ".".join(str(value) for value in EXPECTED_PYTHON)
         raise RuntimeError(
-            f"NeuGaze requires Python 3.11, got {actual}"
+            f"NeuGaze requires Python {required}, got {actual}"
         )
     return f"Python {actual}"
 
@@ -111,10 +112,10 @@ def check_platform(
 
 def check_session(environ: Mapping[str, str]) -> str:
     session_type = environ.get("XDG_SESSION_TYPE")
-    if session_type is not None and session_type.lower() == "wayland":
+    if not isinstance(session_type, str) or session_type.lower() != "x11":
         raise RuntimeError(
             f"XDG_SESSION_TYPE={session_type!r} is unsupported; "
-            "NeuGaze requires Xorg"
+            "NeuGaze requires x11"
         )
     display_name = environ.get("DISPLAY")
     if display_name is None or not display_name.strip():
@@ -436,8 +437,18 @@ def check_orbbec_abi(
     sdk_version: str,
     resolved_library: Path,
     expected_library: Path,
+    package_directory: Path,
     system_library: Path | None = None,
 ) -> str:
+    canonical_package_directory = package_directory.resolve(strict=True)
+    canonical_resolved_library = resolved_library.resolve(strict=True)
+    canonical_expected_library = expected_library.resolve(strict=True)
+    if not canonical_package_directory.is_dir():
+        raise RuntimeError(
+            "canonical imported pyorbbecsdk package path is not a directory: "
+            f"{canonical_package_directory}"
+        )
+
     mismatches = []
     if binding_version != EXPECTED_ORBBEC_BINDING:
         mismatches.append(
@@ -449,10 +460,21 @@ def check_orbbec_abi(
             f"SDK version expected {EXPECTED_ORBBEC_SDK}, "
             f"got {sdk_version}"
         )
-    if resolved_library != expected_library:
+    if (
+        canonical_resolved_library == canonical_package_directory
+        or not canonical_resolved_library.is_relative_to(
+            canonical_package_directory
+        )
+    ):
         mismatches.append(
-            f"bundled libOrbbecSDK expected {expected_library}, "
-            f"got {resolved_library}"
+            "resolved libOrbbecSDK is outside canonical imported package "
+            f"directory {canonical_package_directory}: "
+            f"{canonical_resolved_library}"
+        )
+    elif canonical_resolved_library != canonical_expected_library:
+        mismatches.append(
+            f"bundled libOrbbecSDK expected {canonical_expected_library}, "
+            f"got {canonical_resolved_library}"
         )
     system_detail = (
         str(system_library)
@@ -461,7 +483,7 @@ def check_orbbec_abi(
     )
     detail = (
         f"pyorbbecsdk2={binding_version}, SDK={sdk_version}, "
-        f"bundled libOrbbecSDK={resolved_library}; "
+        f"bundled libOrbbecSDK={canonical_resolved_library}; "
         f"system SDK discovery={system_detail} (informational only)"
     )
     if mismatches:
@@ -576,17 +598,22 @@ def _ldd_orbbec_library(
             f"command {command!r}: libOrbbecSDK was not found; "
             f"stdout={result.stdout!r}; stderr={result.stderr!r}"
         )
-    match = re.search(
+    matches = re.findall(
         r"^\s*libOrbbecSDK\.so(?:\.\d+)*\s+=>\s+(\S+)",
         result.stdout,
         flags=re.MULTILINE,
     )
-    if match is None:
+    if not matches:
         raise RuntimeError(
             f"command {command!r} did not resolve libOrbbecSDK; "
             f"stdout={result.stdout!r}; stderr={result.stderr!r}"
         )
-    return Path(match.group(1)).resolve(strict=True)
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"command {command!r} resolved {len(matches)} libOrbbecSDK entries; "
+            f"stdout={result.stdout!r}; stderr={result.stderr!r}"
+        )
+    return Path(matches[0]).resolve(strict=True)
 
 
 def _informational_system_orbbec_library(
@@ -602,19 +629,28 @@ def _check_orbbec_abi_host() -> str:
     module = _import_orbbec()
     binding_version = importlib.metadata.version("pyorbbecsdk2")
     sdk_version = module.get_version()
-    package_directory = Path(module.__file__).resolve().parent
+    module_entry = Path(module.__file__)
+    canonical_package_directory = module_entry.parent.resolve(strict=True)
+    canonical_module_entry = module_entry.resolve(strict=True)
+    if canonical_module_entry.parent != canonical_package_directory:
+        raise RuntimeError(
+            "pyorbbecsdk package entry resolves outside canonical imported "
+            f"package directory {canonical_package_directory}: "
+            f"{canonical_module_entry}"
+        )
     extension = _orbbec_extension(module)
     resolved_library = _ldd_orbbec_library(extension)
     expected_library = (
-        package_directory / "libOrbbecSDK.so.2"
+        canonical_package_directory / "libOrbbecSDK.so.2"
     ).resolve(strict=True)
     system_library = _informational_system_orbbec_library()
     return check_orbbec_abi(
-        binding_version,
-        sdk_version,
-        resolved_library,
-        expected_library,
-        system_library,
+        binding_version=binding_version,
+        sdk_version=sdk_version,
+        resolved_library=resolved_library,
+        expected_library=expected_library,
+        package_directory=canonical_package_directory,
+        system_library=system_library,
     )
 
 

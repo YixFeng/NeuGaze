@@ -5,7 +5,6 @@ torchvision==0.21.0+cpu
 torchaudio==2.6.0+cpu
 numpy==1.26.4
 mediapipe==0.10.14
-opencv-python==4.11.0.86
 opencv-contrib-python==4.11.0.86
 jsonlines==4.0.0
 filterpy==1.4.5

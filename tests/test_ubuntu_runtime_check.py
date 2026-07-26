@@ -153,12 +153,19 @@ def test_build_checks_wires_the_complete_diagnostic(monkeypatch, tmp_path):
     ]
 
 
-def test_python_check_rejects_wrong_minor_version():
+def test_python_check_accepts_exact_version():
+    assert runtime.check_python((3, 11, 11)) == "Python 3.11.11"
+
+
+@pytest.mark.parametrize("version", ((3, 11, 10), (3, 11, 12), (3, 12, 1)))
+def test_python_check_rejects_any_other_version(version):
+    actual = ".".join(str(value) for value in version)
+
     with pytest.raises(
         RuntimeError,
-        match=r"requires Python 3\.11, got 3\.12\.1",
+        match=rf"requires Python 3\.11\.11, got {actual}",
     ):
-        runtime.check_python((3, 12, 1))
+        runtime.check_python(version)
 
 
 @pytest.mark.parametrize(
@@ -188,14 +195,36 @@ def test_platform_check_accepts_ubuntu_2404_x86_64():
     assert detail.startswith("Ubuntu 24.04 x86_64")
 
 
-def test_session_check_rejects_wayland_even_with_display():
+@pytest.mark.parametrize(
+    "session_type",
+    (None, "", "tty", "wayland", "mir", "xorg"),
+)
+def test_session_check_requires_exact_x11_session_even_with_display(
+    session_type,
+):
+    environ = {"DISPLAY": ":0"}
+    if session_type is not None:
+        environ["XDG_SESSION_TYPE"] = session_type
+
     with pytest.raises(
         RuntimeError,
-        match="XDG_SESSION_TYPE='wayland'.*requires Xorg",
+        match=r"XDG_SESSION_TYPE=.*requires x11",
     ):
-        runtime.check_session(
-            {"XDG_SESSION_TYPE": "wayland", "DISPLAY": ":0"}
-        )
+        runtime.check_session(environ)
+
+
+def test_session_check_accepts_case_normalized_x11():
+    session_type = "X11"
+    display_name = ":0"
+
+    detail = runtime.check_session(
+        {"XDG_SESSION_TYPE": session_type, "DISPLAY": display_name}
+    )
+
+    assert detail == (
+        f"XDG_SESSION_TYPE={session_type!r}, "
+        f"DISPLAY={display_name!r}"
+    )
 
 
 def test_session_check_rejects_absent_display():
@@ -514,10 +543,79 @@ def test_ldd_orbbec_library_reports_unresolved_dependency(tmp_path):
     assert "loader diagnostics" in message
 
 
-def test_orbbec_abi_check_accepts_approved_bundled_sdk():
-    bundled = Path(
-        "/venv/lib/python3.11/site-packages/"
-        "pyorbbecsdk/libOrbbecSDK.so.2"
+def test_ldd_orbbec_library_rejects_missing_dependency_record(tmp_path):
+    extension = tmp_path / "pyorbbecsdk.so"
+
+    def missing(command, **options):
+        return SimpleNamespace(
+            returncode=0,
+            stdout="\tlibstdc++.so.6 => /usr/lib/libstdc++.so.6\n",
+            stderr="",
+        )
+
+    with pytest.raises(RuntimeError, match="did not resolve libOrbbecSDK"):
+        runtime._ldd_orbbec_library(extension, run_command=missing)
+
+
+def test_ldd_orbbec_library_rejects_missing_resolved_target(tmp_path):
+    extension = tmp_path / "pyorbbecsdk.so"
+    missing_library = tmp_path / "missing" / "libOrbbecSDK.so.2"
+
+    def missing_target(command, **options):
+        return SimpleNamespace(
+            returncode=0,
+            stdout=f"\tlibOrbbecSDK.so.2 => {missing_library}\n",
+            stderr="",
+        )
+
+    with pytest.raises(FileNotFoundError):
+        runtime._ldd_orbbec_library(extension, run_command=missing_target)
+
+
+def test_ldd_orbbec_library_rejects_ambiguous_resolutions(tmp_path):
+    extension = tmp_path / "pyorbbecsdk.so"
+    first = tmp_path / "first" / "libOrbbecSDK.so.2"
+    second = tmp_path / "second" / "libOrbbecSDK.so.2"
+    first.parent.mkdir()
+    second.parent.mkdir()
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+
+    def ambiguous(command, **options):
+        return SimpleNamespace(
+            returncode=0,
+            stdout=(
+                f"\tlibOrbbecSDK.so.2 => {first}\n"
+                f"\tlibOrbbecSDK.so.2.8.6 => {second}\n"
+            ),
+            stderr="",
+        )
+
+    with pytest.raises(RuntimeError, match="resolved 2 libOrbbecSDK entries"):
+        runtime._ldd_orbbec_library(extension, run_command=ambiguous)
+
+
+def bundled_orbbec_sdk(tmp_path):
+    package_directory = tmp_path / "pyorbbecsdk"
+    package_directory.mkdir()
+    module_file = package_directory / "__init__.py"
+    extension = package_directory / "pyorbbecsdk.cpython-311-x86_64-linux-gnu.so"
+    real_library = package_directory / "libOrbbecSDK.so.2.8.6"
+    library_entry = package_directory / "libOrbbecSDK.so.2"
+    module_file.write_text("")
+    extension.write_bytes(b"extension")
+    real_library.write_bytes(b"sdk")
+    library_entry.symlink_to(real_library.name)
+    module = SimpleNamespace(
+        __file__=str(module_file),
+        get_version=lambda: "2.8.6",
+    )
+    return module, package_directory, extension, library_entry, real_library
+
+
+def test_orbbec_abi_check_accepts_internal_symlink_to_bundled_sdk(tmp_path):
+    _, package_directory, _, bundled, real_library = bundled_orbbec_sdk(
+        tmp_path
     )
 
     detail = runtime.check_orbbec_abi(
@@ -525,19 +623,19 @@ def test_orbbec_abi_check_accepts_approved_bundled_sdk():
         sdk_version="2.8.6",
         resolved_library=bundled,
         expected_library=bundled,
+        package_directory=package_directory,
     )
 
     assert detail == (
         "pyorbbecsdk2=2.1.1, SDK=2.8.6, "
-        f"bundled libOrbbecSDK={bundled}; "
+        f"bundled libOrbbecSDK={real_library}; "
         "system SDK discovery=not found (informational only)"
     )
 
 
-def test_orbbec_abi_check_prints_system_sdk_as_informational_only():
-    bundled = Path(
-        "/venv/lib/python3.11/site-packages/"
-        "pyorbbecsdk/libOrbbecSDK.so.2"
+def test_orbbec_abi_check_prints_system_sdk_as_informational_only(tmp_path):
+    _, package_directory, _, bundled, real_library = bundled_orbbec_sdk(
+        tmp_path
     )
     system = Path("/usr/local/lib/libOrbbecSDK.so.2.9.3")
 
@@ -546,9 +644,11 @@ def test_orbbec_abi_check_prints_system_sdk_as_informational_only():
         sdk_version="2.8.6",
         resolved_library=bundled,
         expected_library=bundled,
+        package_directory=package_directory,
         system_library=system,
     )
 
+    assert f"bundled libOrbbecSDK={real_library}" in detail
     assert detail.endswith(
         "system SDK discovery="
         "/usr/local/lib/libOrbbecSDK.so.2.9.3 "
@@ -556,12 +656,11 @@ def test_orbbec_abi_check_prints_system_sdk_as_informational_only():
     )
 
 
-def test_orbbec_abi_check_rejects_system_library_resolution():
-    bundled = Path(
-        "/venv/lib/python3.11/site-packages/"
-        "pyorbbecsdk/libOrbbecSDK.so.2"
-    )
-    system = Path("/usr/local/lib/libOrbbecSDK.so.2.9.3")
+def test_orbbec_abi_check_rejects_system_library_resolution(tmp_path):
+    _, package_directory, _, bundled, _ = bundled_orbbec_sdk(tmp_path)
+    system = tmp_path / "usr" / "local" / "lib" / "libOrbbecSDK.so.2.9.3"
+    system.parent.mkdir(parents=True)
+    system.write_bytes(b"system sdk")
 
     with pytest.raises(RuntimeError) as captured:
         runtime.check_orbbec_abi(
@@ -569,21 +668,78 @@ def test_orbbec_abi_check_rejects_system_library_resolution():
             sdk_version="2.8.6",
             resolved_library=system,
             expected_library=bundled,
+            package_directory=package_directory,
         )
 
     message = str(captured.value)
-    assert (
-        f"bundled libOrbbecSDK expected {bundled}, got {system}"
-        in message
-    )
+    assert "outside canonical imported package directory" in message
     assert "SDK version expected" not in message
 
 
-def test_orbbec_abi_check_rejects_another_sdk_version():
-    bundled = Path(
-        "/venv/lib/python3.11/site-packages/"
-        "pyorbbecsdk/libOrbbecSDK.so.2"
-    )
+def test_orbbec_abi_check_rejects_sibling_prefix_escape(tmp_path):
+    _, package_directory, _, _, _ = bundled_orbbec_sdk(tmp_path)
+    sibling = tmp_path / "pyorbbecsdk-escape"
+    sibling.mkdir()
+    escaped = sibling / "libOrbbecSDK.so.2.8.6"
+    escaped.write_bytes(b"external sdk")
+
+    with pytest.raises(
+        RuntimeError,
+        match="outside canonical imported package directory",
+    ):
+        runtime.check_orbbec_abi(
+            binding_version="2.1.1",
+            sdk_version="2.8.6",
+            resolved_library=escaped,
+            expected_library=escaped,
+            package_directory=package_directory,
+        )
+
+
+def test_orbbec_abi_check_rejects_bundled_symlink_to_external_target(
+    tmp_path,
+):
+    package_directory = tmp_path / "pyorbbecsdk"
+    package_directory.mkdir()
+    external = tmp_path / "external" / "libOrbbecSDK.so.2.8.6"
+    external.parent.mkdir()
+    external.write_bytes(b"external sdk")
+    bundled = package_directory / "libOrbbecSDK.so.2"
+    bundled.symlink_to(external)
+
+    with pytest.raises(
+        RuntimeError,
+        match="outside canonical imported package directory",
+    ):
+        runtime.check_orbbec_abi(
+            binding_version="2.1.1",
+            sdk_version="2.8.6",
+            resolved_library=external,
+            expected_library=bundled,
+            package_directory=package_directory,
+        )
+
+
+def test_orbbec_abi_check_rejects_different_internal_library(tmp_path):
+    _, package_directory, _, bundled, _ = bundled_orbbec_sdk(tmp_path)
+    other = package_directory / "libOrbbecSDK.so.2.7.0"
+    other.write_bytes(b"wrong internal sdk")
+
+    with pytest.raises(RuntimeError) as captured:
+        runtime.check_orbbec_abi(
+            binding_version="2.1.1",
+            sdk_version="2.8.6",
+            resolved_library=other,
+            expected_library=bundled,
+            package_directory=package_directory,
+        )
+
+    assert "bundled libOrbbecSDK expected" in str(captured.value)
+    assert f"got {other}" in str(captured.value)
+
+
+def test_orbbec_abi_check_rejects_another_sdk_version(tmp_path):
+    _, package_directory, _, bundled, _ = bundled_orbbec_sdk(tmp_path)
 
     with pytest.raises(
         RuntimeError,
@@ -594,6 +750,7 @@ def test_orbbec_abi_check_rejects_another_sdk_version():
             sdk_version="2.9.3",
             resolved_library=bundled,
             expected_library=bundled,
+            package_directory=package_directory,
         )
 
 
@@ -601,19 +758,10 @@ def test_orbbec_abi_host_derives_bundled_library_from_imported_package(
     monkeypatch,
     tmp_path,
 ):
-    package_directory = tmp_path / "pyorbbecsdk"
-    package_directory.mkdir()
-    module_file = package_directory / "__init__.py"
-    extension = package_directory / "pyorbbecsdk.cpython-311-x86_64-linux-gnu.so"
-    bundled = package_directory / "libOrbbecSDK.so.2"
-    module_file.write_text("")
-    extension.write_bytes(b"extension")
-    bundled.write_bytes(b"sdk")
-    system = Path("/usr/local/lib/libOrbbecSDK.so.2.9.3")
-    module = SimpleNamespace(
-        __file__=str(module_file),
-        get_version=lambda: "2.8.6",
+    module, _, extension, bundled, real_library = bundled_orbbec_sdk(
+        tmp_path
     )
+    system = Path("/usr/local/lib/libOrbbecSDK.so.2.9.3")
     monkeypatch.setattr(runtime, "_import_orbbec", lambda: module)
     monkeypatch.setattr(
         runtime.importlib.metadata,
@@ -635,15 +783,57 @@ def test_orbbec_abi_host_derives_bundled_library_from_imported_package(
 
     detail = runtime._check_orbbec_abi_host()
 
-    assert f"bundled libOrbbecSDK={bundled.resolve()}" in detail
+    assert f"bundled libOrbbecSDK={real_library}" in detail
     assert f"system SDK discovery={system}" in detail
 
 
-def test_orbbec_abi_check_rejects_wrong_binding_distribution_version():
-    bundled = Path(
-        "/venv/lib/python3.11/site-packages/"
-        "pyorbbecsdk/libOrbbecSDK.so.2"
+def test_orbbec_abi_host_rejects_external_package_entry_symlink(
+    monkeypatch,
+    tmp_path,
+):
+    package_directory = tmp_path / "pyorbbecsdk"
+    package_directory.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    module_file = package_directory / "__init__.py"
+    external_module = outside / "__init__.py"
+    external_module.write_text("")
+    module_file.symlink_to(external_module)
+    extension = package_directory / "pyorbbecsdk.cpython-311-x86_64-linux-gnu.so"
+    extension.write_bytes(b"extension")
+    external_library = outside / "libOrbbecSDK.so.2"
+    external_library.write_bytes(b"external sdk")
+    module = SimpleNamespace(
+        __file__=str(module_file),
+        get_version=lambda: "2.8.6",
     )
+    monkeypatch.setattr(runtime, "_import_orbbec", lambda: module)
+    monkeypatch.setattr(
+        runtime.importlib.metadata,
+        "version",
+        lambda distribution: "2.1.1",
+    )
+    monkeypatch.setattr(runtime, "_orbbec_extension", lambda loaded: extension)
+    monkeypatch.setattr(
+        runtime,
+        "_ldd_orbbec_library",
+        lambda loaded_extension: external_library.resolve(),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            "package entry resolves outside canonical imported "
+            "package directory"
+        ),
+    ):
+        runtime._check_orbbec_abi_host()
+
+
+def test_orbbec_abi_check_rejects_wrong_binding_distribution_version(
+    tmp_path,
+):
+    _, package_directory, _, bundled, _ = bundled_orbbec_sdk(tmp_path)
 
     with pytest.raises(
         RuntimeError,
@@ -654,4 +844,5 @@ def test_orbbec_abi_check_rejects_wrong_binding_distribution_version():
             sdk_version="2.8.6",
             resolved_library=bundled,
             expected_library=bundled,
+            package_directory=package_directory,
         )

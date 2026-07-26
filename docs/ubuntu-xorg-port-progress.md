@@ -49,8 +49,8 @@
 - Orbbec SDK 系统库：`/usr/local/lib/libOrbbecSDK.so.2.9.3`（保持不变，仅作信息发现，不是 Python 运行前置）
 - Orbbec SDK 安装目录：`/opt/OrbbecSDK_v2.9.3`（保持不变，仅作信息发现）
 - Python Orbbec 绑定：`pyorbbecsdk2==2.1.1`（包版本 2.1.1，SDK 版本 API 报告 2.8.6）
-- Task 8 兼容依赖基线：`mediapipe==0.10.14`、`opencv-python==4.11.0.86`、`opencv-contrib-python==4.11.0.86`、`numpy==1.26.4`
-- Task 5 补齐既有声明依赖：`filterpy==1.4.5`、`onnxruntime==1.27.0`；`pip check` 报告无损坏依赖
+- Task 8 兼容依赖基线：`mediapipe==0.10.14`、仅 `opencv-contrib-python==4.11.0.86`、`numpy==1.26.4`；禁止同时安装拥有相同 `cv2` 文件的 `opencv-python`
+- Task 5 补齐既有声明依赖：`filterpy==1.4.5`、`onnxruntime==1.27.0`；`pyorbbecsdk2` 与 `ncnn` 的上游 metadata 仍无条件要求分发名 `opencv-python`，见 Task 8 显式例外
 - 仓库初始状态：`main` 与 `origin/main` 同步，开始设计时无本地改动
 
 ## 阶段状态
@@ -63,7 +63,7 @@
 | 设计文档 | 完成 | 摄像头后端修订提交 `62dc98a`，用户已批准 |
 | 实施计划 | 完成 | 8 个 TDD 任务已写入，提交 `6bf86ed`，待选择执行方式 |
 | 实现 | Task 1–8 自动化范围完成，人工验收待执行 | 2026-07-26 用户批准 ABI 选项 A；诊断强制 wheel 分发 2.1.1、内置 SDK 2.8.6 与包内原生库，无回退 |
-| 自动化验证 | 完成（Task 8） | diagnostic unit 36 passed；non-hardware/non-X11 251 passed / 18 deselected；隔离 Xvfb 无/有 compositor 两组各 16 passed / 1 skipped；编译通过 |
+| 自动化验证 | 完成（Task 8） | diagnostic/requirements/docs focused 55 passed；non-hardware/non-X11 270 passed / 18 deselected；隔离 Xvfb 无/有 compositor 两组各 16 passed / 1 skipped；编译通过 |
 | Gemini 335 实机验收 | 部分完成 | 当前用户 Xorg 已验证；Orbbec 100 帧、关闭、重开、一帧通过；GUI、九点校准、输入、物理断开仍需人工验收 |
 
 ## 任务进度
@@ -77,13 +77,22 @@
 | Task 5：生产 pipeline 接入摄像头与桌面边界 | 完成（redesign final re-review clean） | controller/runtime 57 passed；camera/action 回归 90 passed；隔离 Xvfb 完整默认集合 170 passed / 1 deselected |
 | Task 6：受监督的 Xorg gaze overlay | 完成（external gate resolved） | process 36 passed；focused regression 126 passed；non-X11 192 passed / 18 deselected；isolated negative 1 passed；positive compositor 2 passed / 1 skipped；compositor 完整集合 208 passed / 1 skipped / 1 deselected |
 | Task 7：GUI 摄像头后端、预览与配置 roundtrip | 完成（final re-review fixes verified） | GUI/camera 56 passed；Task 5/6 ownership/overlay regression 149 passed；offscreen non-X11 215 passed / 18 deselected；static/scope/import gates 通过 |
-| Task 8：Ubuntu 依赖、诊断、文档与全量验证 | 自动化实现完成，人工验收待执行 | Option A focused 6 passed、diagnostic unit 36 passed、实时诊断 11/11 passed；完整 fresh 门禁见批准后验证 |
+| Task 8：Ubuntu 依赖、诊断、文档与全量验证 | 自动化实现完成，人工验收待执行 | formal review fix focused 55 passed、实时诊断 11/11 passed、non-X11 270 passed / 18 deselected、两组 X11 各 16 passed / 1 skipped、Gemini 335 hardware 1 passed；`pip check` 两条 metadata 例外未记为通过 |
 
 ## 当前工作
 
 Task 7 将 GUI 摄像头链路改为显式平台配置：Linux 后端选择直接调用 `list_cameras` / `open_camera`，Orbbec model/serial 与 V4L2 device label 的 backend/device ID 保存在 combo item data；preview 直接以 ndarray 的 BGR 通道、真实宽高和 stride 构造 `QImage`。backend 切换先在阻断信号时清空并禁用 device IDs，再尝试关闭旧 preview；close 失败保留原 camera/异常且不枚举、不打开、不重试。calibration/evaluation handoff 先关闭 GUI preview；确认新摄像头会终止持有旧 camera config 的 pipeline。camera enumeration/open/read、pipeline 初始化、calibration preview restart 和 desktop shutdown 的原异常 identity/traceback 可见且无 retry/fallback。YAML 保存直接在各层原 mapping 的深拷贝上覆盖 UI 所有字段，完整 hydration nullable path、screen size、颜色与 gaze bias；expression conditions 统一通过 `ExpressionRow.set_condition()` hydration，每个 row 自持 deep-copied origin mapping，删除/重排不会把未知 metadata 转移给相邻条件。保存保留各 section/expression condition/priority/key item 的未知嵌套键、未触碰值及 `camera_backend["win32"] == "opencv"`。desktop 仅由 `run_gui` 在应用启动/退出时 initialize/close，pipeline 所有权未改；GUI 顶层 `keyboard`/DirectShow 路径已移除。未修改 `learn/`；Task 8 状态见下段。
 
 Task 8 新增完全锁定的 `requirements-ubuntu.txt`，保留 Windows `requirements.txt` 不变，并排除 `pywin32`、`keyboard`、`pyautogui` 与 CUDA wheel。诊断逐项检查 Python、Linux、Xorg、DISPLAY、XTest、XFixes、按需 compositor、配置、模型文件、Orbbec 包/SDK/`ldd` 库来源和明确选择的摄像头；所有失败聚合并保留 traceback，无安装、重试、环境变量改写、udev 修改或后端回退。第三方 Orbbec 枚举会在当前目录写 `Log/OrbbecSDK.log.txt`，因此只把该枚举放进临时工作目录的子进程；结构化结果、stdout、stderr 和失败状态返回父进程，临时目录自动清理，实际诊断不再污染仓库。2026-07-26 用户批准选项 A 后，权威合同为 `pyorbbecsdk2==2.1.1`、SDK API 2.8.6、`ldd` 解析到导入包内 `libOrbbecSDK.so.2`；系统 2.9.3 只打印为信息，不参与成功判定。
+
+同日 formal review 修复轮次中，用户明确批准 OpenCV 方案 B：Ubuntu manifest 与环境只保留 `opencv-contrib-python==4.11.0.86`，不安装 alias/dummy、不改写 dist-info，也不恢复冲突 wheel。由于精确 pin 的上游 `pyorbbecsdk2==2.1.1` 和 `ncnn==1.0.20260526` 都无条件声明 `Requires-Dist: opencv-python`，`pip check` 必须如实以 1 退出并报告这两条分发名冲突；这不是通过项，也不被过滤。例外边界只限 metadata：实际门禁仍验证 contrib-only metadata、`cv2==4.11.0`、MediaPipe/Orbbec 导入、11 项只读诊断与 Gemini 335 实机读取。
+
+当前获批准的 `pip check` exit 1 原文是：
+
+```text
+pyorbbecsdk2 2.1.1 requires opencv-python, which is not installed.
+ncnn 1.0.20260526 requires opencv-python, which is not installed.
+```
 
 
 ## 验证日志
@@ -159,7 +168,7 @@ Task 8 新增完全锁定的 `requirements-ubuntu.txt`，保留 Windows `require
 
 | 2026-07-25 | Task 5 `tests/test_gaze_mouse_controller.py tests/test_pipeline_runtime.py -v`（RED） | 0 collected / 2 collection errors；分别暴露 `win32api` 与 `win32gui` 顶层导入 |
 | 2026-07-25 | Task 5 pipeline 首次 GREEN 尝试 | fail fast 暴露既有声明依赖缺失：先后为 `filterpy`、`onnxruntime`；未使用 stub/fallback |
-| 2026-07-25 | 安装声明依赖并检查环境 | 安装 `filterpy==1.4.5`、`onnxruntime==1.27.0`；`pip check` 输出 `No broken requirements found.` |
+| 2026-07-25 | 安装声明依赖并检查环境 | 安装 `filterpy==1.4.5`、`onnxruntime==1.27.0`；`pip check` 当时输出 `No broken requirements found.`。这是 contrib-only 方案 B 前双 wheel 环境的已废止历史证据，不是当前 gate。 |
 | 2026-07-25 | Task 5 focused GREEN | `tests/test_gaze_mouse_controller.py tests/test_pipeline_runtime.py -v`：19 passed，1.89s |
 | 2026-07-25 | Task 5 要求的 camera/action 回归 GREEN | `tests/test_gaze_mouse_controller.py tests/test_pipeline_runtime.py tests/test_keyboard_actions.py tests/test_camera_sources.py -v`：52 passed，1.90s；无 unhandled thread warning |
 | 2026-07-25 | Task 5 fail-fast ordering review RED/GREEN | 单测先以调用顺序 `inherited, raise_if_failed, decode` 失败；最小换序后 1 passed，1.84s |
@@ -243,7 +252,7 @@ Task 8 新增完全锁定的 `requirements-ubuntu.txt`，保留 Windows `require
 | 2026-07-26 | Orbbec 诊断副作用定位 | Context/设备枚举可复现生成仓库 `Log/OrbbecSDK.log.txt`；日志来自第三方 SDK device watcher/device creation，不是任务源文件，已移除。 |
 | 2026-07-26 | Orbbec 临时目录隔离 RED/GREEN | focused RED 1 failed：缺少 `query_orbbec_devices`；最小子进程/临时 cwd 修复后 focused 1 passed，完整 diagnostic 15 passed，0.02s。 |
 | 2026-07-26 | 实时诊断无污染复验 | 仍为 10 PASS / 1 ABI FAIL；随后 `git status --short` 仅列预期 Task 8 文件，`find . -maxdepth 1 -name Log` 无输出，无手工清理。 |
-| 2026-07-26 | Ubuntu requirements 与环境比对 | `pip check`：`No broken requirements found.`；16 个已安装锁定项全部精确匹配，显式要求的 `torchaudio==2.6.0+cpu` 当前未安装；未安装/升级任何包；Windows requirements SHA-256 保持 `6cc7a8fd64df6ee4dd1d70b1d11438108605320fe5519188c8d8e700b539b916`。 |
+| 2026-07-26 | Ubuntu requirements 与环境比对 | `pip check` 当时为 `No broken requirements found.`；16 个已安装锁定项全部精确匹配，显式要求的 `torchaudio==2.6.0+cpu` 当前未安装；未安装/升级任何包；Windows requirements SHA-256 保持 `6cc7a8fd64df6ee4dd1d70b1d11438108605320fe5519188c8d8e700b539b916`。这是 contrib-only 方案 B 前双 wheel 环境的已废止历史证据，不是当前 gate。 |
 | 2026-07-26 | 当前会话所有权 | `DISPLAY=:1`、`XDG_SESSION_TYPE=x11`、Xauthority `/run/user/1000/gdm/Xauthority`；Xorg PID 769526 与 GNOME Shell 均由 uid 1000 `yixiao` 所有。 |
 | 2026-07-26 | Gemini 335 显式硬件命令 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .../python -m pytest tests/test_orbbec_hardware.py --run-orbbec -v`：1 passed，8.48s；读取 100 帧、关闭、重开并再读 1 帧。 |
 | 2026-07-26 | OpenCV/V4L2 显式源检查 | 只调用 `open_camera(CameraConfig("opencv", 0, 1280, 720, 30), "linux")`；`/dev/video0` 打开、返回 `(720, 1280, 3) uint8 C-contiguous` 一帧并关闭，exit 0；未调用 Orbbec 后端或回退。当前 `/dev/video0`–`/dev/video7` 均标识为 Gemini 335，没有独立普通 USB 摄像头证据。 |
@@ -272,7 +281,7 @@ Task 8 新增完全锁定的 `requirements-ubuntu.txt`，保留 Windows `require
 | 2026-07-26 | Option A diagnostic unit GREEN | 36 passed，0.03s。 |
 | 2026-07-26 | Option A 首次实时诊断 GREEN | 当前用户 `DISPLAY=:1` 上 11/11 checks passed，exit 0；打印 `pyorbbecsdk2=2.1.1`、SDK 2.8.6、包内 `libOrbbecSDK.so.2` 及 informational `/usr/local/lib/libOrbbecSDK.so.2.9.3`；随后仓库无 `Log/`，status 仅含预期源文件。 |
 | 2026-07-26 | 缺失 pin 安装 | 先确认 `torchaudio` 未安装；随后仅执行 CPU index 的 `torchaudio==2.6.0+cpu --no-deps` 非 root 安装，成功且 import 报告 2.6.0+cpu，未升级其他包。 |
-| 2026-07-26 | Ubuntu pins 与环境完整性 | `requirements-ubuntu.txt` 的 17 个 exact pins 全部逐项匹配；`pip check`：`No broken requirements found.`。 |
+| 2026-07-26 | Ubuntu pins 与环境完整性 | `requirements-ubuntu.txt` 当时的 17 个 exact pins 全部逐项匹配；`pip check` 当时为 `No broken requirements found.`。这是 contrib-only 方案 B 前双 wheel 环境的已废止历史证据，不是当前 gate。 |
 | 2026-07-26 | Option A non-hardware/non-X11 | 269 collected；251 passed / 18 deselected，6.21s。 |
 | 2026-07-26 | Option A isolated X11 | 无 compositor：16 passed / 1 skipped / 252 deselected，2.72s；`xcompmgr -a`：16 passed / 1 skipped / 252 deselected，2.64s；均未连接实时 `DISPLAY=:1`。 |
 | 2026-07-26 | Option A Gemini 335 hardware | 1 passed，8.40s；读取 100 帧、关闭、重开并再读 1 帧。第三方 SDK 生成 7,471-byte `Log/OrbbecSDK.log.txt`，记录后精确删除文件与空目录。 |

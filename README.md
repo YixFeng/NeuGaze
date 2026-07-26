@@ -122,9 +122,36 @@ From the repository root:
 conda create -n neugaze python=3.11.11
 conda activate neugaze
 python -m pip install -r requirements-ubuntu.txt
+python -m pip uninstall -y opencv-python
+python -m pip install --no-deps --force-reinstall opencv-contrib-python==4.11.0.86
 python scripts/check_ubuntu_runtime.py --config configs/cpu.yaml --require-overlay
 python config_gui_cpu.py
 ```
+
+`requirements-ubuntu.txt` directly pins only
+`opencv-contrib-python==4.11.0.86`. Its two pinned upstream dependents still
+pull `opencv-python` transitively, so the exact uninstall and contrib
+force-reinstall commands above are required after every clean install or
+requirements update. Do not keep `opencv-python` alongside contrib: both wheels
+own the same `cv2` files. The pinned upstream wheels
+`pyorbbecsdk2==2.1.1` and `ncnn==1.0.20260526` nevertheless declare an
+unconditional dependency on the distribution name `opencv-python`; Python
+package metadata has no mechanism for the contrib wheel to satisfy that other
+name. Consequently, `python -m pip check` is expected to exit 1 with exactly
+these upstream distribution-name complaints:
+
+```text
+pyorbbecsdk2 2.1.1 requires opencv-python, which is not installed.
+ncnn 1.0.20260526 requires opencv-python, which is not installed.
+```
+
+This user-approved upstream distribution-name exception is limited to package
+metadata. Do not filter it, report `pip check` as passed, install an alias or
+dummy distribution, edit installed metadata, or restore the colliding wheel.
+Runtime verification instead requires a successful OpenCV 4.11.0 import backed
+only by `opencv-contrib-python` metadata, successful MediaPipe and Orbbec
+imports, the read-only diagnostic, and the explicit Gemini 335 hardware test
+below.
 
 The diagnostic is read-only, prints every check, and exits nonzero if any
 prerequisite is wrong. Do not start the GUI until it exits zero. In particular,
