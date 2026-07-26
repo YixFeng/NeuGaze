@@ -1,6 +1,6 @@
 # 🎯 NeuGaze: Facial Expression & Gaze-Based Computer Control
 
-<div align="center">
+<div align="left">
 
 **[中文文档](README-CN.md) | English**
 
@@ -14,7 +14,7 @@
 
 This system enables complex action game control, as demonstrated in the video showing Black Myth: Wukong defeating the Yin Tiger boss. It can also be used to play MOBA games like Honor of Kings, FPS games like CS2, and many other game types.
 
-<div align="center">
+<div align="left">
     <h3>NeuGaze wukong</h3>
     <video src="https://github.com/user-attachments/assets/2b604e6e-7468-470c-a3df-afc302ffedb0" />
 </div>
@@ -50,7 +50,7 @@ Traditional assistive technologies face significant limitations: invasive brain-
 
 ### ⭐ Key Features
 
-<div align="center">
+<div align="left">
 
 | Feature | Description | Icon |
 |---------|-------------|------|
@@ -499,7 +499,7 @@ This project is licensed under Creative Commons Attribution-NonCommercial 4.0 In
 
 ---
 
-<div align="center">
+<div align="left">
 
 **⚠️ Note**: This system is designed for research and accessibility purposes. While functional, it may require individual tuning for optimal performance. We encourage experimentation and welcome feedback to improve the system's robustness and usability.
 

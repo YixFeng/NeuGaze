@@ -1,6 +1,6 @@
 # 🎯 NeuGaze: 基于头部动作、面部表情与凝视的计算机控制系统
 
-<div align="center">
+<div align="left">
 
 **中文文档 | [English](README.md)**
 
@@ -14,7 +14,7 @@ QQ 群 ：809133143
 
 用这个系统可以完成复杂的动作游戏的操控，如视频中展示的黑神话悟空打败寅虎。还可以用来玩王者荣耀这种MOBA游戏，CS2等FPS游戏。
 
-<div align="center">
+<div align="left">
     <h3>NeuGaze wukong</h3>
     <video src="https://github.com/user-attachments/assets/2b604e6e-7468-470c-a3df-afc302ffedb0" />
 </div>
@@ -54,7 +54,7 @@ QQ 群 ：809133143
 
 ### ⭐ 核心特性
 
-<div align="center">
+<div align="left">
 
 | 特性 | 描述 | 图标 |
 |------|------|------|
@@ -487,7 +487,7 @@ priority_rules:
 
 ---
 
-<div align="center">
+<div align="left">
 
 **⚠️ 注意**: 本系统专为研究和无障碍目的设计。虽然功能完备，但可能需要个人调整以获得最佳性能。我们鼓励实验并欢迎反馈以改进系统的稳健性和可用性。
 
