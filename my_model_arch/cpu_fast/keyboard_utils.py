@@ -25,9 +25,6 @@ class Action:
     keyname: str
     op_type: OpType
     duration: float = 0.01
-    ensure_release: bool = True
-    timeout: float = 0.1
-    check_interval: float = 0.01
 
     def execute(self):
         if self.op_type == OpType.KEYDOWN:
@@ -39,12 +36,7 @@ class Action:
         elif self.op_type == OpType.KEYPRESS:
             keypress(self.keyname, self.duration)
         elif self.op_type == OpType.KEYUP_SAFE:
-            keyup_safe(
-                self.keyname,
-                self.ensure_release,
-                self.timeout,
-                self.check_interval,
-            )
+            return keyup_safe(self.keyname)
         elif self.op_type == OpType.NONE:
             return None
         else:
@@ -76,16 +68,5 @@ def keydown_safe(key):
     return True
 
 
-def keyup_safe(key, ensure_release=True, timeout=1.0, check_interval=0.01):
-    desktop.key_up(key)
-    if not ensure_release:
-        return
-
-    deadline = time.monotonic() + timeout
-    while desktop.is_key_down(key):
-        if time.monotonic() >= deadline:
-            raise TimeoutError(
-                f"key {key!r} remained pressed for {timeout} seconds"
-            )
-        desktop.key_up(key)
-        time.sleep(check_interval)
+def keyup_safe(key):
+    return desktop.key_up_owned(key)

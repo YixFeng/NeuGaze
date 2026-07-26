@@ -246,6 +246,15 @@ def key_up(key):
         _held_inputs.discard(name)
 
 
+def key_up_owned(key):
+    name, _ = _key_info(key)
+    with _held_lock:
+        if name not in _held_inputs:
+            return False
+        key_up(name)
+        return True
+
+
 def is_key_down(key):
     _, key_info = _key_info(key)
     return bool(win32api.GetAsyncKeyState(key_info["vk"]) & 0x8000)

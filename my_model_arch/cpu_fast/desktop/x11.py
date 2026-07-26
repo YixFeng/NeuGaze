@@ -5,7 +5,7 @@ import threading
 
 from Xlib import X, XK
 from Xlib import display as xdisplay
-from Xlib.ext import xfixes, xtest
+from Xlib.ext import xfixes, xinput, xtest
 
 
 _NAMED_KEYSYMS = {
@@ -55,14 +55,9 @@ _BUTTONS = {
     "mouse_x2": 9,
 }
 
-_BUTTON_MASKS = {
-    "mouse_left": X.Button1Mask,
-    "mouse_middle": X.Button2Mask,
-    "mouse_right": X.Button3Mask,
-}
-
 _display = None
 _root = None
+_master_pointer_id = None
 _lock = threading.RLock()
 _held_keys = set()
 _held_buttons = set()
@@ -71,7 +66,14 @@ _owns_implicit_shift = False
 
 
 def _require_initialized():
-    if _display is None or _root is None:
+    initialized = (
+        _display is not None,
+        _root is not None,
+        _master_pointer_id is not None,
+    )
+    if len(set(initialized)) != 1:
+        raise RuntimeError("X11 backend lifecycle invariant is broken")
+    if not initialized[0]:
         raise RuntimeError("X11 desktop backend is not initialized; call initialize()")
     return _display, _root
 
@@ -142,6 +144,75 @@ def _keycode_is_down(keymap, keycode):
     return bool(keymap[keycode // 8] & (1 << (keycode % 8)))
 
 
+def _button_class(device, display_name, expected_device_id=None):
+    device_id = getattr(device, "deviceid", None)
+    if (
+        not isinstance(device_id, int)
+        or isinstance(device_id, bool)
+        or device_id <= 0
+    ):
+        raise RuntimeError(
+            f"XI2 device on display {display_name!r} has invalid id "
+            f"{device_id!r}"
+        )
+    if expected_device_id is not None and device_id != expected_device_id:
+        raise RuntimeError(
+            f"XI2 response from display {display_name!r} expected device id "
+            f"{expected_device_id}, got {device_id!r}"
+        )
+    if not getattr(device, "enabled", False):
+        raise RuntimeError(
+            f"XI2 device {device_id!r} on display {display_name!r} "
+            "must be enabled"
+        )
+    if getattr(device, "use", None) != xinput.MasterPointer:
+        raise RuntimeError(
+            f"XI2 device {device_id!r} on display {display_name!r} "
+            "must be a master pointer"
+        )
+    button_classes = [
+        item
+        for item in getattr(device, "classes", ())
+        if getattr(item, "type", None) == xinput.ButtonClass
+    ]
+    if len(button_classes) != 1:
+        raise RuntimeError(
+            f"XI2 master pointer {device_id!r} on display {display_name!r} "
+            f"must have exactly one ButtonClass, got {len(button_classes)}"
+        )
+    state = getattr(button_classes[0], "state", None)
+    try:
+        button_count = len(state)
+    except TypeError as error:
+        raise RuntimeError(
+            f"XI2 master pointer {device_id!r} on display {display_name!r} "
+            "has malformed ButtonClass state"
+        ) from error
+    if button_count < 9:
+        raise RuntimeError(
+            f"XI2 master pointer {device_id!r} on display {display_name!r} "
+            f"must expose at least 9 buttons, got {button_count}"
+        )
+    return button_classes[0]
+
+
+def _master_pointer(devices, display_name):
+    pointers = [
+        device
+        for device in devices
+        if getattr(device, "enabled", False)
+        and getattr(device, "use", None) == xinput.MasterPointer
+    ]
+    if len(pointers) != 1:
+        raise RuntimeError(
+            f"X11 display {display_name!r} must expose exactly one enabled "
+            f"master pointer, got {len(pointers)}"
+        )
+    pointer = pointers[0]
+    _button_class(pointer, display_name)
+    return pointer
+
+
 def _cursor_image_visible(image, display_name):
     try:
         width = image.width
@@ -179,9 +250,14 @@ def _cursor_image_visible(image, display_name):
 
 
 def initialize():
-    global _display, _root
+    global _display, _root, _master_pointer_id
     with _lock:
-        if (_display is None) != (_root is None):
+        lifecycle = (
+            _display is None,
+            _root is None,
+            _master_pointer_id is None,
+        )
+        if len(set(lifecycle)) != 1:
             raise RuntimeError("X11 backend lifecycle invariant is broken")
         if _display is not None:
             return None
@@ -204,7 +280,7 @@ def initialize():
             extensions = set(candidate.list_extensions())
             missing = [
                 extension
-                for extension in ("XTEST", "XFIXES")
+                for extension in ("XTEST", "XFIXES", xinput.extname)
                 if extension not in extensions
             ]
             if missing:
@@ -212,6 +288,22 @@ def initialize():
                     f"X11 display {display_name!r} is missing required "
                     f"extension(s): {', '.join(missing)}"
                 )
+            version = candidate.xinput_query_version()
+            actual_version = (
+                int(version.major_version),
+                int(version.minor_version),
+            )
+            if actual_version < (2, 0):
+                raise RuntimeError(
+                    "X11 backend requires XI2 version 2.0 or newer, "
+                    f"got {actual_version[0]}.{actual_version[1]} on "
+                    f"display {display_name!r}"
+                )
+            devices = candidate.xinput_query_device(
+                xinput.AllMasterDevices
+            ).devices
+            master_pointer = _master_pointer(devices, display_name)
+            master_pointer_id = master_pointer.deviceid
             root = candidate.screen().root
         except Exception as error:
             try:
@@ -225,18 +317,24 @@ def initialize():
 
         _display = candidate
         _root = root
+        _master_pointer_id = master_pointer_id
 
 
 def close():
-    global _display, _root, _owns_implicit_shift
+    global _display, _root, _master_pointer_id, _owns_implicit_shift
     with _lock:
-        if _display is None and _root is None:
+        if (
+            _display is None
+            and _root is None
+            and _master_pointer_id is None
+        ):
             return None
         display, _ = _require_initialized()
         release_all()
         display.close()
         _display = None
         _root = None
+        _master_pointer_id = None
         _held_keys.clear()
         _held_buttons.clear()
         _implicit_shift_keys.clear()
@@ -362,17 +460,51 @@ def key_up(key):
             _owns_implicit_shift = False
 
 
+def key_up_owned(key):
+    global _owns_implicit_shift
+    with _lock:
+        display, _ = _require_initialized()
+        name = _normalized_name(key)
+        held = _held_buttons if _is_button_name(name) else _held_keys
+        if name not in held:
+            return False
+        owned_keys = set(_held_keys)
+        owned_buttons = set(_held_buttons)
+        implicit_shift_keys = set(_implicit_shift_keys)
+        owns_implicit_shift = _owns_implicit_shift
+        try:
+            key_up(name)
+            display.sync()
+        except Exception:
+            _held_keys.clear()
+            _held_keys.update(owned_keys)
+            _held_buttons.clear()
+            _held_buttons.update(owned_buttons)
+            _implicit_shift_keys.clear()
+            _implicit_shift_keys.update(implicit_shift_keys)
+            _owns_implicit_shift = owns_implicit_shift
+            raise
+        return True
+
+
 def is_key_down(key):
     with _lock:
-        display, root = _require_initialized()
+        display, _ = _require_initialized()
         name = _normalized_name(key)
         if _is_button_name(name):
-            if name not in _BUTTON_MASKS:
+            reply = display.xinput_query_device(_master_pointer_id)
+            if len(reply.devices) != 1:
                 raise RuntimeError(
-                    f"X11 core pointer state cannot query {name!r} on "
-                    f"display {_display_name(display)!r}"
+                    f"XI2 query for device {_master_pointer_id} on display "
+                    f"{_display_name(display)!r} returned "
+                    f"{len(reply.devices)} devices"
                 )
-            return bool(root.query_pointer().mask & _BUTTON_MASKS[name])
+            button_class = _button_class(
+                reply.devices[0],
+                _display_name(display),
+                expected_device_id=_master_pointer_id,
+            )
+            return bool(button_class.state[_button_number(name) - 1])
 
         keycode, _ = _resolve_key(name, display)
         return _keycode_is_down(display.query_keymap(), keycode)

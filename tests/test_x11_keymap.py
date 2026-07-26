@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 from Xlib import X, XK
+from Xlib.ext import xinput
 
 from my_model_arch.cpu_fast.desktop import x11
 
@@ -200,14 +201,74 @@ def test_malformed_cursor_image_raises(image):
         x11._cursor_image_visible(image, ":91")
 
 
+def fake_button_class(state_count=9, pressed=()):
+    state = [False] * state_count
+    for button in pressed:
+        state[button - 1] = True
+    return SimpleNamespace(type=xinput.ButtonClass, state=state)
+
+
+def fake_master_pointer(
+    deviceid=2,
+    *,
+    enabled=True,
+    use=xinput.MasterPointer,
+    classes=None,
+):
+    if classes is None:
+        classes = [fake_button_class()]
+    return SimpleNamespace(
+        deviceid=deviceid,
+        enabled=enabled,
+        use=use,
+        classes=classes,
+        name="Virtual core pointer",
+    )
+
+
 class FakeLifecycleDisplay:
-    def __init__(self, extensions=("XTEST", "XFIXES")):
+    def __init__(
+        self,
+        extensions=("XTEST", "XFIXES", "XInputExtension"),
+        *,
+        version=(2, 0),
+        devices=None,
+    ):
         self.extensions = extensions
         self.root = object()
         self.closed = 0
+        self.version = version
+        self.devices = (
+            [
+                fake_master_pointer(),
+                SimpleNamespace(
+                    deviceid=3,
+                    enabled=True,
+                    use=xinput.MasterKeyboard,
+                    classes=[],
+                    name="Virtual core keyboard",
+                ),
+            ]
+            if devices is None
+            else devices
+        )
+        self.device_queries = []
+
+    def get_display_name(self):
+        return ":98"
 
     def list_extensions(self):
         return list(self.extensions)
+
+    def xinput_query_version(self):
+        return SimpleNamespace(
+            major_version=self.version[0],
+            minor_version=self.version[1],
+        )
+
+    def xinput_query_device(self, deviceid):
+        self.device_queries.append(deviceid)
+        return SimpleNamespace(devices=self.devices)
 
     def screen(self):
         return SimpleNamespace(root=self.root)
@@ -220,6 +281,7 @@ class FakeLifecycleDisplay:
 def reset_backend_state(monkeypatch):
     monkeypatch.setattr(x11, "_display", None)
     monkeypatch.setattr(x11, "_root", None)
+    monkeypatch.setattr(x11, "_master_pointer_id", None, raising=False)
     monkeypatch.setattr(x11, "_owns_implicit_shift", False)
     x11._held_keys.clear()
     x11._held_buttons.clear()
@@ -227,6 +289,7 @@ def reset_backend_state(monkeypatch):
     yield
     x11._display = None
     x11._root = None
+    x11._master_pointer_id = None
     x11._owns_implicit_shift = False
     x11._held_keys.clear()
     x11._held_buttons.clear()
@@ -286,6 +349,7 @@ def test_initialize_requires_extensions_and_closes_failed_connection(
     assert candidate.closed == 1
     assert x11._display is None
     assert x11._root is None
+    assert x11._master_pointer_id is None
 
 
 def test_initialize_and_close_lifecycle(monkeypatch):
@@ -298,12 +362,14 @@ def test_initialize_and_close_lifecycle(monkeypatch):
 
     assert x11._display is candidate
     assert x11._root is candidate.root
+    assert x11._master_pointer_id == 2
 
     x11.close()
 
     assert candidate.closed == 1
     assert x11._display is None
     assert x11._root is None
+    assert x11._master_pointer_id is None
 
 
 @pytest.mark.parametrize(
@@ -314,6 +380,7 @@ def test_initialize_and_close_lifecycle(monkeypatch):
         lambda: x11.move_pointer(1, 2),
         lambda: x11.key_down("a"),
         lambda: x11.key_up("a"),
+        lambda: x11.key_up_owned("a"),
         lambda: x11.is_key_down("a"),
         lambda: x11.are_keys_down(("a",)),
         lambda: x11.supports_key("a"),
@@ -332,6 +399,7 @@ def test_release_all_attempts_only_recorded_inputs_and_aggregates_failures(
 ):
     x11._display = object()
     x11._root = object()
+    x11._master_pointer_id = 2
     x11._held_keys.update(("a", "b"))
     x11._held_buttons.update(("mouse_left", "mouse_x1"))
     attempted = []
@@ -362,6 +430,7 @@ def fake_injection_display(monkeypatch):
     display.flush = lambda: None
     monkeypatch.setattr(x11, "_display", display)
     monkeypatch.setattr(x11, "_root", object())
+    monkeypatch.setattr(x11, "_master_pointer_id", 2)
 
     def fake_input(_display, event_type, detail=0, **_kwargs):
         events.append((event_type, detail))
@@ -492,6 +561,7 @@ def test_close_release_failure_keeps_lifecycle_retryable(monkeypatch):
     assert caught.value is release_error
     assert x11._display is candidate
     assert x11._root is candidate.root
+    assert x11._master_pointer_id == 2
     assert candidate.closed == 0
 
     monkeypatch.setattr(x11, "release_all", lambda: None)
@@ -500,6 +570,7 @@ def test_close_release_failure_keeps_lifecycle_retryable(monkeypatch):
     assert candidate.closed == 1
     assert x11._display is None
     assert x11._root is None
+    assert x11._master_pointer_id is None
 
 
 def test_close_display_failure_keeps_lifecycle_retryable(monkeypatch):
@@ -518,6 +589,7 @@ def test_close_display_failure_keeps_lifecycle_retryable(monkeypatch):
     assert caught.value is close_error
     assert x11._display is candidate
     assert x11._root is candidate.root
+    assert x11._master_pointer_id == 2
     assert candidate.closed == 0
 
     candidate.close = successful_close
@@ -526,6 +598,7 @@ def test_close_display_failure_keeps_lifecycle_retryable(monkeypatch):
     assert candidate.closed == 1
     assert x11._display is None
     assert x11._root is None
+    assert x11._master_pointer_id is None
 
 
 def test_explicit_shift_release_transfers_to_implicit_user(monkeypatch):
@@ -574,6 +647,7 @@ def test_scroll_release_failure_remains_recoverable(monkeypatch):
     display.flush = lambda: None
     monkeypatch.setattr(x11, "_display", display)
     monkeypatch.setattr(x11, "_root", object())
+    monkeypatch.setattr(x11, "_master_pointer_id", 2)
     release_error = OSError("wheel release failed")
     events = []
 
@@ -601,3 +675,215 @@ def test_scroll_release_failure_remains_recoverable(monkeypatch):
 
     assert 4 not in x11._held_buttons
     assert events[-1] == (X.ButtonRelease, 4)
+
+
+def test_initialize_requires_xinput_extension(monkeypatch):
+    monkeypatch.delenv("XDG_SESSION_TYPE", raising=False)
+    monkeypatch.setenv("DISPLAY", ":95")
+    candidate = FakeLifecycleDisplay(("XTEST", "XFIXES"))
+    monkeypatch.setattr(x11.xdisplay, "Display", lambda _name: candidate)
+
+    with pytest.raises(RuntimeError, match=r":95.*XInputExtension"):
+        x11.initialize()
+
+    assert candidate.closed == 1
+    assert x11._display is None
+    assert x11._root is None
+    assert x11._master_pointer_id is None
+
+
+@pytest.mark.parametrize("version", [(1, 9), (0, 0)])
+def test_initialize_requires_xi2_version_2(monkeypatch, version):
+    monkeypatch.delenv("XDG_SESSION_TYPE", raising=False)
+    monkeypatch.setenv("DISPLAY", ":96")
+    candidate = FakeLifecycleDisplay(version=version)
+    monkeypatch.setattr(x11.xdisplay, "Display", lambda _name: candidate)
+
+    with pytest.raises(RuntimeError, match=r"XI2.*2\.0.*got"):
+        x11.initialize()
+
+    assert candidate.closed == 1
+    assert x11._display is None
+    assert x11._root is None
+    assert x11._master_pointer_id is None
+
+
+@pytest.mark.parametrize(
+    ("devices", "message"),
+    [
+        ([], "exactly one enabled master pointer, got 0"),
+        (
+            [fake_master_pointer(2), fake_master_pointer(4)],
+            "exactly one enabled master pointer, got 2",
+        ),
+        (
+            [fake_master_pointer(enabled=False)],
+            "exactly one enabled master pointer, got 0",
+        ),
+        (
+            [fake_master_pointer(use=xinput.SlavePointer)],
+            "exactly one enabled master pointer, got 0",
+        ),
+        (
+            [fake_master_pointer(classes=[])],
+            "exactly one ButtonClass, got 0",
+        ),
+        (
+            [
+                fake_master_pointer(
+                    classes=[fake_button_class(), fake_button_class()]
+                )
+            ],
+            "exactly one ButtonClass, got 2",
+        ),
+        (
+            [fake_master_pointer(classes=[fake_button_class(8)])],
+            "at least 9 buttons, got 8",
+        ),
+    ],
+)
+def test_initialize_rejects_invalid_xi2_topology(
+    monkeypatch, devices, message
+):
+    monkeypatch.delenv("XDG_SESSION_TYPE", raising=False)
+    monkeypatch.setenv("DISPLAY", ":97")
+    candidate = FakeLifecycleDisplay(devices=devices)
+    monkeypatch.setattr(x11.xdisplay, "Display", lambda _name: candidate)
+
+    with pytest.raises(RuntimeError, match=message):
+        x11.initialize()
+
+    assert candidate.closed == 1
+    assert x11._display is None
+    assert x11._root is None
+    assert x11._master_pointer_id is None
+
+
+def test_initialize_publishes_exact_master_pointer_only_after_validation(
+    monkeypatch,
+):
+    monkeypatch.delenv("XDG_SESSION_TYPE", raising=False)
+    monkeypatch.setenv("DISPLAY", ":98")
+    candidate = FakeLifecycleDisplay(
+        devices=[
+            fake_master_pointer(7),
+            SimpleNamespace(
+                deviceid=8,
+                enabled=True,
+                use=xinput.MasterKeyboard,
+                classes=[],
+                name="keyboard",
+            ),
+        ]
+    )
+    monkeypatch.setattr(x11.xdisplay, "Display", lambda _name: candidate)
+
+    x11.initialize()
+
+    assert candidate.device_queries == [xinput.AllMasterDevices]
+    assert x11._display is candidate
+    assert x11._root is candidate.root
+    assert x11._master_pointer_id == 7
+
+    x11.close()
+    assert x11._master_pointer_id is None
+
+
+@pytest.mark.parametrize(
+    ("name", "button"),
+    [
+        ("mouse_left", 1),
+        ("mouse_middle", 2),
+        ("mouse_right", 3),
+        ("mouse_x1", 8),
+        ("mouse_x2", 9),
+    ],
+)
+def test_mouse_state_queries_saved_xi2_master_button(monkeypatch, name, button):
+    candidate = FakeLifecycleDisplay(
+        devices=[fake_master_pointer(7, classes=[fake_button_class(9, [button])])]
+    )
+    candidate.root = SimpleNamespace(
+        query_pointer=lambda: pytest.fail("core pointer fallback is forbidden")
+    )
+    monkeypatch.setattr(x11, "_display", candidate)
+    monkeypatch.setattr(x11, "_root", candidate.root)
+    monkeypatch.setattr(x11, "_master_pointer_id", 7)
+
+    assert x11.is_key_down(name) is True
+    assert candidate.device_queries == [7]
+
+
+@pytest.mark.parametrize(
+    ("device", "message"),
+    [
+        (fake_master_pointer(8), "expected device id 7"),
+        (fake_master_pointer(7, enabled=False), "must be enabled"),
+        (
+            fake_master_pointer(7, use=xinput.SlavePointer),
+            "must be a master pointer",
+        ),
+        (
+            fake_master_pointer(7, classes=[]),
+            "exactly one ButtonClass, got 0",
+        ),
+        (
+            fake_master_pointer(
+                7, classes=[fake_button_class(), fake_button_class()]
+            ),
+            "exactly one ButtonClass, got 2",
+        ),
+        (
+            fake_master_pointer(7, classes=[fake_button_class(8)]),
+            "at least 9 buttons, got 8",
+        ),
+    ],
+)
+def test_mouse_state_revalidates_exact_xi2_device(monkeypatch, device, message):
+    candidate = FakeLifecycleDisplay(devices=[device])
+    monkeypatch.setattr(x11, "_display", candidate)
+    monkeypatch.setattr(x11, "_root", object())
+    monkeypatch.setattr(x11, "_master_pointer_id", 7)
+
+    with pytest.raises(RuntimeError, match=message):
+        x11.is_key_down("mouse_x2")
+
+    assert candidate.device_queries == [7]
+
+
+def test_key_up_owned_emits_nothing_for_unowned_input(monkeypatch):
+    _expected, _keymap, events = fake_injection_display(monkeypatch)
+    syncs = []
+    x11._display.sync = lambda: syncs.append("sync")
+
+    assert x11.key_up_owned("a") is False
+    assert x11.key_up_owned("mouse_x1") is False
+    assert events == []
+    assert syncs == []
+
+
+def test_key_up_owned_releases_once_then_clears_ownership(monkeypatch):
+    _expected, _keymap, events = fake_injection_display(monkeypatch)
+    syncs = []
+    x11._display.sync = lambda: syncs.append("sync")
+    x11._held_buttons.add("mouse_x1")
+
+    assert x11.key_up_owned("mouse_x1") is True
+
+    assert events == [(X.ButtonRelease, 8)]
+    assert syncs == ["sync"]
+    assert "mouse_x1" not in x11._held_buttons
+
+
+def test_key_up_owned_failure_retains_ownership(monkeypatch):
+    _expected, _keymap, events = fake_injection_display(monkeypatch)
+    source_error = OSError("XI2 roundtrip failed")
+    x11._display.sync = lambda: (_ for _ in ()).throw(source_error)
+    x11._held_buttons.add("mouse_x2")
+
+    with pytest.raises(OSError) as caught:
+        x11.key_up_owned("mouse_x2")
+
+    assert caught.value is source_error
+    assert events == [(X.ButtonRelease, 9)]
+    assert "mouse_x2" in x11._held_buttons

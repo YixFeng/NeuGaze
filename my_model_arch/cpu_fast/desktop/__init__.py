@@ -60,6 +60,11 @@ def key_up(key):
         return _get_backend().key_up(key)
 
 
+def key_up_owned(key):
+    with _backend_lock:
+        return _get_backend().key_up_owned(key)
+
+
 def is_key_down(key):
     with _backend_lock:
         return _get_backend().is_key_down(key)

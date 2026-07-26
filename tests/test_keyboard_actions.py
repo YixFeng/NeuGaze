@@ -54,20 +54,28 @@ def test_action_executes_keypress_with_duration(monkeypatch):
     assert calls == [("down", "w"), ("sleep", 0.25), ("up", "w")]
 
 
-def test_action_executes_safe_keyup_without_polling_when_disabled(monkeypatch):
+@pytest.mark.parametrize("owned", [False, True])
+def test_action_safe_keyup_returns_owned_release_result(monkeypatch, owned):
     calls = []
     monkeypatch.setattr(
-        keyboard_utils.desktop, "key_up", lambda key: calls.append(("up", key))
+        keyboard_utils.desktop,
+        "key_up_owned",
+        lambda key: calls.append(key) or owned,
+        raising=False,
     )
     monkeypatch.setattr(
         keyboard_utils.desktop,
         "is_key_down",
-        lambda key: pytest.fail("safe keyup should not poll when ensure_release=False"),
+        lambda key: pytest.fail("safe keyup must not query global state"),
+    )
+    monkeypatch.setattr(
+        keyboard_utils.desktop,
+        "key_up",
+        lambda key: pytest.fail("safe keyup must not release globally"),
     )
 
-    action = Action("w", OpType.KEYUP_SAFE, ensure_release=False)
-    assert action.execute() is None
-    assert calls == [("up", "w")]
+    assert Action("w", OpType.KEYUP_SAFE).execute() is owned
+    assert calls == ["w"]
 
 
 def test_action_none_does_nothing(monkeypatch):
@@ -109,22 +117,23 @@ def test_safe_keydown_returns_false_when_key_is_already_held(monkeypatch):
     assert keyboard_utils.keydown_safe("w") is False
 
 
-def test_safe_keyup_times_out_when_key_remains_held(monkeypatch):
+@pytest.mark.parametrize("owned", [False, True])
+def test_safe_keyup_delegates_once_to_owned_release(monkeypatch, owned):
     calls = []
-    monotonic_values = iter((10.0, 11.0))
     monkeypatch.setattr(
-        keyboard_utils.desktop, "key_up", lambda key: calls.append(("up", key))
-    )
-    monkeypatch.setattr(keyboard_utils.desktop, "is_key_down", lambda key: True)
-    monkeypatch.setattr(
-        keyboard_utils.time, "monotonic", lambda: next(monotonic_values)
+        keyboard_utils.desktop,
+        "key_up_owned",
+        lambda key: calls.append(key) or owned,
+        raising=False,
     )
 
-    with pytest.raises(
-        TimeoutError, match=r"key 'w' remained pressed for 0\.5 seconds"
-    ):
-        keyboard_utils.keyup_safe("w", timeout=0.5)
-    assert calls == [("up", "w")]
+    assert keyboard_utils.keyup_safe("w") is owned
+    assert calls == ["w"]
+
+
+def test_action_rejects_removed_safe_keyup_compatibility_arguments():
+    with pytest.raises(TypeError):
+        Action("w", OpType.KEYUP_SAFE, ensure_release=True)
 
 
 def test_action_propagates_backend_error(monkeypatch):

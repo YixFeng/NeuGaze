@@ -5,8 +5,10 @@ import sys
 from pathlib import Path
 
 import pytest
-from Xlib import X
+from Xlib import X, display as xdisplay
+from Xlib.ext import xinput, xtest
 
+from my_model_arch.cpu_fast import keyboard_utils
 from my_model_arch.cpu_fast.desktop import x11
 
 
@@ -315,6 +317,88 @@ def test_button_press_release_and_side_buttons(backend):
     finally:
         window.destroy()
         x11._display.flush()
+
+
+def xi_button_is_down(display, button):
+    reply = display.xinput_query_device(xinput.AllMasterDevices)
+    pointers = [
+        device
+        for device in reply.devices
+        if device.enabled and device.use == xinput.MasterPointer
+    ]
+    assert len(pointers) == 1
+    reply = display.xinput_query_device(pointers[0].deviceid)
+    assert len(reply.devices) == 1
+    button_classes = [
+        item
+        for item in reply.devices[0].classes
+        if item.type == xinput.ButtonClass
+    ]
+    assert len(button_classes) == 1
+    return bool(button_classes[0].state[button - 1])
+
+
+@pytest.mark.parametrize(
+    ("name", "button"),
+    (("mouse_x1", 8), ("mouse_x2", 9)),
+)
+def test_safe_side_button_down_and_owned_up(backend, name, button):
+    window = make_pointer_event_window()
+    try:
+        assert keyboard_utils.keydown_safe(name) is True
+        assert x11.is_key_down(name) is True
+        assert keyboard_utils.keydown_safe(name) is False
+        assert keyboard_utils.keyup_safe(name) is True
+        assert x11.is_key_down(name) is False
+        assert keyboard_utils.keyup_safe(name) is False
+        assert pointer_button_events() == [
+            (X.ButtonPress, button),
+            (X.ButtonRelease, button),
+        ]
+    finally:
+        window.destroy()
+        x11._display.flush()
+
+
+@pytest.mark.parametrize(
+    ("name", "button"),
+    (("mouse_x1", 8), ("mouse_x2", 9)),
+)
+def test_safe_up_does_not_release_external_side_button(backend, name, button):
+    external = xdisplay.Display(os.environ["DISPLAY"])
+    try:
+        xtest.fake_input(external, X.ButtonPress, button)
+        external.sync()
+        assert xi_button_is_down(external, button) is True
+
+        assert keyboard_utils.keyup_safe(name) is False
+        assert xi_button_is_down(external, button) is True
+        x11.release_all()
+        assert xi_button_is_down(external, button) is True
+    finally:
+        xtest.fake_input(external, X.ButtonRelease, button)
+        external.sync()
+        external.close()
+
+
+def test_release_all_keeps_external_button_and_releases_owned_button(backend):
+    external = xdisplay.Display(os.environ["DISPLAY"])
+    try:
+        xtest.fake_input(external, X.ButtonPress, 8)
+        external.sync()
+        assert keyboard_utils.keydown_safe("mouse_x2") is True
+        assert xi_button_is_down(external, 8) is True
+        assert xi_button_is_down(external, 9) is True
+
+        x11.release_all()
+
+        assert xi_button_is_down(external, 8) is True
+        assert xi_button_is_down(external, 9) is False
+    finally:
+        xtest.fake_input(external, X.ButtonRelease, 8)
+        xtest.fake_input(external, X.ButtonRelease, 9)
+        external.sync()
+        external.close()
 
 
 def test_scroll_emits_press_and_release_for_each_step(backend):

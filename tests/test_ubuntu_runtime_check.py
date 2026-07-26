@@ -4,6 +4,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from Xlib import display as xdisplay
+from Xlib.ext import xinput
 
 from scripts import check_ubuntu_runtime as runtime
 
@@ -106,6 +108,12 @@ def test_build_checks_wires_the_complete_diagnostic(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         runtime,
+        "_check_xinput_host",
+        lambda display: "XI2 ready",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        runtime,
         "_compositor_owner_exists",
         lambda display: False,
     )
@@ -145,12 +153,141 @@ def test_build_checks_wires_the_complete_diagnostic(monkeypatch, tmp_path):
         "X11 display",
         "XTest",
         "XFixes",
+        "XInput/XI2",
         "X11 compositor",
         "Configuration",
         "Model assets",
         "Orbbec binding/SDK ABI",
         "Selected camera",
     ]
+    assert "Diagnostic passed: 12 checks" in output.getvalue()
+
+
+def diagnostic_button_class(count=9):
+    return SimpleNamespace(type=xinput.ButtonClass, state=[False] * count)
+
+
+def diagnostic_master_pointer(
+    deviceid=2,
+    *,
+    enabled=True,
+    use=xinput.MasterPointer,
+    classes=None,
+):
+    if classes is None:
+        classes = [diagnostic_button_class()]
+    return SimpleNamespace(
+        deviceid=deviceid,
+        enabled=enabled,
+        use=use,
+        classes=classes,
+    )
+
+
+def test_xinput_topology_accepts_xi2_and_one_master_pointer():
+    detail = runtime.check_xinput_topology(
+        ":99",
+        SimpleNamespace(major_version=2, minor_version=0),
+        [
+            diagnostic_master_pointer(7),
+            SimpleNamespace(
+                deviceid=8,
+                enabled=True,
+                use=xinput.MasterKeyboard,
+                classes=[],
+            ),
+        ],
+    )
+
+    assert detail == "XI2 2.0 on ':99'; master pointer id=7, 9 buttons"
+
+
+@pytest.mark.parametrize(
+    ("version", "devices", "message"),
+    (
+        ((1, 9), [diagnostic_master_pointer()], "XI2 2.0"),
+        ((2, 0), [], "exactly one enabled master pointer, got 0"),
+        (
+            (2, 0),
+            [diagnostic_master_pointer(enabled=False)],
+            "exactly one enabled master pointer, got 0",
+        ),
+        (
+            (2, 0),
+            [diagnostic_master_pointer(use=xinput.SlavePointer)],
+            "exactly one enabled master pointer, got 0",
+        ),
+        (
+            (2, 0),
+            [diagnostic_master_pointer(2), diagnostic_master_pointer(4)],
+            "exactly one enabled master pointer, got 2",
+        ),
+        (
+            (2, 0),
+            [diagnostic_master_pointer(classes=[])],
+            "exactly one ButtonClass, got 0",
+        ),
+        (
+            (2, 0),
+            [
+                diagnostic_master_pointer(
+                    classes=[
+                        diagnostic_button_class(),
+                        diagnostic_button_class(),
+                    ]
+                )
+            ],
+            "exactly one ButtonClass, got 2",
+        ),
+        (
+            (2, 0),
+            [diagnostic_master_pointer(classes=[diagnostic_button_class(8)])],
+            "at least 9 buttons, got 8",
+        ),
+    ),
+)
+def test_xinput_topology_rejects_invalid_version_or_devices(
+    version,
+    devices,
+    message,
+):
+    with pytest.raises(RuntimeError, match=message):
+        runtime.check_xinput_topology(
+            ":99",
+            SimpleNamespace(
+                major_version=version[0],
+                minor_version=version[1],
+            ),
+            devices,
+        )
+
+
+def test_xinput_host_preserves_probe_and_close_errors(monkeypatch):
+    probe_error = OSError("XIQueryDevice failed")
+    close_error = OSError("close failed")
+
+    class FailingDisplay:
+        def has_extension(self, name):
+            assert name == xinput.extname
+            return True
+
+        def xinput_query_version(self):
+            return SimpleNamespace(major_version=2, minor_version=0)
+
+        def xinput_query_device(self, deviceid):
+            assert deviceid == xinput.AllMasterDevices
+            raise probe_error
+
+        def close(self):
+            raise close_error
+
+    monkeypatch.setattr(xdisplay, "Display", lambda display: FailingDisplay())
+
+    with pytest.raises(OSError) as caught:
+        runtime._check_xinput_host(":99")
+
+    assert caught.value is probe_error
+    assert any("close failed" in note for note in probe_error.__notes__)
 
 
 def test_python_check_accepts_exact_version():

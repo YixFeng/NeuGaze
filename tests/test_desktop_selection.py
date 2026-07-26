@@ -99,6 +99,7 @@ def test_selector_lazily_exports_only_selected_backend(
         move_pointer=operation("move_pointer"),
         key_down=operation("key_down"),
         key_up=operation("key_up"),
+        key_up_owned=operation("key_up_owned"),
         is_key_down=operation("is_key_down"),
         are_keys_down=operation("are_keys_down"),
         supports_key=operation("supports_key"),
@@ -123,6 +124,7 @@ def test_selector_lazily_exports_only_selected_backend(
     assert desktop.move_pointer(3, 4, relative=True) == "move_pointer"
     assert desktop.key_down("w") == "key_down"
     assert desktop.key_up("w") == "key_up"
+    assert desktop.key_up_owned("w") == "key_up_owned"
     assert desktop.is_key_down("w") == "is_key_down"
     assert desktop.are_keys_down(("esc", "q")) == "are_keys_down"
     assert desktop.supports_key("w") == "supports_key"
@@ -323,3 +325,40 @@ def test_win32_screen_size_uses_desktop_device_caps_and_releases_dc(
         ("caps", 77, backend.win32con.DESKTOPVERTRES),
         ("release_dc", 0, 77),
     ]
+
+
+def test_win32_key_up_owned_releases_only_recorded_input(monkeypatch):
+    calls = []
+    backend = _load_win32_backend(
+        monkeypatch,
+        lambda vk, scan, flags, extra: calls.append(
+            (vk, scan, flags, extra)
+        ),
+    )
+    backend._held_inputs.clear()
+
+    assert backend.key_up_owned("w") is False
+    assert calls == []
+
+    backend._held_inputs.add("w")
+    assert backend.key_up_owned("w") is True
+    assert len(calls) == 1
+    assert calls[0][2] == backend.win32con.KEYEVENTF_KEYUP
+    assert "w" not in backend._held_inputs
+
+
+def test_win32_key_up_owned_failure_retains_ownership(monkeypatch):
+    source_error = OSError("Win32 release failed")
+
+    def fail_release(vk, scan, flags, extra):
+        raise source_error
+
+    backend = _load_win32_backend(monkeypatch, fail_release)
+    backend._held_inputs.clear()
+    backend._held_inputs.add("w")
+
+    with pytest.raises(OSError) as caught:
+        backend.key_up_owned("w")
+
+    assert caught.value is source_error
+    assert "w" in backend._held_inputs

@@ -142,6 +142,75 @@ def check_x11_extension(
     return f"{required_extension} is available on {display_name!r}"
 
 
+def check_xinput_topology(
+    display_name: str,
+    version: object,
+    devices: Iterable[object],
+) -> str:
+    from Xlib.ext import xinput
+
+    actual_version = (
+        int(version.major_version),
+        int(version.minor_version),
+    )
+    if actual_version < (2, 0):
+        raise RuntimeError(
+            f"XI2 2.0 or newer is required on {display_name!r}, got "
+            f"{actual_version[0]}.{actual_version[1]}"
+        )
+    pointers = [
+        device
+        for device in devices
+        if getattr(device, "enabled", False)
+        and getattr(device, "use", None) == xinput.MasterPointer
+    ]
+    if len(pointers) != 1:
+        raise RuntimeError(
+            f"X11 display {display_name!r} must expose exactly one enabled "
+            f"master pointer, got {len(pointers)}"
+        )
+    pointer = pointers[0]
+    device_id = getattr(pointer, "deviceid", None)
+    if (
+        not isinstance(device_id, int)
+        or isinstance(device_id, bool)
+        or device_id <= 0
+    ):
+        raise RuntimeError(
+            f"XI2 master pointer on display {display_name!r} has invalid "
+            f"device id {device_id!r}"
+        )
+    button_classes = [
+        item
+        for item in getattr(pointer, "classes", ())
+        if getattr(item, "type", None) == xinput.ButtonClass
+    ]
+    if len(button_classes) != 1:
+        raise RuntimeError(
+            f"XI2 master pointer {pointer.deviceid!r} on display "
+            f"{display_name!r} must have exactly one ButtonClass, got "
+            f"{len(button_classes)}"
+        )
+    try:
+        button_count = len(button_classes[0].state)
+    except (AttributeError, TypeError) as error:
+        raise RuntimeError(
+            f"XI2 master pointer {pointer.deviceid!r} on display "
+            f"{display_name!r} has malformed ButtonClass state"
+        ) from error
+    if button_count < 9:
+        raise RuntimeError(
+            f"XI2 master pointer {pointer.deviceid!r} on display "
+            f"{display_name!r} must expose at least 9 buttons, got "
+            f"{button_count}"
+        )
+    return (
+        f"XI2 {actual_version[0]}.{actual_version[1]} on "
+        f"{display_name!r}; master pointer id={pointer.deviceid}, "
+        f"{button_count} buttons"
+    )
+
+
 def check_compositor(
     config: Mapping[str, object],
     require_overlay: bool,
@@ -520,6 +589,37 @@ def _query_x11_extensions(display_name: str) -> set[str]:
             )
 
 
+def _check_xinput_host(display_name: str) -> str:
+    from Xlib import display as xdisplay
+    from Xlib.ext import xinput
+
+    display = xdisplay.Display(display_name)
+    primary_error = None
+    try:
+        if not display.has_extension(xinput.extname):
+            raise RuntimeError(
+                f"X11 display {display_name!r} is missing required "
+                f"extension {xinput.extname}"
+            )
+        version = display.xinput_query_version()
+        devices = display.xinput_query_device(
+            xinput.AllMasterDevices
+        ).devices
+        return check_xinput_topology(display_name, version, devices)
+    except Exception as error:
+        primary_error = error
+        raise
+    finally:
+        try:
+            display.close()
+        except Exception as close_error:
+            if primary_error is None:
+                raise
+            primary_error.add_note(
+                f"closing X11 display also failed: {close_error!r}"
+            )
+
+
 def _check_x11_display(display_name: str) -> str:
     extensions = _query_x11_extensions(display_name)
     return (
@@ -725,6 +825,10 @@ def build_checks(
                 _query_x11_extensions(display_name),
                 "XFIXES",
             ),
+        ),
+        (
+            "XInput/XI2",
+            lambda: _check_xinput_host(display_name),
         ),
         (
             "X11 compositor",
