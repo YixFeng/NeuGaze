@@ -310,6 +310,44 @@ def test_opencv_open_uses_only_the_platform_api(
     assert capture.set_calls == expected_set_calls
 
 
+def test_opencv_failed_open_releases_capture_exactly_once(monkeypatch):
+    capture = FakeCapture(opened=False)
+    monkeypatch.setattr(
+        camera.cv2, "VideoCapture", lambda device_id, api: capture
+    )
+
+    with pytest.raises(RuntimeError, match="camera 0 failed to open"):
+        OpenCVCamera.open(
+            CameraConfig("opencv", 0, 1280, 720, 30), "linux"
+        )
+
+    assert capture.release_calls == 1
+
+
+def test_opencv_failed_open_preserves_primary_when_release_also_fails(
+    monkeypatch,
+):
+    primary_error = OSError("capture open probe failed")
+    cleanup_error = OSError("capture release failed")
+    capture = FakeCapture(release_errors=[cleanup_error])
+    capture.isOpened = lambda: (_ for _ in ()).throw(primary_error)
+    monkeypatch.setattr(
+        camera.cv2, "VideoCapture", lambda device_id, api: capture
+    )
+
+    with pytest.raises(OSError) as caught:
+        OpenCVCamera.open(
+            CameraConfig("opencv", 0, 1280, 720, 30), "linux"
+        )
+
+    assert caught.value is primary_error
+    assert capture.release_calls == 1
+    assert any(
+        "capture release failed" in note
+        for note in getattr(primary_error, "__notes__", ())
+    )
+
+
 def test_opencv_open_rejects_negotiated_v4l2_mismatch(monkeypatch):
     capture = FakeCapture(
         negotiated={

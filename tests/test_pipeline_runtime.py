@@ -1,7 +1,7 @@
-import ast
 import builtins
 import inspect
 import queue
+import subprocess
 import sys
 import threading
 import time
@@ -425,32 +425,40 @@ def test_sector_wheel_centers_pointer_through_desktop(monkeypatch):
     assert calls == [(960, 540, False)]
 
 
-def test_pipeline_has_no_live_platform_specific_input_dependency():
-    source = Path(pipeline_module.__file__).read_text()
-    tree = ast.parse(source)
-    forbidden_names = {
-        "pg",
-        "pyautogui",
-        "keyboard",
-        "win32api",
-        "win32con",
-        "ctypes",
-    }
+def test_pipeline_import_graph_is_platform_neutral_in_fresh_interpreter():
+    repository_root = Path(__file__).resolve().parents[1]
+    source = """
+import builtins
+import sys
 
-    assert not any(
-        isinstance(node, ast.Name) and node.id in forbidden_names
-        for node in ast.walk(tree)
+real_import = builtins.__import__
+forbidden = {
+    "keyboard",
+    "pyautogui",
+    "win32api",
+    "win32con",
+    "my_model_arch.cpu_fast.desktop.win32",
+    "my_model_arch.cpu_fast.gaze_show_utils",
+}
+
+def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+    if name in forbidden or any(name.endswith("." + item) for item in forbidden):
+        raise AssertionError(f"platform-specific import: {name}")
+    return real_import(name, globals, locals, fromlist, level)
+
+builtins.__import__ = guarded_import
+import my_model_arch.cpu_fast.pipeline
+assert not (forbidden & set(sys.modules))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", source],
+        cwd=repository_root,
+        check=False,
+        capture_output=True,
+        text=True,
     )
-    assert not any(
-        isinstance(node, ast.alias) and node.name in forbidden_names
-        for node in ast.walk(tree)
-    )
-    assert not any(
-        isinstance(node, ast.ImportFrom)
-        and (node.module or "").split(".")[0]
-        in {"pyautogui", "keyboard", "win32", "ctypes"}
-        for node in ast.walk(tree)
-    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 def _run_one_action(pipeline, action):
@@ -1533,43 +1541,6 @@ def test_two_normal_runs_use_fresh_joined_per_run_resources(monkeypatch):
     assert pipeline.action_queue.empty()
     assert pipeline.camera is None
     assert pipeline.quit is False
-
-
-def test_redesign_removes_persistent_action_worker_and_token_protocol():
-    source = Path(pipeline_module.__file__).read_text()
-
-    for obsolete_name in (
-        "_action_thread",
-        "_action_condition",
-        "_published_action_tokens",
-        "_completed_action_tokens",
-        "_action_worker_error",
-        "_publish_action_token",
-        "raise_action_worker_if_failed",
-        "loop_queue",
-        "def loop_key",
-    ):
-        assert obsolete_name not in source
-    assert (
-        "threading.Thread(target=self.wheel.run_sector_wheel" not in source
-    )
-
-
-def test_windows_desktop_and_overlay_routes_remain_lazy_on_linux():
-    desktop_source = Path(desktop.__file__).read_text()
-    pipeline_source = Path(pipeline_module.__file__).read_text()
-    pipeline_tree = ast.parse(pipeline_source)
-
-    assert '"my_model_arch.cpu_fast.desktop.win32"' in desktop_source
-    assert "from .gaze_overlay import GazeOverlay" in inspect.getsource(
-        RealAction.start_gaze_display
-    )
-    assert not any(
-        isinstance(node, (ast.Import, ast.ImportFrom))
-        and "win32" in ast.unparse(node)
-        for node in pipeline_tree.body
-    )
-
 
 
 def test_pipeline_camera_close_failure_retains_ownership_for_retry():

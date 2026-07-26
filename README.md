@@ -116,15 +116,61 @@ runtime commands do not use `sudo`. The authoritative Python camera runtime is
 `pyorbbecsdk2==2.1.1` with its bundled SDK 2.8.6. A separately installed system
 SDK 2.9.3 is not a Python runtime prerequisite.
 
-From the repository root:
+From the repository root, create and activate the exact environment, name the
+absolute Orbbec SDK source tree, and run the read-only installation checker
+before installing Python packages or running the runtime diagnostic:
 
 ```bash
 conda create -n neugaze python=3.11.11
 conda activate neugaze
+export NEUGAZE_ORBBEC_SDK_ROOT=/absolute/path/to/OrbbecSDK_v2
+python scripts/check_ubuntu_install.py --orbbec-sdk-root "$NEUGAZE_ORBBEC_SDK_ROOT" --require-overlay
 python -m pip install -r requirements-ubuntu.txt
 python -m pip uninstall -y opencv-python
 python -m pip install --no-deps --force-reinstall opencv-contrib-python==4.11.0.86
 python scripts/check_ubuntu_runtime.py --config configs/cpu.yaml --require-overlay
+```
+
+The installation checker only reports every missing or mismatched prerequisite;
+it never installs packages, copies rules, changes permissions, reloads udev, or
+repairs the host. If it reports missing runtime packages, obtain explicit user
+approval before running these administrator commands:
+
+```bash
+sudo apt-get update
+sudo apt-get install --no-install-recommends xcompmgr libxcb-cursor0
+```
+
+The Xvfb integration tools are optional for normal runtime. Obtain approval
+separately before installing the test package:
+
+```bash
+sudo apt-get install --no-install-recommends xvfb
+```
+
+If the Orbbec udev rule is missing or differs, obtain explicit approval before
+running only the SDK installer named by the configured source root:
+
+```bash
+sudo "$NEUGAZE_ORBBEC_SDK_ROOT/scripts/env_setup/install_udev_rules.sh"
+```
+
+Verification itself remains unprivileged and read-only:
+
+```bash
+sha256sum "$NEUGAZE_ORBBEC_SDK_ROOT/scripts/env_setup/99-obsensor-libusb.rules"
+cmp --silent "$NEUGAZE_ORBBEC_SDK_ROOT/scripts/env_setup/99-obsensor-libusb.rules" /etc/udev/rules.d/99-obsensor-libusb.rules
+python scripts/check_ubuntu_install.py --orbbec-sdk-root "$NEUGAZE_ORBBEC_SDK_ROOT" --require-overlay
+```
+
+The source digest must be
+`71a727fbe198a93213d6d6a62a91040da87489065420ff01d102d6334c89a25b`.
+`NEUGAZE_ORBBEC_SDK_ROOT` supplies only the authoritative udev installer and
+rule source; it does not replace or redirect the Python wheel runtime, which
+remains `pyorbbecsdk2==2.1.1` with bundled SDK 2.8.6. After the checker passes,
+perform the approved OpenCV collision repair and launch without `sudo`:
+
+```bash
 python config_gui_cpu.py
 ```
 

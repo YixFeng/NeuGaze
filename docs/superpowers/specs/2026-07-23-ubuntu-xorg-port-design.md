@@ -194,6 +194,54 @@ Ubuntu requirements 不包含 `pywin32`、`keyboard` 或 CUDA wheel。生产路�
 
 安装脚本先检查现有 SDK、Conda 环境、系统库、udev 规则和系统包。只有确实缺少需要 root 的项目时才请求用户批准 `sudo`。安装脚本不得自动升级固件、SDK 或操作系统包集合。
 
+## Ubuntu 安装检查与管理员边界
+
+用户必须从登录界面选择 **Ubuntu on Xorg**。安装顺序固定如下；只读安装
+检查器必须先于 pip 安装和 runtime 诊断运行：
+
+```bash
+conda create -n neugaze python=3.11.11
+conda activate neugaze
+export NEUGAZE_ORBBEC_SDK_ROOT=/absolute/path/to/OrbbecSDK_v2
+python scripts/check_ubuntu_install.py --orbbec-sdk-root "$NEUGAZE_ORBBEC_SDK_ROOT" --require-overlay
+python -m pip install -r requirements-ubuntu.txt
+python -m pip uninstall -y opencv-python
+python -m pip install --no-deps --force-reinstall opencv-contrib-python==4.11.0.86
+python scripts/check_ubuntu_runtime.py --config configs/cpu.yaml --require-overlay
+```
+
+`check_ubuntu_install.py` 只检查并聚合报告，不安装、不复制、不改权限、不重载
+udev，也不搜索备用 SDK。缺少 runtime 系统包时，必须先取得用户明确批准：
+
+```bash
+sudo apt-get update
+sudo apt-get install --no-install-recommends xcompmgr libxcb-cursor0
+```
+
+测试工具需要另行批准：
+
+```bash
+sudo apt-get install --no-install-recommends xvfb
+```
+
+udev 规则调整也必须单独批准，且只能使用显式 SDK root 中的 installer：
+
+```bash
+sudo "$NEUGAZE_ORBBEC_SDK_ROOT/scripts/env_setup/install_udev_rules.sh"
+```
+
+校验本身不使用 sudo：
+
+```bash
+sha256sum "$NEUGAZE_ORBBEC_SDK_ROOT/scripts/env_setup/99-obsensor-libusb.rules"
+cmp --silent "$NEUGAZE_ORBBEC_SDK_ROOT/scripts/env_setup/99-obsensor-libusb.rules" /etc/udev/rules.d/99-obsensor-libusb.rules
+python scripts/check_ubuntu_install.py --orbbec-sdk-root "$NEUGAZE_ORBBEC_SDK_ROOT" --require-overlay
+```
+
+`NEUGAZE_ORBBEC_SDK_ROOT` 只定义 udev installer 与规则的来源，不改变
+`pyorbbecsdk2==2.1.1` wheel 及其 bundled SDK 2.8.6 权威运行时。日常
+runtime 不使用 sudo；任何修复动作都在用户批准后由用户显式执行。
+
 ## 测试设计
 
 所有行为修改使用测试先行。

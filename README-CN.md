@@ -118,15 +118,58 @@ udev 规则属于一次性的管理员安装步骤；NeuGaze 日常诊断与运�
 `sudo`。Python 摄像头权威运行时是 `pyorbbecsdk2==2.1.1` 及其内置 SDK
 2.8.6；另行安装的系统 SDK 2.9.3 不是 Python 运行前置条件。
 
-在仓库根目录执行：
+在仓库根目录先创建并激活精确环境，显式指定 Orbbec SDK 源码树绝对
+路径，并在安装 Python 包或运行 runtime 诊断之前执行只读安装检查器：
 
 ```bash
 conda create -n neugaze python=3.11.11
 conda activate neugaze
+export NEUGAZE_ORBBEC_SDK_ROOT=/absolute/path/to/OrbbecSDK_v2
+python scripts/check_ubuntu_install.py --orbbec-sdk-root "$NEUGAZE_ORBBEC_SDK_ROOT" --require-overlay
 python -m pip install -r requirements-ubuntu.txt
 python -m pip uninstall -y opencv-python
 python -m pip install --no-deps --force-reinstall opencv-contrib-python==4.11.0.86
 python scripts/check_ubuntu_runtime.py --config configs/cpu.yaml --require-overlay
+```
+
+安装检查器只逐项报告缺失或不一致的前置条件；它不会安装包、复制规则、
+修改权限、重载 udev 或修复主机。若报告 runtime 系统包缺失，必须先取得
+用户明确批准，再执行：
+
+```bash
+sudo apt-get update
+sudo apt-get install --no-install-recommends xcompmgr libxcb-cursor0
+```
+
+Xvfb 集成测试工具不是日常运行依赖。安装测试包也必须另行取得批准：
+
+```bash
+sudo apt-get install --no-install-recommends xvfb
+```
+
+若 Orbbec udev 规则缺失或内容不一致，必须先取得明确批准，然后只运行
+所指定 SDK 源码树内的安装器：
+
+```bash
+sudo "$NEUGAZE_ORBBEC_SDK_ROOT/scripts/env_setup/install_udev_rules.sh"
+```
+
+验证过程本身保持非特权、只读：
+
+```bash
+sha256sum "$NEUGAZE_ORBBEC_SDK_ROOT/scripts/env_setup/99-obsensor-libusb.rules"
+cmp --silent "$NEUGAZE_ORBBEC_SDK_ROOT/scripts/env_setup/99-obsensor-libusb.rules" /etc/udev/rules.d/99-obsensor-libusb.rules
+python scripts/check_ubuntu_install.py --orbbec-sdk-root "$NEUGAZE_ORBBEC_SDK_ROOT" --require-overlay
+```
+
+源码规则摘要必须是
+`71a727fbe198a93213d6d6a62a91040da87489065420ff01d102d6334c89a25b`。
+`NEUGAZE_ORBBEC_SDK_ROOT` 只提供权威 udev 安装器和规则来源，不替换也不
+重定向 Python wheel 运行时；权威运行时仍是 `pyorbbecsdk2==2.1.1` 及其内置
+SDK 2.8.6。检查通过后执行已批准的 OpenCV 冲突修复，并始终以非 `sudo`
+方式启动：
+
+```bash
 python config_gui_cpu.py
 ```
 

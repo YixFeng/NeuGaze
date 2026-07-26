@@ -1015,11 +1015,12 @@ def test_orbbec_abi_host_rejects_external_package_entry_symlink(
         __file__=str(module_file),
         get_version=lambda: "2.8.6",
     )
+    distribution = installed_orbbec_distribution(package_directory)
     monkeypatch.setattr(runtime, "_import_orbbec", lambda: module)
     monkeypatch.setattr(
         runtime.importlib.metadata,
-        "version",
-        lambda distribution: "2.1.1",
+        "distribution",
+        lambda name: distribution,
     )
     monkeypatch.setattr(runtime, "_orbbec_extension", lambda loaded: extension)
     monkeypatch.setattr(

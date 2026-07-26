@@ -327,3 +327,51 @@ ELF 证据：扩展 `NEEDED` 为 `libOrbbecSDK.so.2` 且 `RUNPATH=$ORIGIN`，当
 | 2026-07-26 | scoped review RED/GREEN | reviewer：Critical 0、Important 2、Minor 1；NONE routing 3 failed / 1 passed，Orbbec enumeration 3 failed；全部修复后 camera/pipeline 96 passed。 |
 | 2026-07-26 | 最终 focused / non-X11 | domain focused 152 passed，5.88s；完整 non-X11 301 passed / 18 deselected，6.22s。 |
 | 2026-07-26 | Windows 验收边界 | fake route 仅证明 DirectShow 与 GetDC/GetDeviceCaps/ReleaseDC 控制流；Windows 实机摄像头及 100%/125%/150% DPI 对齐仍需人工验收，未标记通过。 |
+
+
+## 最终全分支 review 修复波次（第 2–3 段）
+
+| 提交 | 内容 |
+|---|---|
+| `84a68dc` | 采用 wheel bundled Orbbec SDK 权威运行时 |
+| `9217ae8` | 收紧 Ubuntu runtime 与 OpenCV 安装合同 |
+| `0c485eb` | 将 Orbbec 导入绑定到同一 Distribution provenance |
+| `06b7123` | 修复 camera cleanup、terminal action 与 Windows 边界 |
+| `ca0c631` | XI2 初始化、五鼠标键状态与 owned-release |
+| `4950cce` | 每次状态查询重新验证唯一 master pointer topology |
+
+第 2 段最终隔离 live runtime diagnostic 为 **12/12 PASS**，包括独立
+XInput/XI2 检查。第 3 段新增的安装检查器只读报告系统包、命令、Conda 与
+udev 状态；任何 apt 或 udev 修复仍必须先取得用户批准，日常 runtime 不使用
+sudo。已批准的 pip metadata exception 保持不变：只允许
+`pyorbbecsdk2==2.1.1` 与 `ncnn==1.0.20260526` 报告缺少分发名
+`opencv-python`，不得安装 alias/dummy、修改 metadata 或恢复冲突 wheel。
+
+Windows 实机摄像头、100%/125%/150% DPI 与完整 GUI 链路仍是 manual
+acceptance boundary；Linux fake route 不把这些人工项目标记为通过。
+
+第 3 段最终验证（2026-07-26）：
+
+| 门禁 | 结果 |
+|---|---|
+| 第 3 段 focused | 202 passed，4.39s |
+| 完整 non-X11 | 385 passed / 23 deselected，8.64s |
+| X11，无 compositor | 21 passed / 1 expected skip / 386 deselected，2.96s |
+| X11，有 compositor | 21 passed / 1 expected skip / 386 deselected，2.69s |
+| live runtime diagnostic，有 compositor | 12/12 PASS |
+| Gemini 335 实机 | 1 passed：100 帧读取与 reopen |
+| 实际 Ubuntu 安装检查 | 14/14 PASS |
+
+实际安装检查使用显式、只读命令：
+
+```bash
+CONDA_PREFIX=/home/yixiao/miniconda3/envs/neugaze \
+/home/yixiao/miniconda3/envs/neugaze/bin/python \
+scripts/check_ubuntu_install.py \
+--orbbec-sdk-root /home/yixiao/Users/yixiao/Misc/OrbbecSDK_v2 \
+--require-overlay --require-test-tools
+```
+
+纯 Xvfb 与 `--require-overlay` 的首次组合如预期报告 compositor selection
+无 owner；随后按该参数合同在隔离 Xvfb 内显式启动 `xcompmgr`，12 项全部
+通过。该失败未被兜底、重试或改写为成功。
