@@ -229,6 +229,7 @@ class IntegratedRegressionMediaPipeline:
             max_accumulated_datasets: int = 10,     # 新增：最大累积数据集数量
             ):
         self.mediapipe_results_in_numpy = None
+        self.uses_desktop_input = True
         self.milliseconds_list=[]
         self.regression_model_type = regression_model_type
         self.calibrate_num_points = num_points
@@ -1396,7 +1397,8 @@ class IntegratedRegressionMediaPipeline:
             if hasattr(self, "_discard_actions"):
                 cleanup("action discard", self._discard_actions)
 
-            cleanup("desktop.release_all", desktop.release_all)
+            if self.uses_desktop_input:
+                cleanup("desktop.release_all", desktop.release_all)
             if hasattr(self, "gaze_mouse_controller"):
                 cleanup(
                     "gaze_mouse_controller.stop",
@@ -2334,13 +2336,28 @@ class RealAction(BindKeys):
         self.gaze_overlay = None
         self.scroll_coef = scroll_coef
 
+        controller_config = dict(mouse_control_config)
+        if self.action_output == "robot_terminal":
+            self.uses_desktop_input = False
+            for field_name in (
+                "desktop_pointer_control",
+                "select_wheel_using_head",
+            ):
+                if (
+                    field_name in controller_config
+                    and controller_config[field_name] is not False
+                ):
+                    raise ValueError(
+                        f"robot_terminal requires {field_name}=False"
+                    )
+                controller_config[field_name] = False
 
         from .eye_gaze_mouse_control import GazeMouseController
         self.gaze_mouse_controller = GazeMouseController(
             observer=self,
             screen_width=self.screen_size[0],
             screen_height=self.screen_size[1],
-            **mouse_control_config
+            **controller_config
         )
         # from .expression_keyboard_control import ExpressionKeyboardController
         # self.keyboard_controller = ExpressionKeyboardController(self)
@@ -2377,6 +2394,15 @@ class RealAction(BindKeys):
         # 添加滚轮节流相关变量
         self.last_scroll_time = 0
         self.scroll_throttle_interval = 0.2  # 0.2秒间隔
+
+    def move_mouse(self):
+        if self.action_output == "robot_terminal":
+            predicted_position = self.predicted_position
+            if predicted_position is not None:
+                x, y = predicted_position
+                self.mouse_dict = {"x": x, "y": y}
+            return
+        super().move_mouse()
 
     def start_gaze_display(self):
         """启动凝视点显示。"""

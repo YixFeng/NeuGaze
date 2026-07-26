@@ -27,6 +27,7 @@ class GazeMouseController:
                  y_speed_coef=1.3,
                  head_coef=10,
                  wheel_head_coef=100,
+                 desktop_pointer_control=True,
                  ):
         """
         observer: RealAction实例，用于获取状态和配置
@@ -41,6 +42,7 @@ class GazeMouseController:
         self.screen_center = (screen_width // 2, screen_height // 2)
         self.use_head_control_mouse = use_head_control_mouse
         self.select_wheel_using_head = select_wheel_using_head
+        self.desktop_pointer_control = desktop_pointer_control
         self.dead_zone = dead_zone
         self.max_speed = max_speed
         self.smoothing = smoothing
@@ -226,6 +228,12 @@ class GazeMouseController:
                         while not self.gaze_queue.empty():
                             gaze_x, gaze_y = self.gaze_queue.get_nowait()
                     except Empty:
+                        time.sleep(0.01)
+                        continue
+
+                    if not self.desktop_pointer_control:
+                        if not self.observer.wheel.is_hidden:
+                            self.observer.op_xy = (gaze_x, gaze_y)
                         time.sleep(0.01)
                         continue
 

@@ -42,6 +42,55 @@ def _wait_until_worker_stops(controller):
     assert not controller.running
 
 
+def _forbid_robot_desktop_calls(monkeypatch):
+    for name in (
+        "get_pointer_position",
+        "move_pointer",
+        "key_down",
+        "key_up",
+        "key_up_owned",
+        "scroll",
+        "release_all",
+        "is_cursor_visible",
+    ):
+        monkeypatch.setattr(
+            desktop,
+            name,
+            lambda *args, name=name, **kwargs: pytest.fail(
+                f"robot mode called desktop.{name}"
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    ("wheel_hidden", "gaze", "expected_op_xy"),
+    [
+        (True, (321, 123), (None, None)),
+        (False, (2400, -50), (2400, -50)),
+    ],
+)
+def test_robot_controller_only_forwards_gaze_to_visible_wheel(
+    monkeypatch, observer, wheel_hidden, gaze, expected_op_xy
+):
+    observer.wheel.is_hidden = wheel_hidden
+    controller = _unlocked_controller(
+        observer, desktop_pointer_control=False
+    )
+    controller.running = True
+    controller.update_gaze(*gaze)
+    _forbid_robot_desktop_calls(monkeypatch)
+    monkeypatch.setattr(
+        controller_module.time,
+        "sleep",
+        lambda duration: setattr(controller, "running", False),
+    )
+
+    controller._control_loop()
+    controller.raise_if_failed()
+
+    assert observer.op_xy == expected_op_xy
+
+
 def test_visible_cursor_uses_absolute_desktop_movement(monkeypatch, observer):
     calls = []
     monkeypatch.setattr(

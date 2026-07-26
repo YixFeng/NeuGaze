@@ -13,6 +13,7 @@ import yaml
 
 from my_model_arch.cpu_fast import desktop
 from my_model_arch.cpu_fast.camera import CameraConfig
+from my_model_arch.cpu_fast import eye_gaze_mouse_control as controller_module
 from my_model_arch.cpu_fast import pipeline as pipeline_module
 from my_model_arch.cpu_fast.keyboard_utils import Action, OpType
 from my_model_arch.cpu_fast.robot_actions import RobotAction
@@ -28,6 +29,7 @@ from my_model_arch.cpu_fast.pipeline import (
 def _pipeline_without_constructor():
     pipeline = object.__new__(IntegratedRegressionMediaPipeline)
     pipeline._lifecycle_lock = threading.RLock()
+    pipeline.uses_desktop_input = True
     return pipeline
 
 
@@ -36,6 +38,7 @@ def _real_action_without_constructor():
     pipeline._lifecycle_lock = threading.RLock()
     pipeline.gaze_overlay = None
     pipeline.action_output = "desktop"
+    pipeline.uses_desktop_input = True
     return pipeline
 
 
@@ -1793,6 +1796,185 @@ def test_real_action_routes_platforms_and_rejects_missing_config(
 
 
 
+def _forbid_robot_desktop_calls(monkeypatch):
+    for name in (
+        "get_pointer_position",
+        "move_pointer",
+        "key_down",
+        "key_up",
+        "key_up_owned",
+        "scroll",
+        "release_all",
+        "is_cursor_visible",
+    ):
+        monkeypatch.setattr(
+            desktop,
+            name,
+            lambda *args, name=name, **kwargs: pytest.fail(
+                f"robot mode called desktop.{name}"
+            ),
+        )
+
+
+def test_real_action_forces_robot_controller_to_internal_gaze(
+    monkeypatch,
+):
+    captured = []
+
+    class FakeController:
+        def __init__(self, **kwargs):
+            captured.append(kwargs)
+
+    monkeypatch.setattr(
+        controller_module, "GazeMouseController", FakeController
+    )
+    mapping = yaml.safe_load(
+        (Path(__file__).parents[1] / "configs/cpu.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    linux_config = {}
+    windows_config = {}
+    common = _real_action_constructor_kwargs(monkeypatch)
+
+    linux_pipeline = RealAction(
+        action_platform="linux",
+        robot_action_config=mapping["robot_action_config"],
+        configuration=mapping["key_config"],
+        mouse_control_config=linux_config,
+        **{key: value for key, value in common.items()
+           if key != "mouse_control_config"},
+    )
+    linux_kwargs = captured[-1]
+
+    windows_pipeline = RealAction(
+        action_platform="win32",
+        robot_action_config=mapping["robot_action_config"],
+        configuration=mapping["key_config"],
+        mouse_control_config=windows_config,
+        **{key: value for key, value in common.items()
+           if key != "mouse_control_config"},
+    )
+    windows_kwargs = captured[-1]
+
+    assert linux_kwargs["desktop_pointer_control"] is False
+    assert linux_kwargs["select_wheel_using_head"] is False
+    assert windows_kwargs.get("desktop_pointer_control", True) is True
+    assert linux_config == {}
+    assert windows_config == {}
+    assert linux_pipeline.uses_desktop_input is False
+    assert windows_pipeline.uses_desktop_input is True
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    ["desktop_pointer_control", "select_wheel_using_head"],
+)
+def test_real_action_rejects_robot_desktop_mouse_config(
+    monkeypatch, field_name
+):
+    captured = []
+
+    class FakeController:
+        def __init__(self, **kwargs):
+            captured.append(kwargs)
+
+    monkeypatch.setattr(
+        controller_module, "GazeMouseController", FakeController
+    )
+    mapping = yaml.safe_load(
+        (Path(__file__).parents[1] / "configs/cpu.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    mouse_control_config = {field_name: True}
+    common = _real_action_constructor_kwargs(monkeypatch)
+
+    with pytest.raises(ValueError, match=field_name):
+        RealAction(
+            action_platform="linux",
+            robot_action_config=mapping["robot_action_config"],
+            configuration=mapping["key_config"],
+            mouse_control_config=mouse_control_config,
+            **{key: value for key, value in common.items()
+               if key != "mouse_control_config"},
+        )
+
+    assert mouse_control_config == {field_name: True}
+    assert captured == []
+
+
+def test_robot_move_mouse_keeps_gaze_internal(monkeypatch):
+    pipeline = _robot_pipeline_without_constructor()
+    pipeline.predicted_position = (321, 123)
+    monkeypatch.setattr(
+        desktop,
+        "get_pointer_position",
+        lambda: pytest.fail("robot mode called desktop.get_pointer_position"),
+    )
+
+    pipeline.move_mouse()
+
+    assert pipeline.mouse_dict == {"x": 321, "y": 123}
+
+
+def test_robot_quit_does_not_release_desktop_input(monkeypatch):
+    pipeline = _robot_pipeline_without_constructor()
+    pipeline.quit = False
+    pipeline.end_calibration_signal = False
+    pipeline.camera = None
+    pipeline.action_queue = queue.Queue()
+    calls = []
+    pipeline.wheel = SimpleNamespace(stop=lambda: calls.append("wheel.stop"))
+    pipeline.destroy_window = lambda: calls.append("destroy")
+    _forbid_robot_desktop_calls(monkeypatch)
+
+    pipeline.quit_pipeline()
+
+    assert calls == ["wheel.stop", "destroy"]
+
+
+def test_robot_actions_emit_seven_lines_without_desktop_input(
+    monkeypatch, capsys
+):
+    pipeline = _robot_pipeline_without_constructor()
+    pipeline.quit = False
+    pipeline.end_calibration_signal = False
+    pipeline.camera = None
+    pipeline.action_queue = queue.Queue()
+    pipeline.wheel = SimpleNamespace(stop=lambda: None)
+    pipeline.destroy_window = lambda: None
+    _forbid_robot_desktop_calls(monkeypatch)
+
+    for expression_id in ("left_click", "num8", "extra"):
+        pipeline.keys_dict = SimpleNamespace(
+            state_dict={expression_id: transition("FT", value=True)}
+        )
+        pipeline.head_dict = SimpleNamespace(state_dict={})
+        pipeline.decode()
+
+    for action_id, label in (
+        ("move_forward_step", "前进一步"),
+        ("move_backward_step", "后退一步"),
+        ("turn_left", "左转"),
+        ("turn_right", "右转"),
+    ):
+        pipeline._execute_action(RobotAction(action_id, label, "wheel"))
+
+    pipeline.quit_pipeline()
+
+    assert capsys.readouterr().out.splitlines() == [
+        "[ROBOT_ACTION] id=wave label=挥手 source=expression",
+        "[ROBOT_ACTION] id=dance label=舞蹈 source=expression",
+        "[ROBOT_ACTION] id=stop label=停止 source=expression",
+        "[ROBOT_ACTION] id=move_forward_step label=前进一步 source=wheel",
+        "[ROBOT_ACTION] id=move_backward_step label=后退一步 source=wheel",
+        "[ROBOT_ACTION] id=turn_left label=左转 source=wheel",
+        "[ROBOT_ACTION] id=turn_right label=右转 source=wheel",
+    ]
+
+
+
 def _robot_pipeline_without_constructor():
     mapping = yaml.safe_load(
         (Path(__file__).parents[1] / "configs/cpu.yaml").read_text(
@@ -1801,6 +1983,7 @@ def _robot_pipeline_without_constructor():
     )
     pipeline = _real_action_without_constructor()
     pipeline.action_output = "robot_terminal"
+    pipeline.uses_desktop_input = False
     pipeline.key_control = True
     pipeline.robot_action_config = mapping["robot_action_config"]
     return pipeline
