@@ -120,7 +120,7 @@ Ubuntu GUI 提供 `Orbbec SDK` 和 `OpenCV / V4L2` 两项。切换后端会先�
 
 ### Orbbec Gemini 335 RGB
 
-Ubuntu 使用系统已安装的 Orbbec SDK v2.9.3 和 Conda `neugaze` 环境中的 `pyorbbecsdk2==2.1.1`。安装后必须通过模块版本 API 与 `ldd` 验证 Python 扩展实际加载的原生库；发现 ABI 冲突时停止，不修改隐式库搜索路径。
+2026-07-26 用户明确批准 ABI 选项 A：Ubuntu Python 权威运行时分发必须是 `pyorbbecsdk2==2.1.1`，`pyorbbecsdk.get_version()` 必须返回 SDK 2.8.6，且导入扩展经 `ldd` 解析的 `libOrbbecSDK.so.2` 必须位于该 `pyorbbecsdk` 包目录内。解析到系统 `/usr/local/lib/libOrbbecSDK.so.2.9.3`、其他路径/版本或其他 SDK 版本时立即失败。系统 SDK 2.9.3 保持不变，仅作为信息发现，不是 Python 运行前置条件；禁止修改隐式库搜索路径、替换库或增加构建回退。
 
 新增 `OrbbecColorCamera`，其职责仅为 Gemini 335 RGB 采集：
 

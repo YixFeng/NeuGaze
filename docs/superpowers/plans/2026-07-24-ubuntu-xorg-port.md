@@ -754,6 +754,7 @@ git commit -m "feat: expose explicit camera backends in GUI"
 
 **Interfaces:**
 - Diagnostic exits 0 only when Python, Xorg, XTest, XFixes, optional compositor, Orbbec binding/SDK ABI, model assets, and selected camera prerequisites are valid.
+- 2026-07-26 approved ABI resolution: require `pyorbbecsdk2==2.1.1`, SDK API `2.8.6`, and `libOrbbecSDK.so.2` resolved under the imported package; system SDK 2.9.3 is informational only and must never become the Python runtime library.
 
 - [ ] **Step 1: Write diagnostic tests first**
 

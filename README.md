@@ -109,10 +109,12 @@ The script will automatically:
 At the login screen, select your account, use the gear menu, and choose
 **Ubuntu on Xorg** before signing in. NeuGaze does not support Wayland. The
 Ubuntu host must provide XTest, XFixes, an X11 compositing manager such as
-`xcompmgr` when the gaze overlay is required, `libxcb-cursor0`, and Orbbec SDK
-v2.9.3 plus its udev rules for Gemini 335. Installing system libraries or udev
+`xcompmgr` when the gaze overlay is required, `libxcb-cursor0`, and Orbbec
+device-access udev rules for Gemini 335. Installing system libraries or udev
 rules is a one-time administrator operation; normal NeuGaze diagnostics and
-runtime commands do not use `sudo`.
+runtime commands do not use `sudo`. The authoritative Python camera runtime is
+`pyorbbecsdk2==2.1.1` with its bundled SDK 2.8.6. A separately installed system
+SDK 2.9.3 is not a Python runtime prerequisite.
 
 From the repository root:
 
@@ -126,11 +128,13 @@ python config_gui_cpu.py
 
 The diagnostic is read-only, prints every check, and exits nonzero if any
 prerequisite is wrong. Do not start the GUI until it exits zero. In particular,
-it verifies `pyorbbecsdk.get_version()` and the `ldd`-resolved
-`libOrbbecSDK`. If the binding reports a different SDK or resolves a bundled
-wheel library instead of the approved system v2.9.3 library, stop and resolve
-the binding/SDK decision. Do not use `LD_LIBRARY_PATH`, `LD_PRELOAD`, library
-replacement, or an automatic fallback to hide the mismatch.
+it requires distribution `pyorbbecsdk2==2.1.1`,
+`pyorbbecsdk.get_version() == 2.8.6`, and an `ldd`-resolved
+`libOrbbecSDK.so.2` under the imported `pyorbbecsdk` package directory. A
+separately installed system SDK 2.9.3 is printed as informational discovery
+only; resolving that system library, another path/version, or another SDK
+version is a failure. Do not use `LD_LIBRARY_PATH`, `LD_PRELOAD`, library
+replacement, or an automatic fallback to hide a mismatch.
 
 In the GUI, choose exactly one Linux camera backend:
 

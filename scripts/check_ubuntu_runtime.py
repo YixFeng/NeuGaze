@@ -24,8 +24,8 @@ import yaml
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_PYTHON = (3, 11)
 EXPECTED_ORBBEC_BINDING = "2.1.1"
-EXPECTED_ORBBEC_SDK = "2.9.3"
-EXPECTED_ORBBEC_LIBRARY = Path(
+EXPECTED_ORBBEC_SDK = "2.8.6"
+INFORMATIONAL_SYSTEM_ORBBEC_LIBRARY = Path(
     "/usr/local/lib/libOrbbecSDK.so.2.9.3"
 )
 
@@ -435,7 +435,8 @@ def check_orbbec_abi(
     binding_version: str,
     sdk_version: str,
     resolved_library: Path,
-    expected_library: Path = EXPECTED_ORBBEC_LIBRARY,
+    expected_library: Path,
+    system_library: Path | None = None,
 ) -> str:
     mismatches = []
     if binding_version != EXPECTED_ORBBEC_BINDING:
@@ -450,12 +451,18 @@ def check_orbbec_abi(
         )
     if resolved_library != expected_library:
         mismatches.append(
-            f"libOrbbecSDK expected {expected_library}, "
+            f"bundled libOrbbecSDK expected {expected_library}, "
             f"got {resolved_library}"
         )
+    system_detail = (
+        str(system_library)
+        if system_library is not None
+        else "not found"
+    )
     detail = (
         f"pyorbbecsdk2={binding_version}, SDK={sdk_version}, "
-        f"libOrbbecSDK={resolved_library}"
+        f"bundled libOrbbecSDK={resolved_library}; "
+        f"system SDK discovery={system_detail} (informational only)"
     )
     if mismatches:
         raise RuntimeError(detail + "; " + "; ".join(mismatches))
@@ -582,18 +589,32 @@ def _ldd_orbbec_library(
     return Path(match.group(1)).resolve(strict=True)
 
 
+def _informational_system_orbbec_library(
+    path: Path = INFORMATIONAL_SYSTEM_ORBBEC_LIBRARY,
+) -> Path | None:
+    try:
+        return path.resolve(strict=True)
+    except FileNotFoundError:
+        return None
+
+
 def _check_orbbec_abi_host() -> str:
     module = _import_orbbec()
     binding_version = importlib.metadata.version("pyorbbecsdk2")
     sdk_version = module.get_version()
+    package_directory = Path(module.__file__).resolve().parent
     extension = _orbbec_extension(module)
     resolved_library = _ldd_orbbec_library(extension)
-    expected_library = EXPECTED_ORBBEC_LIBRARY.resolve(strict=True)
+    expected_library = (
+        package_directory / "libOrbbecSDK.so.2"
+    ).resolve(strict=True)
+    system_library = _informational_system_orbbec_library()
     return check_orbbec_abi(
         binding_version,
         sdk_version,
         resolved_library,
         expected_library,
+        system_library,
     )
 
 

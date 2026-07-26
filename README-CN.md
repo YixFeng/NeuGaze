@@ -113,9 +113,10 @@ install.bat
 在登录界面选择用户后，点击齿轮菜单并选择 **Ubuntu on Xorg**，再进入
 桌面；NeuGaze 不支持 Wayland。Ubuntu 主机需要 XTest、XFixes；需要凝视
 透明层时还必须运行 `xcompmgr` 等 X11 合成管理器，并安装
-`libxcb-cursor0`。Gemini 335 需要 Orbbec SDK v2.9.3 和对应 udev 规则。
-系统库与 udev 规则属于一次性的管理员安装步骤；NeuGaze 日常诊断与运行
-命令不使用 `sudo`。
+`libxcb-cursor0` 与 Gemini 335 设备访问所需的 Orbbec udev 规则。系统库与
+udev 规则属于一次性的管理员安装步骤；NeuGaze 日常诊断与运行命令不使用
+`sudo`。Python 摄像头权威运行时是 `pyorbbecsdk2==2.1.1` 及其内置 SDK
+2.8.6；另行安装的系统 SDK 2.9.3 不是 Python 运行前置条件。
 
 在仓库根目录执行：
 
@@ -129,10 +130,12 @@ python config_gui_cpu.py
 
 诊断脚本只读运行，逐项打印所有检查，并在任一前置条件错误时以非零状态
 退出。诊断退出 0 前不要启动 GUI。脚本会同时打印
-`pyorbbecsdk.get_version()` 和扩展经 `ldd` 实际解析到的
-`libOrbbecSDK`。如果绑定报告的 SDK 版本不符，或扩展加载的是 wheel 内置
-库而不是已批准的系统 v2.9.3 库，应先明确解决绑定与 SDK 决策；禁止用
-`LD_LIBRARY_PATH`、`LD_PRELOAD`、替换库文件或自动回退掩盖偏差。
+Python 分发必须为 `pyorbbecsdk2==2.1.1`，
+`pyorbbecsdk.get_version()` 必须返回 2.8.6，扩展经 `ldd` 解析到的
+`libOrbbecSDK.so.2` 必须位于导入的 `pyorbbecsdk` 包目录内。另行安装的
+系统 SDK 2.9.3 只作信息展示；解析到该系统库、其他路径/版本或其他 SDK
+版本都会失败。禁止用 `LD_LIBRARY_PATH`、`LD_PRELOAD`、替换库文件或自动
+回退掩盖偏差。
 
 GUI 中必须明确选择一个 Linux 摄像头后端：
 
