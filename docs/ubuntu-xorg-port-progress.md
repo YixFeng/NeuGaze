@@ -63,7 +63,7 @@
 | 设计文档 | 完成 | 摄像头后端修订提交 `62dc98a`，用户已批准 |
 | 实施计划 | 完成 | 8 个 TDD 任务已写入，提交 `6bf86ed`，待选择执行方式 |
 | 实现 | Task 1–8 自动化范围完成，人工验收待执行 | 2026-07-26 用户批准 ABI 选项 A；诊断强制 wheel 分发 2.1.1、内置 SDK 2.8.6 与包内原生库，无回退 |
-| 自动化验证 | 完成（Task 8） | diagnostic/requirements/docs focused 55 passed；non-hardware/non-X11 270 passed / 18 deselected；隔离 Xvfb 无/有 compositor 两组各 16 passed / 1 skipped；编译通过 |
+| 自动化验证 | 完成（fresh HEAD） | camera focused 45 passed；non-X11 392 passed / 23 deselected；隔离 Xvfb 无/有 compositor 各 21 passed / 1 expected skip / 393 deselected；live diagnostic 12/12 PASS；install check 14/14 PASS；编译与静态门禁通过 |
 | Gemini 335 实机验收 | 部分完成 | 当前用户 Xorg 已验证；Orbbec 100 帧、关闭、重开、一帧通过；GUI、九点校准、输入、物理断开仍需人工验收 |
 
 ## 任务进度
@@ -339,6 +339,7 @@ ELF 证据：扩展 `NEEDED` 为 `libOrbbecSDK.so.2` 且 `RUNPATH=$ORIGIN`，当
 | `06b7123` | 修复 camera cleanup、terminal action 与 Windows 边界 |
 | `ca0c631` | XI2 初始化、五鼠标键状态与 owned-release |
 | `4950cce` | 每次状态查询重新验证唯一 master pointer topology |
+| `95d60fc` | 新增只读 Ubuntu 安装验证与最终第 3 段收口 |
 
 第 2 段最终隔离 live runtime diagnostic 为 **12/12 PASS**，包括独立
 XInput/XI2 检查。第 3 段新增的安装检查器只读报告系统包、命令、Conda 与
@@ -375,3 +376,28 @@ scripts/check_ubuntu_install.py \
 纯 Xvfb 与 `--require-overlay` 的首次组合如预期报告 compositor selection
 无 owner；随后按该参数合同在隔离 Xvfb 内显式启动 `xcompmgr`，12 项全部
 通过。该失败未被兜底、重试或改写为成功。
+
+## 最终全分支 review 修复波次（第 4 段）
+
+本段针对终审唯一 Important 做窄修：Orbbec `read()` 的 native stages 与
+`close()` 的 `pipeline.stop()` 失败现在抛出含完整 device label 和 stage 的
+`RuntimeError`，以原 sentinel 为 `__cause__` 并保留 traceback。既有 timeout、
+missing frame、metadata、format、dimensions 与 byte-length 显式合同错误不改写。
+`stop()` 失败时 `_closed` 保持 false，ownership 可由调用方显式重试；无自动
+重试、空帧、缓存或后端回退。
+
+| 证据 | 结果 |
+|---|---|
+| native-stage 可信 RED | 8 failed / 37 deselected；7 个 read stage 与 stop 均原样冒出 sentinel |
+| native-stage GREEN | 8 passed / 37 deselected，0.12s |
+| camera focused | 45 passed，0.10s |
+| 完整 non-X11 | 392 passed / 23 deselected，8.65s |
+| X11，无 compositor | 21 passed / 1 expected skip / 393 deselected，2.91s |
+| X11，有 compositor | 21 passed / 1 expected skip / 393 deselected，2.70s |
+| live runtime diagnostic，有 compositor | 12/12 PASS |
+| Gemini 335 实机 | 1 passed：100 帧读取与 reopen，8.36s |
+| 实际 Ubuntu 安装检查 | 14/14 PASS |
+
+实施计划中的 checkbox 是 historical execution template，不机械回填；当前完成度
+只以本 progress ledger 的 fresh 命令证据为准。Windows 实机与完整 GUI 人工
+验收边界保持不变。

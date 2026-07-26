@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Status note:** This file is the historical execution template. Its checkboxes are not mechanically backfilled; current completion and fresh verification evidence are authoritative only in `docs/ubuntu-xorg-port-progress.md`.
+
 **Goal:** Make the NeuGaze GUI production path run on Ubuntu 24.04 Xorg with explicit Orbbec Gemini 335 and OpenCV/V4L2 camera backends, full X11 input control, and a click-through gaze overlay while preserving Windows behavior.
 
 **Architecture:** Add one direct camera boundary and one narrow desktop package. Camera and desktop selection are explicit `if/elif` branches with no capability probing or fallback; inference remains platform-neutral. Keep the Win32 overlay and add an Xorg PySide6 overlay process selected by a small import module.
@@ -350,12 +352,12 @@ git commit -m "feat: add explicit Ubuntu camera sources"
 - Modify: `docs/ubuntu-xorg-port-progress.md`
 
 **Interfaces:**
-- Desktop exports `initialize`, `close`, `get_screen_size`, `get_pointer_position`, `move_pointer`, `key_down`, `key_up`, `is_key_down`, `are_keys_down`, `supports_key`, `scroll`, `is_cursor_visible`, and `release_all`.
+- Desktop exports `initialize`, `close`, `get_screen_size`, `get_pointer_position`, `move_pointer`, `key_down`, `key_up`, `key_up_owned`, `is_key_down`, `are_keys_down`, `supports_key`, `scroll`, `is_cursor_visible`, and `release_all`.
 - `keyboard_utils.Action.execute()` delegates synchronously to these exports.
 
 - [ ] **Step 1: Write selector and action tests**
 
-Use an injected fake module to assert selection exports one backend and never imports the other. Test every `OpType`, unknown keys, safe-down false when already held, safe-up timeout, and action exception propagation.
+Use an injected fake module to assert selection exports one backend and never imports the other. Test every `OpType`, unknown keys, safe-down false when already held, owned-only safe-up single release and sync, unowned safe-up with zero events, ownership retention after release or sync failure for explicit retry, and action exception propagation.
 
 ```python
 def test_action_propagates_backend_error(monkeypatch):
@@ -402,6 +404,7 @@ def move_pointer(x, y, relative=False):
     return _get_backend().move_pointer(x, y, relative=relative)
 def key_down(key): return _get_backend().key_down(key)
 def key_up(key): return _get_backend().key_up(key)
+def key_up_owned(key): return _get_backend().key_up_owned(key)
 def is_key_down(key): return _get_backend().is_key_down(key)
 def are_keys_down(keys): return _get_backend().are_keys_down(keys)
 def supports_key(key): return _get_backend().supports_key(key)
@@ -434,16 +437,8 @@ def keydown_safe(key):
         return False
     desktop.key_down(key)
     return True
-def keyup_safe(key, ensure_release=True, timeout=1.0, check_interval=0.01):
-    desktop.key_up(key)
-    if not ensure_release:
-        return
-    deadline = time.monotonic() + timeout
-    while desktop.is_key_down(key):
-        if time.monotonic() >= deadline:
-            raise TimeoutError(f"key {key!r} remained pressed for {timeout} seconds")
-        desktop.key_up(key)
-        time.sleep(check_interval)
+def keyup_safe(key):
+    return desktop.key_up_owned(key)
 ```
 
 Delete the unused Raw Input hook and all top-level Win32 imports from `keyboard_utils.py`.

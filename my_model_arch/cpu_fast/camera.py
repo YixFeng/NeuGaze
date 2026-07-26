@@ -238,13 +238,23 @@ class OrbbecColorCamera:
         )
 
     def read(self) -> np.ndarray:
-        frames = self.pipeline.wait_for_frames(1000)
         stream = self.device_label
+        try:
+            frames = self.pipeline.wait_for_frames(1000)
+        except Exception as error:
+            raise RuntimeError(
+                f"{stream} wait for frames failed"
+            ) from error
         if frames is None:
             raise TimeoutError(
                 f"{stream} did not return a FrameSet within 1000 ms"
             )
-        color_frame = frames.get_color_frame()
+        try:
+            color_frame = frames.get_color_frame()
+        except Exception as error:
+            raise RuntimeError(
+                f"{stream} get color frame failed"
+            ) from error
         if color_frame is None:
             raise RuntimeError(f"{stream} FrameSet is missing a color frame")
 
@@ -267,24 +277,54 @@ class OrbbecColorCamera:
                 f"got {actual_width}x{actual_height}"
             )
 
-        data = color_frame.get_data()
-        actual_bytes = memoryview(data).nbytes
+        try:
+            data = color_frame.get_data()
+        except Exception as error:
+            raise RuntimeError(
+                f"{stream} get color frame data failed"
+            ) from error
+        try:
+            actual_bytes = memoryview(data).nbytes
+        except Exception as error:
+            raise RuntimeError(
+                f"{stream} inspect color frame buffer failed"
+            ) from error
         expected_bytes = self.width * self.height * 3
         if actual_bytes != expected_bytes:
             raise RuntimeError(
                 f"{stream} expected {expected_bytes} bytes, got {actual_bytes}"
             )
 
-        rgb = np.frombuffer(data, dtype=np.uint8).reshape(
-            self.height, self.width, 3
-        )
-        bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-        return np.ascontiguousarray(bgr)
+        try:
+            rgb = np.frombuffer(data, dtype=np.uint8).reshape(
+                self.height, self.width, 3
+            )
+        except Exception as error:
+            raise RuntimeError(
+                f"{stream} convert color frame buffer to RGB array failed"
+            ) from error
+        try:
+            bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+        except Exception as error:
+            raise RuntimeError(
+                f"{stream} convert RGB frame to BGR failed"
+            ) from error
+        try:
+            return np.ascontiguousarray(bgr)
+        except Exception as error:
+            raise RuntimeError(
+                f"{stream} make BGR frame contiguous failed"
+            ) from error
 
     def close(self) -> None:
         if self._closed:
             return
-        self.pipeline.stop()
+        try:
+            self.pipeline.stop()
+        except Exception as error:
+            raise RuntimeError(
+                f"{self.device_label} stop pipeline failed"
+            ) from error
         self._closed = True
 
 

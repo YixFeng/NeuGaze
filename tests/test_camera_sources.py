@@ -609,6 +609,74 @@ def test_orbbec_wrong_byte_length_is_an_error():
         source.read()
 
 
+@pytest.mark.parametrize(
+    ("stage", "message"),
+    (
+        ("wait_for_frames", "wait for frames"),
+        ("get_color_frame", "get color frame"),
+        ("get_data", "get color frame data"),
+        ("memoryview", "inspect color frame buffer"),
+        ("frombuffer", "convert color frame buffer to RGB array"),
+        ("cvtColor", "convert RGB frame to BGR"),
+        ("ascontiguousarray", "make BGR frame contiguous"),
+    ),
+)
+def test_orbbec_read_native_failure_has_device_and_stage_context(
+    monkeypatch,
+    stage,
+    message,
+):
+    device_label = (
+        "Orbbec Gemini 335 serial SN123 index 0 "
+        "RGB 1280x720 @ 30 FPS"
+    )
+    sentinel = OSError(f"{stage} native failure")
+    data = b"\x00" * 6
+    color_frame = SimpleNamespace(
+        get_format=lambda: FAKE_RGB_FORMAT,
+        get_width=lambda: 2,
+        get_height=lambda: 1,
+        get_data=lambda: data,
+    )
+    frames = SimpleNamespace(get_color_frame=lambda: color_frame)
+    pipeline = SimpleNamespace(wait_for_frames=lambda timeout_ms: frames)
+
+    def raise_sentinel(*args, **kwargs):
+        raise sentinel
+
+    if stage == "wait_for_frames":
+        pipeline.wait_for_frames = raise_sentinel
+    elif stage == "get_color_frame":
+        frames.get_color_frame = raise_sentinel
+    elif stage == "get_data":
+        color_frame.get_data = raise_sentinel
+    elif stage == "memoryview":
+        monkeypatch.setattr(camera, "memoryview", raise_sentinel, raising=False)
+    elif stage == "frombuffer":
+        monkeypatch.setattr(camera.np, "frombuffer", raise_sentinel)
+    elif stage == "cvtColor":
+        monkeypatch.setattr(camera.cv2, "cvtColor", raise_sentinel)
+    elif stage == "ascontiguousarray":
+        monkeypatch.setattr(camera.np, "ascontiguousarray", raise_sentinel)
+
+    source = OrbbecColorCamera.from_pipeline(
+        pipeline,
+        device_label=device_label,
+        width=2,
+        height=1,
+        fps=30,
+        rgb_format=FAKE_RGB_FORMAT,
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        source.read()
+
+    assert device_label in str(caught.value)
+    assert message in str(caught.value)
+    assert caught.value.__cause__ is sentinel
+    assert sentinel.__traceback__ is not None
+
+
 def test_orbbec_close_is_idempotent_after_success():
     pipeline = FakeOrbbecPipeline(None)
     source = OrbbecColorCamera.from_pipeline(
@@ -626,24 +694,35 @@ def test_orbbec_close_is_idempotent_after_success():
     assert pipeline.stop_calls == 1
 
 
-def test_orbbec_close_failure_leaves_cleanup_retryable():
-    pipeline = FakeOrbbecPipeline(
-        None, stop_errors=[RuntimeError("stop failed")]
+def test_orbbec_close_failure_has_context_and_leaves_ownership_retryable():
+    device_label = (
+        "Orbbec Gemini 335 serial SN123 index 0 "
+        "RGB 1280x720 @ 30 FPS"
     )
+    sentinel = OSError("native stop failed")
+    pipeline = FakeOrbbecPipeline(None, stop_errors=[sentinel])
     source = OrbbecColorCamera.from_pipeline(
         pipeline,
-        device_label="Gemini 335 SN123",
+        device_label=device_label,
         width=1280,
         height=720,
         fps=30,
         rgb_format=FAKE_RGB_FORMAT,
     )
 
-    with pytest.raises(RuntimeError, match="stop failed"):
+    with pytest.raises(RuntimeError) as caught:
         source.close()
+
+    assert device_label in str(caught.value)
+    assert "stop pipeline" in str(caught.value)
+    assert caught.value.__cause__ is sentinel
+    assert sentinel.__traceback__ is not None
+    assert source._closed is False
+
     source.close()
 
     assert pipeline.stop_calls == 2
+    assert source._closed is True
 
 
 def test_dispatchers_reject_unknown_backends():
