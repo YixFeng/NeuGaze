@@ -613,6 +613,17 @@ def bundled_orbbec_sdk(tmp_path):
     return module, package_directory, extension, library_entry, real_library
 
 
+def installed_orbbec_distribution(package_directory):
+    package_entry = Path("pyorbbecsdk/__init__.py")
+    return SimpleNamespace(
+        version="2.1.1",
+        files=(package_entry,),
+        locate_file=lambda relative_path: (
+            package_directory.parent / relative_path
+        ),
+    )
+
+
 def test_orbbec_abi_check_accepts_internal_symlink_to_bundled_sdk(tmp_path):
     _, package_directory, _, bundled, real_library = bundled_orbbec_sdk(
         tmp_path
@@ -754,19 +765,26 @@ def test_orbbec_abi_check_rejects_another_sdk_version(tmp_path):
         )
 
 
-def test_orbbec_abi_host_derives_bundled_library_from_imported_package(
+def test_orbbec_abi_host_accepts_matching_distribution_and_import_provenance(
     monkeypatch,
     tmp_path,
 ):
-    module, _, extension, bundled, real_library = bundled_orbbec_sdk(
-        tmp_path
+    module, package_directory, extension, bundled, real_library = (
+        bundled_orbbec_sdk(tmp_path)
     )
+    distribution = installed_orbbec_distribution(package_directory)
+    distribution_calls = []
     system = Path("/usr/local/lib/libOrbbecSDK.so.2.9.3")
     monkeypatch.setattr(runtime, "_import_orbbec", lambda: module)
     monkeypatch.setattr(
         runtime.importlib.metadata,
+        "distribution",
+        lambda name: distribution_calls.append(name) or distribution,
+    )
+    monkeypatch.setattr(
+        runtime.importlib.metadata,
         "version",
-        lambda distribution: "2.1.1",
+        lambda name: pytest.fail("must use the same Distribution object"),
     )
     monkeypatch.setattr(runtime, "_orbbec_extension", lambda loaded: extension)
     monkeypatch.setattr(
@@ -783,8 +801,61 @@ def test_orbbec_abi_host_derives_bundled_library_from_imported_package(
 
     detail = runtime._check_orbbec_abi_host()
 
+    assert distribution_calls == ["pyorbbecsdk2"]
     assert f"bundled libOrbbecSDK={real_library}" in detail
     assert f"system SDK discovery={system}" in detail
+
+
+def test_orbbec_abi_host_rejects_shadow_import_with_installed_metadata(
+    monkeypatch,
+    tmp_path,
+):
+    installed_root = tmp_path / "installed"
+    installed_root.mkdir()
+    _, installed_package, _, _, _ = bundled_orbbec_sdk(installed_root)
+    distribution = installed_orbbec_distribution(installed_package)
+
+    shadow_root = tmp_path / "shadow"
+    shadow_root.mkdir()
+    shadow_module, _, shadow_extension, shadow_library, _ = (
+        bundled_orbbec_sdk(shadow_root)
+    )
+    shadow_module.get_version = lambda: pytest.fail(
+        "shadow module API must not run before provenance validation"
+    )
+    monkeypatch.setattr(runtime, "_import_orbbec", lambda: shadow_module)
+    monkeypatch.setattr(
+        runtime.importlib.metadata,
+        "distribution",
+        lambda name: distribution,
+    )
+    monkeypatch.setattr(
+        runtime.importlib.metadata,
+        "version",
+        lambda name: "2.1.1",
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_orbbec_extension",
+        lambda loaded: shadow_extension,
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_ldd_orbbec_library",
+        lambda loaded_extension: shadow_library.resolve(),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_informational_system_orbbec_library",
+        lambda: None,
+        raising=False,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="pyorbbecsdk import provenance mismatch",
+    ):
+        runtime._check_orbbec_abi_host()
 
 
 def test_orbbec_abi_host_rejects_external_package_entry_symlink(

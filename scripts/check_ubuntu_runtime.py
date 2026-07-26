@@ -626,9 +626,29 @@ def _informational_system_orbbec_library(
 
 
 def _check_orbbec_abi_host() -> str:
+    distribution = importlib.metadata.distribution("pyorbbecsdk2")
+    binding_version = distribution.version
+    distribution_files = distribution.files
+    if distribution_files is None:
+        raise RuntimeError(
+            "pyorbbecsdk2 distribution does not expose installed files"
+        )
+    package_entries = [
+        path
+        for path in distribution_files
+        if path.as_posix() == "pyorbbecsdk/__init__.py"
+    ]
+    if len(package_entries) != 1:
+        raise RuntimeError(
+            "expected one pyorbbecsdk/__init__.py in pyorbbecsdk2 "
+            f"distribution, found {len(package_entries)}"
+        )
+    distribution_module_entry = Path(
+        distribution.locate_file(package_entries[0])
+    ).resolve(strict=True)
+    distribution_package_directory = distribution_module_entry.parent
+
     module = _import_orbbec()
-    binding_version = importlib.metadata.version("pyorbbecsdk2")
-    sdk_version = module.get_version()
     module_entry = Path(module.__file__)
     canonical_package_directory = module_entry.parent.resolve(strict=True)
     canonical_module_entry = module_entry.resolve(strict=True)
@@ -638,6 +658,13 @@ def _check_orbbec_abi_host() -> str:
             f"package directory {canonical_package_directory}: "
             f"{canonical_module_entry}"
         )
+    if canonical_package_directory != distribution_package_directory:
+        raise RuntimeError(
+            "pyorbbecsdk import provenance mismatch; distribution package "
+            f"is {distribution_package_directory}, imported package is "
+            f"{canonical_package_directory}"
+        )
+    sdk_version = module.get_version()
     extension = _orbbec_extension(module)
     resolved_library = _ldd_orbbec_library(extension)
     expected_library = (

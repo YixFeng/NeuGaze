@@ -748,17 +748,19 @@ git commit -m "feat: expose explicit camera backends in GUI"
 **Files:**
 - Create: `requirements-ubuntu.txt`
 - Create: `scripts/check_ubuntu_runtime.py`
+- Create: `tests/test_ubuntu_requirements.py`
 - Modify: `README.md`
 - Modify: `README-CN.md`
 - Modify: `docs/ubuntu-xorg-port-progress.md`
 
 **Interfaces:**
-- Diagnostic exits 0 only when Python, Xorg, XTest, XFixes, optional compositor, Orbbec binding/SDK ABI, model assets, and selected camera prerequisites are valid.
-- 2026-07-26 approved ABI resolution: require `pyorbbecsdk2==2.1.1`, SDK API `2.8.6`, and `libOrbbecSDK.so.2` resolved under the imported package; system SDK 2.9.3 is informational only and must never become the Python runtime library.
+- Diagnostic exits 0 only when exact Python 3.11.11, exact case-normalized Xorg session type `x11`, XTest, XFixes, optional compositor, Orbbec binding/SDK ABI, model assets, and selected camera prerequisites are valid.
+- 2026-07-26 approved ABI resolution: obtain one `pyorbbecsdk2` `Distribution`; use its version and its unique `files`/`locate_file` `pyorbbecsdk/__init__.py` package root; require that canonical root to equal the actual imported module package root; require SDK API `2.8.6` and `libOrbbecSDK.so.2` to resolve strictly inside and exactly to the expected target under that same package. System SDK 2.9.3 is informational only and must never become the Python runtime library.
+- 2026-07-26 approved OpenCV Option B: the final environment has only `opencv-contrib-python==4.11.0.86` ownership of `cv2`. A normal requirements install is immediately followed by uninstalling transitively pulled `opencv-python` and force-reinstalling contrib with `--no-deps`. The exact two-line upstream distribution-name failure from `pip check` is visible and approved; it is never filtered or reported as passed.
 
 - [ ] **Step 1: Write diagnostic tests first**
 
-Create `tests/test_ubuntu_runtime_check.py` covering success plus wrong Python, Wayland, absent DISPLAY, missing XTest/XFixes, missing compositor when gaze display is enabled, missing model files, and mismatched Orbbec library resolution.
+Create `tests/test_ubuntu_runtime_check.py` covering success plus wrong Python patch, every non-`x11` session value, absent DISPLAY, missing XTest/XFixes, missing compositor when gaze display is enabled, missing model files, mismatched Orbbec library resolution, and a shadow import whose package root differs from the installed `Distribution` root. Create `tests/test_ubuntu_requirements.py` covering the exact direct distribution set, contrib-only OpenCV ownership, and the EN/CN post-install repair contract.
 
 - [ ] **Step 2: Run RED**
 
@@ -775,15 +777,16 @@ Expected: diagnostic module is missing.
 torch==2.6.0+cpu
 torchvision==0.21.0+cpu
 torchaudio==2.6.0+cpu
+opencv-contrib-python==4.11.0.86
 python-xlib==0.33
 pyorbbecsdk2==2.1.1
 ```
 
-Keep `requirements.txt` as the Windows set.
+Do not list `opencv-python`. `pyorbbecsdk2` and `ncnn` still pull that distribution transitively during a normal resolver run, so installation must immediately uninstall it and force-reinstall exact contrib with `--no-deps`. This restores contrib ownership of every overlapping `cv2` file without changing other packages. Keep `requirements.txt` as the Windows set.
 
 - [ ] **Step 4: Implement read-only diagnostics**
 
-The script accepts `--config configs/cpu.yaml` and `--require-overlay`. It prints one line per check, collects all failures, then exits 1 with the full list. It never installs, rewrites env vars, edits udev, or falls back. For the Orbbec extension, print `pyorbbecsdk.get_version()` and the `ldd`-resolved `libOrbbecSDK`.
+The script accepts `--config configs/cpu.yaml` and `--require-overlay`. It prints one line per check, collects all failures, then exits 1 with the full list. It never installs, rewrites env vars, edits udev, cleans `sys.path`, or falls back. For the Orbbec extension, one `Distribution` object supplies both the binding version and installed package root; that root must exactly match the actual imported module root before printing `pyorbbecsdk.get_version()` and validating the `ldd`-resolved `libOrbbecSDK` inside it.
 
 - [ ] **Step 5: Run diagnostic GREEN**
 
@@ -801,6 +804,8 @@ Document exact commands:
 conda create -n neugaze python=3.11.11
 conda activate neugaze
 python -m pip install -r requirements-ubuntu.txt
+python -m pip uninstall -y opencv-python
+python -m pip install --no-deps --force-reinstall opencv-contrib-python==4.11.0.86
 python scripts/check_ubuntu_runtime.py --config configs/cpu.yaml --require-overlay
 python config_gui_cpu.py
 ```
@@ -815,7 +820,16 @@ Run: `xvfb-run -a /home/yixiao/miniconda3/envs/neugaze/bin/python -m pytest -m x
 
 Run: `/home/yixiao/miniconda3/envs/neugaze/bin/python -m py_compile config_gui_cpu.py my_model_arch/cpu_fast/*.py my_model_arch/cpu_fast/desktop/*.py scripts/check_ubuntu_runtime.py`
 
-Expected: all selected tests pass and compilation exits 0.
+Run the exact-pin/contrib-only functional import check, then run: `/home/yixiao/miniconda3/envs/neugaze/bin/python -m pip check`.
+
+Expected: all selected tests pass, compilation exits 0, all direct pins match, only `opencv-contrib-python==4.11.0.86` metadata owns an importable OpenCV 4.11.0 with working MediaPipe and Orbbec imports, and `pip check` exits 1 with exactly this user-approved upstream metadata exception:
+
+```text
+pyorbbecsdk2 2.1.1 requires opencv-python, which is not installed.
+ncnn 1.0.20260526 requires opencv-python, which is not installed.
+```
+
+Do not filter these lines, install an alias/dummy distribution, edit installed metadata, retain both OpenCV wheels, or report `pip check` as passed.
 
 - [ ] **Step 8: Run explicit real-session acceptance**
 
@@ -835,7 +849,7 @@ Record every command, result, and any untestable hardware item in the progress d
 - [ ] **Step 9: Final commit**
 
 ```bash
-git add requirements-ubuntu.txt scripts/check_ubuntu_runtime.py tests/test_ubuntu_runtime_check.py README.md README-CN.md docs/ubuntu-xorg-port-progress.md
+git add requirements-ubuntu.txt scripts/check_ubuntu_runtime.py tests/test_ubuntu_runtime_check.py tests/test_ubuntu_requirements.py README.md README-CN.md docs/ubuntu-xorg-port-progress.md
 git commit -m "docs: add Ubuntu Xorg setup and verification"
 ```
 
