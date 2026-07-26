@@ -310,7 +310,7 @@ ncnn 1.0.20260526 requires opencv-python, which is not installed.
 3. **GUI Gemini 335 label/serial 与 100 帧预览：未执行人工 GUI 验收。** 仍需启动 GUI，确认显示 `Orbbec Gemini 335 CP0E85300058`，预览持续至少 100 帧且关闭/重开正常。
 4. **OpenCV/V4L2：部分执行。** 显式 V4L2 `/dev/video0` 单帧路径通过且无 Orbbec SDK 回退；GUI 后端切换未人工确认，当前也没有独立普通 USB 摄像头，只有 Gemini 335 暴露的 V4L2 节点。
 5. **九点校准：未执行。** 需要完成全部九点并确认保存的回归模型可加载。
-6. **输入与 overlay：未执行实时人工验收。** 自动化只在隔离 Xvfb 验证。人工需逐项确认：凝视绝对/相对移动；左/右/中/X1/X2；滚动；按下/保持/释放；组合键；安全释放；表情映射；轮盘选择；透明、置顶、点击穿透、不抢焦点；ESC+Q 后无残留按键、按钮、overlay、摄像头或进程。
+6. **输入与 overlay：未执行实时人工验收。** 自动化只在隔离 Xvfb 验证。人工需逐项确认：凝视绝对/相对移动；左/右/中/X1/X2；滚动；按下/保持/释放；组合键；安全释放；表情映射；轮盘选择；透明、置顶、点击穿透、不抢焦点；ESC+Q 停止 evaluation、随后正常关闭 GUI 后无残留按键、按钮、overlay、摄像头或进程。
 7. **物理断开 Gemini 335：未执行。** 预览中拔出设备后必须显示原始 SDK 错误并终止当前操作，不得返回空帧、重试或切 V4L2。
 8. **非 root：已确认本次 Task 8 命令。** 所有记录的诊断、测试、摄像头与编译命令均由 uid 1000 执行且未使用 `sudo`；这不代替后续人工会话对命令历史的复核。
 
@@ -329,7 +329,7 @@ ELF 证据：扩展 `NEEDED` 为 `libOrbbecSDK.so.2` 且 `RUNPATH=$ORIGIN`，当
 
 ## 阻塞项
 
-- 自动化与 ABI authority 已无阻塞；GUI 视觉预览、九点校准、实时输入/overlay、ESC+Q cleanup 与物理断开仍需人工验收，未标记通过。
+- 自动化与 ABI authority 已无阻塞；GUI 视觉预览、九点校准、实时输入/overlay、ESC+Q 停止 evaluation 后正常关闭 GUI 的 cleanup 与物理断开仍需人工验收，未标记通过。
 - 后续系统包或 udev 调整若需要 `sudo`，必须先请求用户批准。
 
 

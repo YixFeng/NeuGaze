@@ -69,7 +69,7 @@ export NEUGAZE_ORBBEC_SDK_ROOT=/home/yixiao/Users/yixiao/Misc/OrbbecSDK_v2
 
 ## 退出与资源检查
 
-在评估窗口按 **ESC+Q**，或正常关闭 GUI，然后执行：
+在评估窗口按 **ESC+Q** 停止 evaluation；随后正常关闭 GUI。确认 GUI 已关闭后，再执行：
 
 ```bash
 pgrep -af 'config_gui_cpu\.py|my_model_arch\.cpu_fast\.pipeline'
@@ -89,5 +89,5 @@ lsof -nP | rg 'pyorbbecsdk|libOrbbecSDK|/dev/video'
 | 四方向各 5 次 | 未执行 | 待执行 |
 | 无选区取消 | 未执行 | 待执行 |
 | 无系统键鼠副作用 | 未执行 | 待执行 |
-| ESC+Q/正常退出与资源检查 | 未执行 | 待执行 |
+| ESC+Q 停止 evaluation、正常关闭 GUI 与资源检查 | 未执行 | 待执行 |
 | SONIC 接入 | 未开始 | 不在本次范围 |
