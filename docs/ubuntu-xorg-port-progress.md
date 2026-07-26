@@ -90,6 +90,7 @@
 | Xvfb，无 compositor | 通过（含 expected skip） | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 xvfb-run -a /home/yixiao/miniconda3/envs/neugaze/bin/python -m pytest -m x11 -v`：21 passed / 1 skipped / 440 deselected，2.75s；skip 为 `test_overlay_handshake_update_and_synchronous_stop_with_compositor`，原因是正向集成需要 `xcompmgr`。440 个 deselected 不记为通过。 |
 | Xvfb，有 compositor | 通过（含 expected skip） | `xvfb-run -a sh -c 'xcompmgr -a & PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /home/yixiao/miniconda3/envs/neugaze/bin/python -m pytest -m x11 -v'`：21 passed / 1 skipped / 440 deselected，2.52s；skip 为 `test_start_fails_visibly_when_x11_compositor_owner_is_missing`，原因是它需要没有 compositor 的隔离显示。child stderr 另有 `X connection to :102 broken (explicit kill or server shutdown).`，发生在 Xvfb 关闭时；pytest exit 0。440 个 deselected 不记为通过。 |
 | 真人验收 | 未执行 | 仅新增 `docs/ubuntu-robot-terminal-acceptance.md`；中立 2 分钟、三个直接表情各 5 次、四方向各 5 次、取消、无键鼠副作用和退出资源检查均待真实 Xorg/Gemini 335 执行。 |
+| 编译与范围门禁 | 通过 | `/home/yixiao/miniconda3/envs/neugaze/bin/python -m py_compile my_model_arch/cpu_fast/robot_actions.py my_model_arch/cpu_fast/eye_gaze_mouse_control.py my_model_arch/cpu_fast/pipeline.py config_gui_cpu.py tests/test_robot_actions.py tests/test_gaze_mouse_controller.py tests/test_pipeline_runtime.py tests/test_config_gui_camera.py`：实际 exit 0；同轮 `git diff --check`、临时工件检查与 `git diff --cached --check` 均 exit 0。 |
 | SONIC 接入 | 未开始 | 当前只打印 Terminal 行；未新增 SONIC、ZMQ 或机器人依赖。 |
 
 ## 当前工作
