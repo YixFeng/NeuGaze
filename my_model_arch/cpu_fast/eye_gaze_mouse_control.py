@@ -91,7 +91,8 @@ class GazeMouseController:
     def update_gaze(self, gaze_x, gaze_y):
         """更新凝视点位置"""
         # print(f'gaze_x:{gaze_x} gaze_y:{gaze_y}')
-        self.gaze_queue.put((gaze_x, gaze_y))
+        generation = self.observer.next_op_xy_generation()
+        self.gaze_queue.put((generation, gaze_x, gaze_y))
     
     def _calculate_move(self, gaze_x, gaze_y):
         """计算需要的移动量"""
@@ -139,7 +140,7 @@ class GazeMouseController:
         """检查鼠标光标是否可见"""
         return desktop.is_cursor_visible()
         
-    def _handle_visible_cursor(self, x, y):
+    def _handle_visible_cursor(self, generation, x, y):
         """处理可见光标的情况"""
         if self.observer.wheel.is_hidden:
             # 使用头部控制
@@ -185,11 +186,8 @@ class GazeMouseController:
                 pass 
             x = np.clip(x, 0, self.screen_width)
             y = np.clip(y, 0, self.screen_height)
-            if self.old_pos != (x, y):
-                # threading.Thread(target=pg.moveTo, args=(int(x), int(y))).start()
-                # 这里需要改observer里面的 op_xy , 因为之后是用这个来驱动wheel选择的，2025年之后的版本在wheel上面就不用移动鼠标了。
-                self.observer.op_xy=x,y
-                self.old_pos = (x, y)
+            self.observer.publish_op_xy(generation, x, y)
+            self.old_pos = (x, y)
                 
     def _handle_invisible_cursor(self, x, y):
         """处理不可见光标的情况（FPS模式）"""
@@ -224,16 +222,18 @@ class GazeMouseController:
             while self.running:
                 if self.observer.mouse_control:
                     try:
-                        gaze_x, gaze_y = self.gaze_queue.get_nowait()
+                        generation, gaze_x, gaze_y = self.gaze_queue.get_nowait()
                         while not self.gaze_queue.empty():
-                            gaze_x, gaze_y = self.gaze_queue.get_nowait()
+                            generation, gaze_x, gaze_y = self.gaze_queue.get_nowait()
                     except Empty:
                         time.sleep(0.01)
                         continue
 
                     if not self.desktop_pointer_control:
                         if not self.observer.wheel.is_hidden:
-                            self.observer.op_xy = (gaze_x, gaze_y)
+                            self.observer.publish_op_xy(
+                                generation, gaze_x, gaze_y
+                            )
                         time.sleep(0.01)
                         continue
 
@@ -243,7 +243,7 @@ class GazeMouseController:
                     is_visible = self.is_cursor_visible()
                     # print(f'is_visible:{is_visible}')
                     if is_visible:
-                        self._handle_visible_cursor(gaze_x, gaze_y)
+                        self._handle_visible_cursor(generation, gaze_x, gaze_y)
                     else:
                         self._handle_invisible_cursor(gaze_x, gaze_y)
                     

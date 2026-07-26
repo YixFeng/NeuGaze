@@ -18,14 +18,28 @@ def observer():
         "head_left": {"v": False},
         "head_right": {"v": False},
     }
-    return SimpleNamespace(
+    observer = SimpleNamespace(
         mouse_control=True,
         wheel=SimpleNamespace(is_hidden=True),
         head_dict=SimpleNamespace(state_dict=state_dict),
         head_angles={"yaw": 0, "pitch": 0},
         head_angles_scale={"yaw": 1, "pitch": 1},
         op_xy=(None, None),
+        op_xy_generation=0,
+        published_op_xy_generation=0,
     )
+
+    def next_op_xy_generation():
+        observer.op_xy_generation += 1
+        return observer.op_xy_generation
+
+    def publish_op_xy(generation, x, y):
+        observer.op_xy = (x, y)
+        observer.published_op_xy_generation = generation
+
+    observer.next_op_xy_generation = next_op_xy_generation
+    observer.publish_op_xy = publish_op_xy
+    return observer
 
 
 def _unlocked_controller(observer, **kwargs):
@@ -91,6 +105,49 @@ def test_robot_controller_only_forwards_gaze_to_visible_wheel(
     assert observer.op_xy == expected_op_xy
 
 
+def test_robot_controller_publishes_identical_gaze_as_fresh_samples(
+    monkeypatch, observer
+):
+    observer.wheel.is_hidden = False
+    controller = _unlocked_controller(
+        observer, desktop_pointer_control=False
+    )
+    _forbid_robot_desktop_calls(monkeypatch)
+
+    for _ in range(2):
+        controller.running = True
+        controller.update_gaze(321, 123)
+        monkeypatch.setattr(
+            controller_module.time,
+            "sleep",
+            lambda duration: setattr(controller, "running", False),
+        )
+        controller._control_loop()
+        controller.raise_if_failed()
+
+    assert observer.op_xy == (321, 123)
+    assert observer.op_xy_generation == 2
+    assert observer.published_op_xy_generation == 2
+
+
+def test_desktop_wheel_selection_publishes_through_generation(
+    observer,
+):
+    observer.wheel.is_hidden = False
+    controller = _unlocked_controller(
+        observer,
+        select_wheel_using_head=False,
+    )
+
+    controller._handle_visible_cursor(
+        observer.next_op_xy_generation(), 321, 123
+    )
+
+    assert observer.op_xy == (321, 123)
+    assert observer.op_xy_generation == 1
+    assert observer.published_op_xy_generation == 1
+
+
 def test_visible_cursor_uses_absolute_desktop_movement(monkeypatch, observer):
     calls = []
     monkeypatch.setattr(
@@ -105,7 +162,9 @@ def test_visible_cursor_uses_absolute_desktop_movement(monkeypatch, observer):
         use_head_control_mouse=False,
     )
 
-    controller._handle_visible_cursor(321.9, -4)
+    controller._handle_visible_cursor(
+        observer.next_op_xy_generation(), 321.9, -4
+    )
 
     assert calls == [(321, 0, False)]
 
@@ -146,7 +205,9 @@ def test_visible_cursor_head_movement_uses_current_pointer(
         head_coef=10,
     )
 
-    controller._handle_visible_cursor(300, 200)
+    controller._handle_visible_cursor(
+        observer.next_op_xy_generation(), 300, 200
+    )
 
     assert calls == [(130, 230, False)]
 

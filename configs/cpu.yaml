@@ -21,6 +21,8 @@ wheel_config:
   radius: 1000
   font_size: 14
   font: Arial
+robot_wheel_config:
+  radius: 400
 real_action_config:
   scroll_coef: 1.0
   sys_mode: game_cs

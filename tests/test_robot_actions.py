@@ -72,6 +72,29 @@ def test_robot_action_cancel_is_explicit():
     )
 
 
+@pytest.mark.parametrize("failure_phase", ["write", "flush"])
+def test_robot_action_output_preserves_stream_failure_identity(failure_phase):
+    error = OSError(f"{failure_phase} failed")
+
+    class FailingStream:
+        def write(self, text):
+            if failure_phase == "write":
+                raise error
+            return len(text)
+
+        def flush(self):
+            if failure_phase == "flush":
+                raise error
+
+    with pytest.raises(OSError) as caught:
+        emit_robot_action(
+            RobotAction("wave", "挥手", "expression"),
+            stream=FailingStream(),
+        )
+
+    assert caught.value is error
+
+
 @pytest.mark.parametrize(
     ("mutate", "message"),
     [
@@ -91,7 +114,12 @@ def test_robot_action_cancel_is_explicit():
         ),
         (
             lambda c: c["expressions"]["numlock"].update(
-                wheel=["turn_left", "turn_left"]
+                wheel=[
+                    "turn_left",
+                    "turn_left",
+                    "turn_right",
+                    "wave",
+                ]
             ),
             "duplicate action id",
         ),
@@ -126,6 +154,21 @@ def test_robot_config_requires_exact_fixed_action_ids(
     mutate(valid_config)
 
     with pytest.raises(ValueError, match=message):
+        robot_actions.validate_robot_action_config(valid_config)
+
+
+@pytest.mark.parametrize("wheel_size", [2, 3, 5])
+def test_robot_config_requires_exactly_four_wheel_actions(
+    valid_config, wheel_size
+):
+    valid_config["expressions"]["numlock"]["wheel"] = list(
+        valid_config["actions"]
+    )[:wheel_size]
+
+    with pytest.raises(
+        ValueError,
+        match=r"expressions\.numlock\.wheel",
+    ):
         robot_actions.validate_robot_action_config(valid_config)
 
 

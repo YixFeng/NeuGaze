@@ -1765,6 +1765,7 @@ def test_real_action_routes_platforms_and_rejects_missing_config(
     linux_pipeline = RealAction(
         action_platform="linux",
         robot_action_config=robot_config,
+        robot_wheel_config=mapping["robot_wheel_config"],
         configuration=windows_key_config,
         **common,
     )
@@ -1792,6 +1793,94 @@ def test_real_action_routes_platforms_and_rejects_missing_config(
         )
     with pytest.raises(RuntimeError, match="unsupported action platform"):
         RealAction(action_platform="darwin", **common)
+
+
+def test_default_yaml_builds_fixed_robot_and_windows_wheel_sizes(monkeypatch):
+    mapping = yaml.safe_load(
+        (Path(__file__).parents[1] / "configs/cpu.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    common = _real_action_constructor_kwargs(monkeypatch)
+    common["wheel_config"] = mapping["wheel_config"]
+    robot_wheel_config = mapping["robot_wheel_config"]
+
+    linux_pipeline = RealAction(
+        action_platform="linux",
+        robot_action_config=mapping["robot_action_config"],
+        robot_wheel_config=robot_wheel_config,
+        configuration=mapping["key_config"],
+        **common,
+    )
+    windows_pipeline = RealAction(
+        action_platform="win32",
+        robot_action_config=mapping["robot_action_config"],
+        robot_wheel_config=robot_wheel_config,
+        configuration=mapping["key_config"],
+        **common,
+    )
+
+    robot_wheel_config["radius"] = 200
+    assert linux_pipeline.wheel.radius == 400
+    assert linux_pipeline.robot_wheel_config == {"radius": 400}
+    assert windows_pipeline.wheel.radius == 1000
+
+
+@pytest.mark.parametrize(
+    ("robot_wheel_config", "error_type", "message"),
+    [
+        (None, ValueError, r"robot_wheel_config\.radius"),
+        ([], TypeError, r"robot_wheel_config"),
+        ({}, ValueError, r"robot_wheel_config\.radius"),
+        (
+            {"radius": 400, "font": "Arial"},
+            ValueError,
+            r"robot_wheel_config\.font",
+        ),
+        ({"radius": True}, TypeError, r"robot_wheel_config\.radius"),
+        ({"radius": "400"}, TypeError, r"robot_wheel_config\.radius"),
+        ({"radius": 399}, ValueError, r"robot_wheel_config\.radius"),
+    ],
+)
+def test_linux_rejects_invalid_robot_wheel_config_at_construction(
+    monkeypatch, robot_wheel_config, error_type, message
+):
+    mapping = yaml.safe_load(
+        (Path(__file__).parents[1] / "configs/cpu.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    common = _real_action_constructor_kwargs(monkeypatch)
+    common["wheel_config"] = mapping["wheel_config"]
+
+    with pytest.raises(error_type, match=message):
+        RealAction(
+            action_platform="linux",
+            robot_action_config=mapping["robot_action_config"],
+            robot_wheel_config=robot_wheel_config,
+            configuration=mapping["key_config"],
+            **common,
+        )
+
+
+def test_windows_does_not_require_or_consume_robot_wheel_config(monkeypatch):
+    mapping = yaml.safe_load(
+        (Path(__file__).parents[1] / "configs/cpu.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    common = _real_action_constructor_kwargs(monkeypatch)
+    common["wheel_config"] = mapping["wheel_config"]
+
+    pipeline = RealAction(
+        action_platform="win32",
+        robot_action_config=mapping["robot_action_config"],
+        robot_wheel_config={"radius": False, "unknown": object()},
+        configuration=mapping["key_config"],
+        **common,
+    )
+
+    assert pipeline.wheel.radius == 1000
 
 
 
@@ -1840,6 +1929,7 @@ def test_real_action_forces_robot_controller_to_internal_gaze(
     linux_pipeline = RealAction(
         action_platform="linux",
         robot_action_config=mapping["robot_action_config"],
+        robot_wheel_config=mapping["robot_wheel_config"],
         configuration=mapping["key_config"],
         mouse_control_config=linux_config,
         **{key: value for key, value in common.items()
@@ -1894,6 +1984,7 @@ def test_real_action_rejects_robot_desktop_mouse_config(
         RealAction(
             action_platform="linux",
             robot_action_config=mapping["robot_action_config"],
+            robot_wheel_config=mapping["robot_wheel_config"],
             configuration=mapping["key_config"],
             mouse_control_config=mouse_control_config,
             **{key: value for key, value in common.items()
@@ -2048,6 +2139,105 @@ def test_robot_actions_emit_seven_lines_without_desktop_input(
     ]
 
 
+def test_robot_wheel_consumes_same_gaze_in_two_fresh_open_cycles(
+    monkeypatch, capsys
+):
+    pipeline = _robot_pipeline_without_constructor()
+    pipeline.quit = False
+    pipeline.mouse_control = True
+    pipeline.action_queue = queue.Queue()
+    wheel_actions = [
+        RobotAction("move_forward_step", "前进一步", "wheel"),
+        RobotAction("move_backward_step", "后退一步", "wheel"),
+        RobotAction("turn_left", "左转", "wheel"),
+        RobotAction("turn_right", "右转", "wheel"),
+    ]
+    pipeline.wheel_categories = wheel_actions
+    pipeline.key_keeps_wheel_opening = "numlock"
+    pipeline.wheel_layout_type = "cardinal"
+    pipeline.keys_dict = SimpleNamespace(
+        state_dict={"numlock": {"v": True}}
+    )
+
+    sector_wheel = object.__new__(SectorWheel)
+    sector_wheel.radius = 400
+    sector_wheel.subject = pipeline
+    sector_wheel.font = "Arial"
+    sector_wheel.font_size = 12
+    sector_wheel.canvas = SimpleNamespace(
+        delete=lambda *args: None,
+        create_arc=lambda *args, **kwargs: None,
+        create_text=lambda *args, **kwargs: None,
+        after=lambda *args: None,
+    )
+    sector_wheel.messagebox = SimpleNamespace(
+        winfo_rootx=lambda: 560,
+        winfo_rooty=lambda: 140,
+        deiconify=lambda: None,
+        withdraw=lambda: None,
+    )
+    sector_wheel.last_op_xy = pipeline.op_xy
+    sector_wheel.last_op_xy_generation = pipeline.op_xy_generation
+
+    wheel = object.__new__(ObserverWithSectorWheel)
+    wheel.should_run = True
+    wheel._thread = None
+    wheel._worker_error = None
+    wheel.lock = threading.Lock()
+    wheel.current_categories = None
+    wheel.selected_sector = None
+    wheel.is_hidden = True
+    wheel.subject = pipeline
+    wheel.sector_wheel = sector_wheel
+    wheel.root = SimpleNamespace(after=lambda *args: None)
+    pipeline.wheel = wheel
+
+    controller = controller_module.GazeMouseController(
+        pipeline,
+        screen_width=1920,
+        screen_height=1080,
+        desktop_pointer_control=False,
+    )
+    monkeypatch.setattr(
+        controller_module.time,
+        "sleep",
+        lambda duration: setattr(controller, "running", False),
+    )
+
+    def run_cycle(*, gaze_timing):
+        if gaze_timing == "before_open":
+            controller.update_gaze(660, 540)
+
+        pipeline.keys_dict.state_dict["numlock"]["v"] = True
+        wheel.sector_wheel_main_loop()
+        assert wheel.is_hidden is False
+        sector_wheel.check_op_xy()
+
+        if gaze_timing == "after_open":
+            controller.update_gaze(660, 540)
+
+        if gaze_timing != "none":
+            controller.running = True
+            controller._control_loop()
+            controller.raise_if_failed()
+            sector_wheel.check_op_xy()
+
+        pipeline.keys_dict.state_dict["numlock"]["v"] = False
+        wheel.sector_wheel_main_loop()
+        assert wheel.is_hidden is True
+        pipeline._drain_actions()
+
+    run_cycle(gaze_timing="after_open")
+    run_cycle(gaze_timing="after_open")
+    run_cycle(gaze_timing="before_open")
+
+    assert capsys.readouterr().out.splitlines() == [
+        "[ROBOT_ACTION] id=turn_left label=左转 source=wheel",
+        "[ROBOT_ACTION] id=turn_left label=左转 source=wheel",
+        "[ROBOT_ACTION_CANCELLED] reason=no_selection source=wheel",
+    ]
+
+
 
 def _robot_pipeline_without_constructor():
     mapping = yaml.safe_load(
@@ -2059,6 +2249,8 @@ def _robot_pipeline_without_constructor():
     pipeline.action_output = "robot_terminal"
     pipeline.uses_desktop_input = False
     pipeline.op_xy = (None, None)
+    pipeline.op_xy_generation = 0
+    pipeline.published_op_xy_generation = 0
     pipeline.key_control = True
     pipeline.robot_action_config = mapping["robot_action_config"]
     return pipeline
@@ -2330,3 +2522,19 @@ def test_windows_wheel_selection_remains_keypress_action():
     assert isinstance(action, Action)
     assert action.keyname == "turn_left"
     assert action.op_type == OpType.KEYPRESS
+
+
+def test_robot_output_rejects_desktop_action():
+    pipeline = _robot_pipeline_without_constructor()
+
+    with pytest.raises(TypeError, match="requires RobotAction"):
+        pipeline._execute_action_once(Action("space", OpType.KEYPRESS))
+
+
+def test_desktop_output_rejects_robot_action():
+    pipeline = _real_action_without_constructor()
+
+    with pytest.raises(TypeError, match="rejects RobotAction"):
+        pipeline._execute_action_once(
+            RobotAction("wave", "挥手", "expression")
+        )

@@ -10,6 +10,9 @@
 # http://creativecommons.org/licenses/by-nc/4.0/
 # =============================================================================
 
+from collections.abc import Mapping
+import copy
+from numbers import Real
 import os
 import pathlib
 import queue
@@ -2308,6 +2311,7 @@ class RealAction(BindKeys):
                  head_angles_center=None, head_angles_scale=None,
                  expression_evaluator_config=None,
                  robot_action_config=None,
+                 robot_wheel_config=None,
                  action_platform=None,
                  **kwargs):
         platform_name = sys.platform if action_platform is None else action_platform
@@ -2321,6 +2325,33 @@ class RealAction(BindKeys):
             )
         if gaze_config is None:
             raise ValueError("gaze_config is required")
+
+        validated_robot_wheel_config = None
+        if self.action_output == "robot_terminal":
+            if robot_action_config is None:
+                raise ValueError("robot_action_config is required")
+            if robot_wheel_config is None:
+                raise ValueError("robot_wheel_config.radius is required")
+            if not isinstance(robot_wheel_config, Mapping):
+                raise TypeError("robot_wheel_config must be a mapping")
+            for field_name in robot_wheel_config:
+                if field_name != "radius":
+                    raise ValueError(
+                        f"robot_wheel_config.{field_name} is not allowed"
+                    )
+            if "radius" not in robot_wheel_config:
+                raise ValueError("robot_wheel_config.radius is required")
+            radius = robot_wheel_config["radius"]
+            if isinstance(radius, bool) or not isinstance(radius, Real):
+                raise TypeError(
+                    "robot_wheel_config.radius must be the number 400"
+                )
+            if radius != 400:
+                raise ValueError(
+                    "robot_wheel_config.radius must equal 400"
+                )
+            validated_robot_wheel_config = copy.deepcopy(robot_wheel_config)
+
         super().__init__(
             head_angles_center=head_angles_center, 
             head_angles_scale=head_angles_scale, 
@@ -2362,11 +2393,10 @@ class RealAction(BindKeys):
         # from .expression_keyboard_control import ExpressionKeyboardController
         # self.keyboard_controller = ExpressionKeyboardController(self)
         if self.action_output == "robot_terminal":
-            if robot_action_config is None:
-                raise ValueError("robot_action_config is required")
             self.robot_action_config = validate_robot_action_config(
                 robot_action_config
             )
+            self.robot_wheel_config = validated_robot_wheel_config
             self.configuration = {"robot": {}}
             self.sys_mode = "robot"
         else:
@@ -2380,7 +2410,14 @@ class RealAction(BindKeys):
         self.is_key_down = False  # 一些操作需要同时按下多个键，这就需要一个状态来记录是否用keyDown来按键，一个列表来记录按下的键。
         self.down_keys_list = []  # 当is_key_down==True,这里就会开始加入接下来被按下的键。
         # 当is_key_down==False时，这里就会逐个反向释放key，并且清空这个列表。
-        self.wheel = ObserverWithSectorWheel(self, **wheel_config)
+        self.op_xy = (None, None)
+        self.op_xy_generation = 0
+        self.published_op_xy_generation = 0
+        if self.action_output == "robot_terminal":
+            wheel_runtime_config = self.robot_wheel_config
+        else:
+            wheel_runtime_config = wheel_config
+        self.wheel = ObserverWithSectorWheel(self, **wheel_runtime_config)
         self.action_queue = queue.Queue()
         self.lock_eye_controlled_mouse_move_until_time = time.time()
         self.lock_eye_controlled_mouse_move_with_head_until_time = time.time()
@@ -2388,12 +2425,17 @@ class RealAction(BindKeys):
         self.is_mouse_visible = False
         self.wheel_layout_type = 'circle'
 
-        # 这个是用来操控wheel的
-        self.op_xy=None,None
-
         # 添加滚轮节流相关变量
         self.last_scroll_time = 0
         self.scroll_throttle_interval = 0.2  # 0.2秒间隔
+
+    def next_op_xy_generation(self):
+        self.op_xy_generation += 1
+        return self.op_xy_generation
+
+    def publish_op_xy(self, generation, x, y):
+        self.op_xy = (x, y)
+        self.published_op_xy_generation = generation
 
     def move_mouse(self):
         if self.action_output == "robot_terminal":
@@ -2958,7 +3000,7 @@ class SectorWheel:
         self.canvas.pack()
 
         # 初始化位置跟踪
-        self.last_op_xy = self.subject.op_xy
+        self.last_op_xy_generation = self.subject.op_xy_generation
         self.canvas.after(10, self.check_op_xy)  # 使用 canvas.after 而不是 self.after
         # print('check_op_xy after')
         # raise Exception('check_op_xy after')
@@ -2975,8 +3017,10 @@ class SectorWheel:
         )
 
     def check_op_xy(self):
-        if hasattr(self, 'last_op_xy') and self.subject.op_xy != self.last_op_xy:
-            self.last_op_xy = self.subject.op_xy
+        generation = self.subject.published_op_xy_generation
+        if generation > self.last_op_xy_generation:
+            self.last_op_xy_generation = generation
+
             class Event:
                 pass
 
@@ -2996,6 +3040,7 @@ class SectorWheel:
     def update_categories(self, categories, layout_type='circle'):
         if layout_type == 'cardinal' and len(categories) != 4:
             raise ValueError("cardinal layout requires exactly four categories")
+        self.last_op_xy_generation = self.subject.op_xy_generation
         self.layout_type = layout_type
         if layout_type == 'square':
             self.n_row = int(len(categories) ** 0.5)

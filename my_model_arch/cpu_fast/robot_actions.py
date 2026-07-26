@@ -122,9 +122,9 @@ def validate_robot_action_config(
             continue
 
         wheel = expression_config["wheel"]
-        if not isinstance(wheel, list) or len(wheel) < 2:
+        if not isinstance(wheel, list) or len(wheel) != 4:
             raise ValueError(
-                f"{field_path}.wheel must be a list of at least two action ids"
+                f"{field_path}.wheel must contain exactly four action ids"
             )
         seen_action_ids = set()
         for action_id in wheel:
