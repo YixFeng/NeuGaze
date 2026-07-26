@@ -1,6 +1,6 @@
 # Ubuntu 24.04 Xorg 移植进度
 
-最后更新：2026-07-26
+最后更新：2026-07-27
 
 ## 协作规则
 
@@ -78,6 +78,19 @@
 | Task 6：受监督的 Xorg gaze overlay | 完成（external gate resolved） | process 36 passed；focused regression 126 passed；non-X11 192 passed / 18 deselected；isolated negative 1 passed；positive compositor 2 passed / 1 skipped；compositor 完整集合 208 passed / 1 skipped / 1 deselected |
 | Task 7：GUI 摄像头后端、预览与配置 roundtrip | 完成（final re-review fixes verified） | GUI/camera 56 passed；Task 5/6 ownership/overlay regression 149 passed；offscreen non-X11 215 passed / 18 deselected；static/scope/import gates 通过 |
 | Task 8：Ubuntu 依赖、诊断、文档与全量验证 | 自动化实现完成，人工验收待执行 | formal review fix focused 55 passed、实时诊断 11/11 passed、non-X11 270 passed / 18 deselected、两组 X11 各 16 passed / 1 skipped、Gemini 335 hardware 1 passed；`pip check` 两条 metadata 例外未记为通过 |
+
+## Ubuntu robot terminal actions 阶段
+
+本阶段在 `ubuntu-xorg-port` 上把 Ubuntu 表情和凝视轮盘收束为可审计的终端动作行；不接入 SONIC，也不把真人验收写成已完成。设计证据保留为 `7a8f897`（设计）、`3998fe6`（中文设计）和 `4a022c8`（实施计划）。实施提交依次为 `18c8880`（动作合同）、`441fac6`（固定 action ID）、`b6a776e`（Ubuntu 表情路由）、`d0d0aa6`（凝视选择四向轮盘）、`14d6f07`（隔离 robot gaze 与桌面输入）及 `49aa923`（轮盘动作链覆盖修复）。
+
+| 项目 | 状态 | 本阶段新证据（2026-07-27，HEAD `49aa923`） |
+|---|---|---|
+| focused 自动化 | 通过 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 QT_QPA_PLATFORM=offscreen /home/yixiao/miniconda3/envs/neugaze/bin/python -m pytest tests/test_robot_actions.py tests/test_pipeline_runtime.py tests/test_gaze_mouse_controller.py tests/test_keyboard_actions.py tests/test_desktop_selection.py tests/test_config_gui_camera.py -v`：160 passed，8.08s；无 warning、无 unhandled thread exception。 |
+| non-X11 全量自动化 | 通过 | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 QT_QPA_PLATFORM=offscreen /home/yixiao/miniconda3/envs/neugaze/bin/python -m pytest -m 'not x11' -v`：439 passed / 23 deselected，8.81s。23 个 deselected 是 marker 选择结果，不记为通过。 |
+| Xvfb，无 compositor | 通过（含 expected skip） | `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 xvfb-run -a /home/yixiao/miniconda3/envs/neugaze/bin/python -m pytest -m x11 -v`：21 passed / 1 skipped / 440 deselected，2.75s；skip 为 `test_overlay_handshake_update_and_synchronous_stop_with_compositor`，原因是正向集成需要 `xcompmgr`。440 个 deselected 不记为通过。 |
+| Xvfb，有 compositor | 通过（含 expected skip） | `xvfb-run -a sh -c 'xcompmgr -a & PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /home/yixiao/miniconda3/envs/neugaze/bin/python -m pytest -m x11 -v'`：21 passed / 1 skipped / 440 deselected，2.52s；skip 为 `test_start_fails_visibly_when_x11_compositor_owner_is_missing`，原因是它需要没有 compositor 的隔离显示。child stderr 另有 `X connection to :102 broken (explicit kill or server shutdown).`，发生在 Xvfb 关闭时；pytest exit 0。440 个 deselected 不记为通过。 |
+| 真人验收 | 未执行 | 仅新增 `docs/ubuntu-robot-terminal-acceptance.md`；中立 2 分钟、三个直接表情各 5 次、四方向各 5 次、取消、无键鼠副作用和退出资源检查均待真实 Xorg/Gemini 335 执行。 |
+| SONIC 接入 | 未开始 | 当前只打印 Terminal 行；未新增 SONIC、ZMQ 或机器人依赖。 |
 
 ## 当前工作
 
