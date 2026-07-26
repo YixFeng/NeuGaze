@@ -1942,8 +1942,8 @@ def test_robot_actions_emit_seven_lines_without_desktop_input(
     pipeline.end_calibration_signal = False
     pipeline.camera = None
     pipeline.action_queue = queue.Queue()
-    pipeline.wheel = SimpleNamespace(stop=lambda: None)
     pipeline.destroy_window = lambda: None
+    pipeline.mouse_control = True
     _forbid_robot_desktop_calls(monkeypatch)
 
     for expression_id in ("left_click", "num8", "extra"):
@@ -1953,13 +1953,87 @@ def test_robot_actions_emit_seven_lines_without_desktop_input(
         pipeline.head_dict = SimpleNamespace(state_dict={})
         pipeline.decode()
 
-    for action_id, label in (
-        ("move_forward_step", "前进一步"),
-        ("move_backward_step", "后退一步"),
-        ("turn_left", "左转"),
-        ("turn_right", "右转"),
+    wheel_actions = [
+        RobotAction("move_forward_step", "前进一步", "wheel"),
+        RobotAction("move_backward_step", "后退一步", "wheel"),
+        RobotAction("turn_left", "左转", "wheel"),
+        RobotAction("turn_right", "右转", "wheel"),
+    ]
+    pipeline.wheel_categories = wheel_actions
+    pipeline.key_keeps_wheel_opening = "numlock"
+    pipeline.wheel_layout_type = "cardinal"
+    pipeline.keys_dict = SimpleNamespace(
+        state_dict={"numlock": {"v": True}}
+    )
+
+    sector_wheel = object.__new__(SectorWheel)
+    sector_wheel.radius = 400
+    sector_wheel.subject = pipeline
+    sector_wheel.font = "Arial"
+    sector_wheel.font_size = 12
+    sector_wheel.canvas = SimpleNamespace(
+        delete=lambda *args: None,
+        create_arc=lambda *args, **kwargs: None,
+        create_text=lambda *args, **kwargs: None,
+        after=lambda *args: None,
+    )
+    sector_wheel.messagebox = SimpleNamespace(
+        winfo_rootx=lambda: 560,
+        winfo_rooty=lambda: 140,
+        deiconify=lambda: None,
+        withdraw=lambda: None,
+    )
+    sector_wheel.last_op_xy = pipeline.op_xy
+
+    wheel = object.__new__(ObserverWithSectorWheel)
+    wheel.should_run = True
+    wheel._thread = None
+    wheel._worker_error = None
+    wheel.lock = threading.Lock()
+    wheel.current_categories = None
+    wheel.selected_sector = None
+    wheel.is_hidden = True
+    wheel.subject = pipeline
+    wheel.sector_wheel = sector_wheel
+    wheel.root = SimpleNamespace(after=lambda *args: None)
+    pipeline.wheel = wheel
+
+    controller = controller_module.GazeMouseController(
+        pipeline,
+        screen_width=1920,
+        screen_height=1080,
+        desktop_pointer_control=False,
+    )
+    monkeypatch.setattr(
+        controller_module.time,
+        "sleep",
+        lambda duration: setattr(controller, "running", False),
+    )
+
+    for gaze, expected_action in (
+        ((960, 240), wheel_actions[0]),
+        ((960, 840), wheel_actions[1]),
+        ((660, 540), wheel_actions[2]),
+        ((1260, 540), wheel_actions[3]),
     ):
-        pipeline._execute_action(RobotAction(action_id, label, "wheel"))
+        wheel.is_hidden = True
+        pipeline.keys_dict.state_dict["numlock"]["v"] = True
+        wheel.sector_wheel_main_loop()
+        assert wheel.is_hidden is False
+
+        controller.running = True
+        controller.update_gaze(*gaze)
+        controller._control_loop()
+        controller.raise_if_failed()
+        assert pipeline.op_xy == gaze
+
+        sector_wheel.check_op_xy()
+        assert sector_wheel.selected_sector is expected_action
+
+        pipeline.keys_dict.state_dict["numlock"]["v"] = False
+        wheel.sector_wheel_main_loop()
+        assert wheel.is_hidden is True
+        pipeline._drain_actions()
 
     pipeline.quit_pipeline()
 
@@ -1984,6 +2058,7 @@ def _robot_pipeline_without_constructor():
     pipeline = _real_action_without_constructor()
     pipeline.action_output = "robot_terminal"
     pipeline.uses_desktop_input = False
+    pipeline.op_xy = (None, None)
     pipeline.key_control = True
     pipeline.robot_action_config = mapping["robot_action_config"]
     return pipeline
