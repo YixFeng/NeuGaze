@@ -110,6 +110,25 @@ def test_invalid_robot_config_fails_with_field_path(
         robot_actions.validate_robot_action_config(valid_config)
 
 
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (
+            lambda c: c["actions"].update(extra_action="额外动作"),
+            "actions.extra_action",
+        ),
+        (lambda c: c["actions"].pop("stop"), "actions.stop"),
+    ],
+)
+def test_robot_config_requires_exact_fixed_action_ids(
+    valid_config, mutate, message
+):
+    mutate(valid_config)
+
+    with pytest.raises(ValueError, match=message):
+        robot_actions.validate_robot_action_config(valid_config)
+
+
 def test_validated_robot_config_is_a_deep_copy(valid_config):
     validated = robot_actions.validate_robot_action_config(valid_config)
     valid_config["actions"]["wave"] = "changed"

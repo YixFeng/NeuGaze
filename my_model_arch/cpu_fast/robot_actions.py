@@ -5,6 +5,17 @@ import sys
 from typing import Literal, TextIO
 
 
+_REQUIRED_ACTION_IDS = (
+    "move_forward_step",
+    "move_backward_step",
+    "turn_left",
+    "turn_right",
+    "wave",
+    "dance",
+    "stop",
+)
+
+
 @dataclass(frozen=True, slots=True)
 class RobotAction:
     action_id: str
@@ -68,6 +79,12 @@ def validate_robot_action_config(
     actions = config["actions"]
     if not isinstance(actions, Mapping):
         raise TypeError("robot_action_config.actions must be a mapping")
+    for action_id in actions:
+        if action_id not in _REQUIRED_ACTION_IDS:
+            raise ValueError(f"actions.{action_id} is not allowed")
+    for action_id in _REQUIRED_ACTION_IDS:
+        if action_id not in actions:
+            raise ValueError(f"actions.{action_id} is required")
     for action_id, label in actions.items():
         field_path = f"actions.{action_id}"
         if not isinstance(action_id, str) or not action_id:
