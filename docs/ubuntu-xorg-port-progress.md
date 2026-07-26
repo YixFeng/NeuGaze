@@ -379,6 +379,10 @@ scripts/check_ubuntu_install.py \
 
 ## 最终全分支 review 修复波次（第 4 段）
 
+| 提交 | 内容 |
+|---|---|
+| `1cfc835` | 为 Orbbec read/close native failures 补完整设备与 stage context |
+
 本段针对终审唯一 Important 做窄修：Orbbec `read()` 的 native stages 与
 `close()` 的 `pipeline.stop()` 失败现在抛出含完整 device label 和 stage 的
 `RuntimeError`，以原 sentinel 为 `__cause__` 并保留 traceback。既有 timeout、
