@@ -1,69 +1,58 @@
-# Ubuntu Robot Terminal Actions Design
+# Ubuntu 机器人终端动作设计
 
-## Goal
+## 目标
 
-Replace NeuGaze's Ubuntu keyboard and mouse action output with a small,
-semantic robot-action path that can be verified in a terminal before any robot
-controller is connected.
+将 NeuGaze 在 Ubuntu 上的键盘和鼠标动作输出，替换为小而明确的机器人语义动作链路。在连接任何机器人控制器之前，先通过 Terminal 输出验证识别是否正确。
 
-The first implementation validates this path:
+第一阶段验证以下链路：
 
 ```text
 Gemini 335 RGB
--> facial-expression recognition
--> direct action or gaze-selected wheel action
--> RobotAction
--> one terminal line
+→ 面部表情识别
+→ 直接动作或注视轮盘动作
+→ RobotAction
+→ Terminal 单行输出
 ```
 
-Windows keeps its existing `game`, `game_cs`, `game_wz`, and `type` modes and
-their keyboard and mouse behavior. Ubuntu has one `robot` mode and must not
-emit keyboard, mouse-button, pointer-motion, or scroll events.
+Windows 保留现有的 `game`、`game_cs`、`game_wz` 和 `type` 模式，以及原有键盘和鼠标行为。Ubuntu 只保留一个 `robot` 模式，并且不得产生键盘、鼠标按键、鼠标移动或滚轮事件。
 
-## Scope
+## 范围
 
-This phase includes:
+本阶段包括：
 
-- an Ubuntu-only robot action configuration;
-- seven initial robot action terms;
-- one-shot terminal output;
-- a four-direction gaze-selected wheel;
-- removal of Ubuntu desktop input output;
-- correction of the wheel's screen-to-window coordinate conversion;
-- automated regression tests and a documented live acceptance procedure.
+- Ubuntu 独立的机器人动作配置；
+- 第一批七个机器人动作词条；
+- 一次性 Terminal 输出；
+- 使用注视位置选择的四方向轮盘；
+- 移除 Ubuntu 的桌面输入输出；
+- 修正轮盘屏幕坐标到窗口局部坐标的转换；
+- 自动化回归测试和实际验收步骤文档。
 
-This phase does not connect to SONIC, select a reference-motion directory,
-start a controller, send ZMQ data, or control a simulated or physical robot.
-Those changes require a separate design after live recognition and wheel
-acceptance passes.
+本阶段不连接 SONIC，不选择 reference motion 目录，不启动控制器，不发送 ZMQ 数据，也不控制仿真或实体机器人。只有实际表情识别和轮盘验收通过后，才能单独设计这些功能。
 
-## Platform Boundary
+## 平台边界
 
-The two platform paths are explicit and mutually exclusive.
+两个平台的输出路径必须显式区分且互斥。
 
-Windows:
+Windows：
 
 ```text
-recognition -> existing key configuration -> Action -> desktop backend
+识别 → 现有键位配置 → Action → 桌面输入后端
 ```
 
-Ubuntu:
+Ubuntu：
 
 ```text
-recognition -> robot action configuration -> RobotAction -> terminal
+识别 → 机器人动作配置 → RobotAction → Terminal
 ```
 
-The Windows output path accepts only the existing keyboard/mouse `Action`.
-The Ubuntu output path accepts only `RobotAction`. Receiving the wrong action
-type at either boundary is an error. There is no fallback from robot output to
-desktop input and no fallback from desktop input to robot output.
+Windows 输出端只接受现有的键盘/鼠标 `Action`。Ubuntu 输出端只接受 `RobotAction`。任一输出端收到错误的动作类型都必须报错。机器人输出不得回退到桌面输入，桌面输入也不得回退到机器人输出。
 
-Xorg remains an Ubuntu runtime requirement for the GUI, wheel, and gaze
-overlay. It is not used to inject input in robot mode.
+Ubuntu 仍要求使用 Xorg 来显示 GUI、轮盘和凝视覆盖层，但 `robot` 模式不得通过 Xorg 注入输入事件。
 
-## Robot Action Model
+## RobotAction 数据模型
 
-Use one immutable value object:
+只新增一个不可变的数据对象：
 
 ```text
 RobotAction(
@@ -73,25 +62,21 @@ RobotAction(
 )
 ```
 
-`action_id` is the stable machine-facing identity. `label` is the Chinese
-wheel and terminal label. `source` is either `wheel` or `expression`.
+- `action_id`：稳定的机器动作标识；
+- `label`：轮盘和 Terminal 显示的中文词条；
+- `source`：只能是 `wheel` 或 `expression`。
 
-The terminal emitter is one direct function, not a manager, factory, plugin
-registry, transport abstraction, or background worker. It prints and flushes
-one line:
+Terminal 输出使用一个直接函数，不引入 manager、factory、插件注册表、传输抽象或后台线程。每个动作打印并立即刷新一行：
 
 ```text
 [ROBOT_ACTION] id=move_forward_step label=前进一步 source=wheel
 ```
 
-This value object creates the future hand-off point. A later SONIC integration
-can map `action_id` to a reference-motion directory without changing
-recognition or wheel selection.
+这个数据对象也是未来的 SONIC 接入边界。后续可以把 `action_id` 映射到 reference motion 目录，而不再修改识别和轮盘选择链路。
 
-## Ubuntu Configuration
+## Ubuntu 配置
 
-Ubuntu does not reuse `keyname`, `KEYPRESS`, or the four Windows modes. It uses
-an independent configuration:
+Ubuntu 不复用 `keyname`、`KEYPRESS` 或 Windows 的四个模式，而是使用独立配置：
 
 ```yaml
 robot_action_config:
@@ -119,63 +104,57 @@ robot_action_config:
       action: stop
 ```
 
-The existing expression evaluator IDs are retained so this phase does not
-change facial recognition:
+继续使用现有的表情识别 ID，第一阶段不修改表情识别算法：
 
-| Recognition ID | Facial action | Ubuntu behavior |
+| 识别 ID | 面部动作 | Ubuntu 行为 |
 |---|---|---|
-| `numlock` | Open and hold the mouth | Open the four-action wheel |
-| `left_click` | Pucker the lips | Emit `wave` |
-| `num8` | Raise the inner brows | Emit `dance` |
-| `extra` | Blink the left eye without the right | Emit `stop` |
+| `numlock` | 张嘴并保持 | 打开四动作轮盘 |
+| `left_click` | 嘟嘴 | 输出 `wave` |
+| `num8` | 抬起内眉 | 输出 `dance` |
+| `extra` | 仅眨左眼、右眼保持睁开 | 输出 `stop` |
 
-Other recognized expression and head-motion IDs have no action mapping in
-Ubuntu robot mode. They remain recognition data but do not produce output.
+其他已经识别出的表情和头部动作 ID 在 Ubuntu `robot` 模式中不配置动作。它们仍然是识别数据，但不会产生输出。
 
-Configuration validation runs before the live pipeline starts:
+在实时管线启动前一次性验证配置：
 
-- every referenced action ID must exist in `actions`;
-- every label must be a non-empty string;
-- an expression must contain exactly one of `action` or `wheel`;
-- a wheel must contain at least two valid action IDs;
-- duplicate action IDs in one wheel are invalid;
-- unknown keys in the owned robot-action schema are invalid.
+- 每个被引用的动作 ID 都必须存在于 `actions`；
+- 每个中文标签都必须是非空字符串；
+- 一个表情必须且只能配置 `action` 或 `wheel` 之一；
+- 一个轮盘至少包含两个有效动作 ID；
+- 同一个轮盘内不得包含重复动作 ID；
+- 机器人动作配置自有结构中的未知字段必须报错。
 
-Invalid configuration raises an error with the offending field path. It is
-not ignored, rewritten, retried, or translated into an old key action.
+非法配置必须抛出包含错误字段路径的异常。不得忽略、改写、重试，也不得转换成旧键盘动作。
 
-## Trigger Semantics
+## 触发语义
 
-Direct expression actions are one-shot:
+直接表情动作采用一次性触发：
 
-- emit on the `False -> True` recognition transition;
-- do not emit repeatedly while the expression remains true;
-- do not emit on the `True -> False` transition.
+- 只在识别状态从 `False → True` 时输出；
+- 表情保持为 `True` 时不得重复输出；
+- 状态从 `True → False` 时不得输出。
 
-The wheel is commit-on-release:
+轮盘采用松开确认：
 
-1. The `numlock` expression changes from false to true.
-2. The wheel opens while the mouth remains open.
-3. Gaze position updates the highlighted sector.
-4. The mouth closes.
-5. The selected `RobotAction` is emitted once and the wheel closes.
+1. `numlock` 从 false 变为 true；
+2. 保持张嘴期间显示轮盘；
+3. 注视位置更新高亮区域；
+4. 闭嘴；
+5. 输出一次当前选中的 `RobotAction`，然后关闭轮盘。
 
-Closing the wheel without a valid selected sector is an expected,
-user-visible cancellation rather than a robot action:
+关闭轮盘时没有有效选区属于可预期、可观察的取消操作，不是机器人动作：
 
 ```text
 [ROBOT_ACTION_CANCELLED] reason=no_selection source=wheel
 ```
 
-Cancellation does not alter action state and does not choose a default sector.
+取消操作不得修改动作状态，也不得自动选择默认区域。
 
-## Wheel Layout and Gaze Selection
+## 轮盘布局和注视选择
 
-The Ubuntu robot wheel is a centered, borderless, semitransparent,
-always-on-top `800 x 800` window with a default radius of 400 pixels.
-Windows keeps its existing wheel configuration and behavior.
+Ubuntu 机器人轮盘为屏幕居中、无边框、半透明、始终置顶的 `800 × 800` 窗口，默认半径为 400 像素。Windows 保留当前轮盘配置和行为。
 
-The four Ubuntu sectors have fixed spatial meaning:
+Ubuntu 四个区域的空间含义固定为：
 
 ```text
           前进一步
@@ -185,107 +164,81 @@ The four Ubuntu sectors have fixed spatial meaning:
           后退一步
 ```
 
-Ubuntu robot mode uses gaze position, not head angle, for selection. Gaze
-coordinates remain internal to NeuGaze and never move the Xorg pointer.
+Ubuntu `robot` 模式使用注视位置选择，不使用头部角度。注视坐标只在 NeuGaze 内部传递，不得移动 Xorg 系统指针。
 
-The current wheel receives screen coordinates where its selection code expects
-canvas-local coordinates. The Ubuntu implementation must convert them
-explicitly:
+当前代码把屏幕坐标直接交给需要 Canvas 局部坐标的选区逻辑。Ubuntu 实现必须进行显式转换：
 
 ```text
 local_x = gaze_screen_x - wheel_screen_left
 local_y = gaze_screen_y - wheel_screen_top
 ```
 
-Selection is calculated from these local coordinates. A point outside the
-wheel produces no selected sector. No clamping may turn an out-of-wheel point
-into a valid selection.
+选区必须使用转换后的局部坐标计算。轮盘外的注视点不对应任何选区，不得通过坐标截断把轮盘外位置变成有效选择。
 
-## Failure and Cleanup Behavior
+## 错误和清理行为
 
-Debuggability rules apply to the entire path:
+整条链路遵循可调试性优先原则：
 
-- an old desktop `Action` reaching Ubuntu robot output is an error;
-- a `RobotAction` reaching Windows desktop output is an error;
-- an unknown action ID is an error;
-- terminal write or flush failure propagates its original exception;
-- wheel-thread failure is rethrown in the main pipeline with its traceback;
-- cleanup attempts preserve the primary error and attach cleanup failures;
-- no error causes retry, desktop-input fallback, cached output, or success
-  output.
+- Ubuntu 机器人输出收到旧桌面 `Action` 时必须报错；
+- Windows 桌面输出收到 `RobotAction` 时必须报错；
+- 未知动作 ID 必须报错；
+- Terminal 写入或刷新失败时保留并抛出原始异常；
+- 轮盘线程失败时，在主管线中使用原 traceback 重新抛出；
+- 清理过程必须保留主异常，并将清理失败附加到主异常；
+- 任何错误都不得触发自动重试、桌面输入回退、缓存输出或伪成功输出。
 
-An unconfigured recognition ID is not an error because the Ubuntu action
-configuration explicitly selects which recognition channels are enabled.
+未配置动作的识别 ID 不属于错误，因为 Ubuntu 动作配置显式决定启用哪些识别通道。
 
-The `stop` term is only a validation event in this phase. Facial recognition
-must never be treated as the sole emergency-stop mechanism for a real robot.
-A physical emergency stop remains mandatory in future hardware testing.
+`stop` 在本阶段仅用于验证输出。真实机器人不得把面部识别当作唯一紧急停止机制；后续实体机器人测试必须保留物理急停。
 
-## Automated Verification
+## 自动化验证
 
-Tests must verify behavior, not only mock call counts:
+测试必须验证真实行为，不能只验证 mock 调用次数：
 
-1. The seven action IDs resolve to their exact Chinese labels.
-2. Every invalid configuration case fails with the relevant field path.
-3. Each direct expression emits exactly once on activation.
-4. Holding and releasing a direct expression emits nothing further.
-5. Top, bottom, left, and right gaze positions select the specified actions.
-6. Screen-to-window coordinate conversion remains correct on non-square
-   screens and when the wheel window has a non-zero origin.
-7. An out-of-wheel point followed by release prints only the cancellation
-   line.
-8. Ubuntu tests replace every desktop input function with a function that
-   fails immediately, proving that no keyboard, mouse, pointer, or scroll
-   operation occurs.
-9. Passing an action across the wrong platform boundary fails visibly.
-10. Existing Windows keyboard, mouse, hotkey, wheel, and cleanup tests remain
-    green.
-11. The full applicable Ubuntu test suite and compile/static gates run on the
-    final source state.
+1. 七个动作 ID 必须解析为精确的中文标签；
+2. 每种非法配置必须失败，并指出相关字段路径；
+3. 每个直接表情只能在激活时输出一次；
+4. 保持和释放直接表情不得继续输出；
+5. 上、下、左、右四个注视位置必须选择规定的动作；
+6. 非正方形屏幕以及轮盘窗口左上角不为零时，坐标转换仍然正确；
+7. 注视点位于轮盘外并关闭轮盘时，只输出取消信息；
+8. Ubuntu 测试把所有桌面输入函数替换成“一旦调用就失败”的函数，证明没有键盘、鼠标按键、指针移动或滚轮操作；
+9. 动作被发送到错误的平台输出边界时必须明确失败；
+10. Windows 现有键盘、鼠标、组合键、轮盘和清理测试必须继续通过；
+11. 最终源码状态必须通过适用的完整 Ubuntu 测试、编译和静态检查。
 
-## Live Acceptance
+## Ubuntu 实际验收
 
-The live Ubuntu Xorg acceptance procedure uses the connected Gemini 335 and
-records original terminal output.
+实际验收在 Ubuntu Xorg 会话中使用已连接的 Gemini 335，并保留原始 Terminal 输出。
 
-1. Hold a neutral expression for two minutes and record any false trigger.
-2. Test pucker, brow raise, and left-eye-only blink five independent times
-   each.
-3. Confirm each activation prints exactly one correct action line.
-4. Confirm holding and releasing each direct expression adds no line.
-5. Select each of the four wheel sectors five times, for twenty selections.
-6. Confirm highlighted sector, spatial direction, action ID, and Chinese label
-   agree on every selection.
-7. Confirm holding the mouth open does not reopen the wheel or emit an action.
-8. Close the wheel without a selected sector and confirm the explicit
-   cancellation line.
-9. Confirm no system pointer movement, key press, mouse click, or scroll is
-   generated.
-10. Exit and confirm the camera, wheel thread, overlays, and NeuGaze processes
-    are gone.
+1. 保持中立表情两分钟，记录任何误触发；
+2. 嘟嘴、抬眉和仅眨左眼分别独立测试 5 次；
+3. 确认每次激活只打印一行正确动作；
+4. 确认保持和释放每个直接表情时不增加输出；
+5. 四个轮盘区域各选择 5 次，共进行 20 次选择；
+6. 确认每次选择的高亮区域、空间方向、动作 ID 和中文标签完全一致；
+7. 确认保持张嘴不会重复打开轮盘或输出动作；
+8. 在没有有效选区时关闭轮盘，确认打印明确的取消信息；
+9. 确认系统指针不移动，也不产生按键、鼠标点击或滚轮事件；
+10. 退出后确认摄像头、轮盘线程、覆盖层和 NeuGaze 进程全部结束。
 
-Any failure remains failed and is recorded with its original logs. Threshold
-or coordinate changes are made only from observed evidence and rerun through
-the same acceptance procedure.
+任何失败都必须保留为失败并记录原始日志。表情阈值或坐标调整只能基于真实观测结果，并重新执行相同的验收流程。
 
-## Later SONIC Integration
+## 后续 SONIC 接入
 
-After live acceptance, create a separate design for:
+实际验收通过后，另行设计以下链路：
 
 ```text
 RobotAction.action_id
--> validated reference-motion directory
--> SONIC selection/play interface
--> MuJoCo simulation
--> physical robot
+→ 已验证的 reference motion 目录
+→ SONIC 动作选择/播放接口
+→ MuJoCo 仿真
+→ 实体机器人
 ```
 
-GR00T WholeBodyControl loads reference motions as per-motion directories and
-supports selecting and playing the loaded motion in reference-motion mode:
+GR00T WholeBodyControl 以独立动作目录加载 reference motion，并支持在 reference-motion 模式中选择和播放已加载动作：
 
 - <https://github.com/NVlabs/GR00T-WholeBodyControl>
 - <https://nvlabs.github.io/GR00T-WholeBodyControl/references/motion_reference.html>
 
-That later phase must use stable action IDs rather than display labels, test
-all reference motions in MuJoCo first, preserve a physical emergency stop, and
-define the exact SONIC process boundary before any real-robot command is sent.
+后续阶段必须使用稳定动作 ID，而不是中文显示标签；所有 reference motion 必须先在 MuJoCo 中测试；必须保留物理急停；在向实体机器人发送任何命令之前，必须明确 SONIC 的进程和通信边界。
