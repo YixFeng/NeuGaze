@@ -775,6 +775,57 @@ def test_linux_calibration_success_applies_worker_model_and_releases_process(
     assert window.evaluate_btn.isEnabled()
     assert process.delete_later_calls == 1
 
+
+def test_linux_calibration_completion_drains_pending_process_output(
+    window_factory, monkeypatch, tmp_path
+):
+    window, _ = window_factory()
+    repository_root = tmp_path / "repository"
+    model_path = repository_root / "model_weights" / "20260727_120001" / "model.pkl"
+    model_path.parent.mkdir(parents=True)
+    model_path.write_bytes(b"model")
+    monkeypatch.setattr(gui, "REPOSITORY_ROOT", repository_root)
+    process = FakeProcess(window, [])
+    marker = (
+        b'NEUGAZE_CALIBRATION_RESULT={"calibration_time":"20260727_120001","model_path":"model_weights/20260727_120001/model.pkl"}\n'
+    )
+    final_stderr = b"worker final stderr\n"
+    window.calibration_process = process
+    window.calibration_stdout.extend(b"worker log\n")
+    process.stdout = marker
+    process.stderr = final_stderr
+    forwarded_stdout = []
+    forwarded_stderr = []
+
+    class BinaryOutput:
+        def __init__(self, writes):
+            self.writes = writes
+
+        def write(self, value):
+            self.writes.append(value)
+
+        def flush(self):
+            pass
+
+    monkeypatch.setattr(
+        gui.sys, "stdout", SimpleNamespace(buffer=BinaryOutput(forwarded_stdout))
+    )
+    monkeypatch.setattr(
+        gui.sys, "stderr", SimpleNamespace(buffer=BinaryOutput(forwarded_stderr))
+    )
+    monkeypatch.setattr(window, "show", lambda: None)
+    monkeypatch.setattr(window, "save_config", lambda: None)
+    monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.No)
+
+    window._finish_linux_calibration(0, QProcess.NormalExit)
+
+    assert forwarded_stdout == [marker]
+    assert forwarded_stderr == [final_stderr]
+    assert window.integrated_widgets["regression_model_path"].text() == (
+        "model_weights/20260727_120001/model.pkl"
+    )
+
+
 def test_confirming_new_camera_retires_pipeline_with_old_camera_config(
     window_factory
 ):

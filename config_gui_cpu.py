@@ -1623,6 +1623,8 @@ class ConfigWindow(QMainWindow):
         process = self.calibration_process
         if process is None:
             raise RuntimeError("Linux calibration worker is not running")
+        self._read_calibration_stdout()
+        self._read_calibration_stderr()
         stdout = bytes(self.calibration_stdout)
         stderr = bytes(self.calibration_stderr)
         self.calibration_process = None
