@@ -1387,8 +1387,9 @@ class ConfigWindow(QMainWindow):
             try:
                 self.save_config_to_file(self.current_config_path)
                 QMessageBox.information(self, "Success", f"Configuration saved to {self.current_config_path}")
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to save configuration:\n{str(e)}")
+            except Exception:
+                QMessageBox.critical(self, "Error", traceback.format_exc())
+                raise
         else:
             # 如果没有当前路径，调用另存为
             self.save_config_as()
@@ -1462,6 +1463,7 @@ class ConfigWindow(QMainWindow):
             print(f"Saving config to {file_path}")
             with open(file_path, 'w', encoding='utf-8') as f:
                 yaml.safe_dump(config, f, allow_unicode=True, sort_keys=False)
+            self.config = config
             
         except Exception as e:
             import traceback
@@ -1550,6 +1552,11 @@ class ConfigWindow(QMainWindow):
         config_path = Path(self.current_config_path).resolve()
         if not config_path.is_file():
             raise FileNotFoundError(config_path)
+        try:
+            self.save_config_to_file(config_path)
+        except Exception:
+            self._show_linux_calibration_error(traceback.format_exc())
+            raise
 
         self.preview_label.clear()
         self.preview_label.setText(
@@ -1626,40 +1633,35 @@ class ConfigWindow(QMainWindow):
         process = self.calibration_process
         if process is None:
             raise RuntimeError("Linux calibration worker is not running")
-        self._read_calibration_stdout()
-        self._read_calibration_stderr()
-        stdout = bytes(self.calibration_stdout)
-        stderr = bytes(self.calibration_stderr)
-        self.calibration_process = None
-        self.calibration_stdout.clear()
-        self.calibration_stderr.clear()
         try:
-            if exit_status != QProcess.NormalExit or exit_code != 0:
-                try:
-                    raise RuntimeError(
-                        "Calibration worker failed with "
-                        f"exit code {exit_code}, exit status {exit_status}: "
-                        f"{stderr.decode(errors='replace')}"
-                    )
-                except RuntimeError:
-                    self._show_linux_calibration_error(
-                        traceback.format_exc()
-                    )
-                    raise
-
+            self._read_calibration_stdout()
+            self._read_calibration_stderr()
+            stdout = bytes(self.calibration_stdout)
+            stderr = bytes(self.calibration_stderr)
+            self.calibration_process = None
+            self.calibration_stdout.clear()
+            self.calibration_stderr.clear()
             self.show()
-            try:
-                _, model_path = parse_calibration_result(
-                    stdout, REPOSITORY_ROOT
+            if exit_status != QProcess.NormalExit or exit_code != 0:
+                raise RuntimeError(
+                    "Calibration worker failed with "
+                    f"exit code {exit_code}, exit status {exit_status}: "
+                    f"{stderr.decode(errors='replace')}"
                 )
-                self._apply_calibration_model(model_path)
-            except Exception:
-                self._show_linux_calibration_error(traceback.format_exc())
-                raise
+
+            _, model_path = parse_calibration_result(stdout, REPOSITORY_ROOT)
+            self._apply_calibration_model(model_path)
+        except Exception:
+            self._show_linux_calibration_error(traceback.format_exc())
+            raise
+        else:
             self.camera_change_btn.setEnabled(True)
             self.calibrate_btn.setEnabled(True)
             self.evaluate_btn.setEnabled(True)
         finally:
+            self.calibration_process = None
+            self.calibration_stdout.clear()
+            self.calibration_stderr.clear()
             process.deleteLater()
 
     def _apply_calibration_model(self, model_path):
@@ -1668,7 +1670,16 @@ class ConfigWindow(QMainWindow):
         )
         if model_path is not None:
             self.integrated_widgets["regression_model_path"].setText(model_path)
-            self.save_config()
+            if self.current_config_path is None:
+                self.save_config()
+            else:
+                self.save_config_to_file(self.current_config_path)
+            if self.pipeline is not None:
+                pipeline = self.pipeline
+                try:
+                    pipeline.quit_pipeline()
+                finally:
+                    self.pipeline = None
         reply = QMessageBox.question(
             self,
             "Calibration Complete",
@@ -1690,7 +1701,17 @@ class ConfigWindow(QMainWindow):
             model_path = (
                 f"model_weights/{self.pipeline.calibration_time}/model.pkl"
             )
-        self._apply_calibration_model(model_path)
+        try:
+            self._apply_calibration_model(model_path)
+        except Exception:
+            formatted_traceback = traceback.format_exc()
+            self._disable_camera_actions()
+            QMessageBox.critical(
+                self,
+                "Calibration Error",
+                formatted_traceback,
+            )
+            raise
 
 
     def closeEvent(self, event):
@@ -2359,9 +2380,7 @@ class ConfigWindow(QMainWindow):
         try:
             self._close_camera_preview()
         except Exception:
-            formatted_traceback = traceback.format_exc()
             self._disable_camera_actions()
-            QMessageBox.critical(self, "Camera Error", formatted_traceback)
             raise
 
         try:
@@ -2374,9 +2393,7 @@ class ConfigWindow(QMainWindow):
             )
         except Exception as error:
             self._discard_camera_after_failure(error)
-            formatted_traceback = traceback.format_exc()
             self._disable_camera_actions()
-            QMessageBox.critical(self, "Camera Error", formatted_traceback)
             raise
 
 

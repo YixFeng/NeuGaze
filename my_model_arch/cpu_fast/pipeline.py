@@ -1313,6 +1313,7 @@ class IntegratedRegressionMediaPipeline:
 
     def start_calibration(self):
         cancelled = False
+        completed = None
         try:
             with self._lifecycle_lock:
                 if self.quit:
@@ -1324,7 +1325,7 @@ class IntegratedRegressionMediaPipeline:
                 if self.quit:
                     cancelled = True
                 else:
-                    self.calibrate(self.camera)
+                    completed = self.calibrate(self.camera)
                 self.is_calibrating = False
                 cancelled = cancelled or self.quit
             if not cancelled:
@@ -1334,7 +1335,7 @@ class IntegratedRegressionMediaPipeline:
         if cancelled:
             self.quit_pipeline()
             return None
-        return True
+        return completed
 
     def end_calibration(self):
         self.end_calibration_signal = True
@@ -1593,57 +1594,44 @@ class IntegratedRegressionMediaPipeline:
 
     def finish_calibration(self, path1, test_mode, tested_true_points, tested_pred_points):
         """完成校准的处理 - 包含质量报告生成和累积训练支持"""
-        # 检查是否收集到足够的数据
         if not hasattr(self, 'data_list') or not self.data_list:
             print("Warning: No calibration data collected!")
             self.show_calibration_failure("No calibration data was collected. Please try again.")
             return None
-        
-        # 生成质量报告
+
         self.generate_quality_report(path1)
-        
-        # 保存训练数据
         self.save_calibration_data(path1)
-        
-        if not test_mode:
-            try:
-                # 验证训练数据
-                if not self.validate_training_data():
-                    print("Error: Training data validation failed!")
-                    self.show_calibration_failure("Training data validation failed.\nData appears to be corrupted or incomplete.")
-                    return None
-                
-                # 选择训练模式：累积训练 vs 单次训练
-                if self.use_accumulated_training:
-                    print("Using accumulated training with historical data...")
-                    training_success = self.train_with_accumulated_data(
-                        current_calibration_path=path1, 
-                        max_datasets=self.max_accumulated_datasets
-                    )
-                else:
-                    if len(self.data_list)!=self.calibrate_num_points*self.every_point_has_n_images:
-                        raise Exception(f"数据量不足，需要{self.num_points*self.every_point_has_n_images}条数据，但只有{len(self.data_list)}条数据")
-                    print("Using current calibration data only...")
-                    self.train_regression(reset=True)
-                    training_success = self.is_model_fitted()
-                
-                # 验证模型是否训练成功
-                if not training_success:
-                    print("Error: Model training failed!")
-                    self.show_calibration_failure("Model training failed.\nPlease try calibration again.")
-                    return None
-                
-                self.save_model()
-                print("Model training completed successfully!")
-                self.show_calibration_success()
-                
-            except Exception as e:
-                print(f"Error during training: {e}")
-                self.show_calibration_failure(f"Training failed with error:\n{str(e)}")
-                return None
-        else:
-            # 处理测试模式的误差分析
+
+        if test_mode:
             return self.process_test_mode_results(path1, tested_true_points, tested_pred_points)
+
+        if not self.validate_training_data():
+            print("Error: Training data validation failed!")
+            self.show_calibration_failure("Training data validation failed.\nData appears to be corrupted or incomplete.")
+            return None
+
+        if self.use_accumulated_training:
+            print("Using accumulated training with historical data...")
+            training_success = self.train_with_accumulated_data(
+                current_calibration_path=path1,
+                max_datasets=self.max_accumulated_datasets,
+            )
+        else:
+            if len(self.data_list) != self.calibrate_num_points * self.every_point_has_n_images:
+                raise Exception(f"数据量不足，需要{self.num_points*self.every_point_has_n_images}条数据，但只有{len(self.data_list)}条数据")
+            print("Using current calibration data only...")
+            self.train_regression(reset=True)
+            training_success = self.is_model_fitted()
+
+        if not training_success:
+            print("Error: Model training failed!")
+            self.show_calibration_failure("Model training failed.\nPlease try calibration again.")
+            return None
+
+        self.save_model()
+        print("Model training completed successfully!")
+        self.show_calibration_success()
+        return True
 
     def generate_quality_report(self, path1):
         """生成详细的质量报告"""
@@ -2051,66 +2039,48 @@ class IntegratedRegressionMediaPipeline:
 
     def train_with_accumulated_data(self, current_calibration_path=None, max_datasets=10):
         """使用累积的校准数据进行训练"""
-        try:
-            # 收集历史数据路径
-            historical_paths = self.collect_historical_calibration_data()
-            
-            # 如果有当前校准数据，也加入到路径列表
-            if current_calibration_path:
-                current_jsonl = os.path.join(current_calibration_path, "train_data.jsonl")
-                if os.path.exists(current_jsonl):
-                    historical_paths.append(current_jsonl)
-            
-            if not historical_paths:
-                print("No historical calibration data found, training with current data only")
-                if hasattr(self, 'data_list') and self.data_list:
-                    self.train_regression(reset=True)
-                    return True
-                else:
-                    print("No current data available either")
-                    return False
-            
-            # 限制数据集数量，优先使用最新的数据
-            historical_paths.sort(key=lambda x: os.path.getmtime(x), reverse=True)
-            if len(historical_paths) > max_datasets:
-                historical_paths = historical_paths[:max_datasets]
-                print(f"Using most recent {max_datasets} datasets for training")
-            
-            # 加载并合并所有数据
-            all_data = []
-            total_samples = 0
-            
-            for jsonl_path in historical_paths:
-                try:
-                    with jsonlines.open(jsonl_path, 'r') as reader:
-                        dataset_data = list(reader)
-                        all_data.extend(dataset_data)
-                        total_samples += len(dataset_data)
-                        print(f"Loaded {len(dataset_data)} samples from {os.path.basename(os.path.dirname(jsonl_path))}")
-                except Exception as e:
-                    print(f"Warning: Failed to load {jsonl_path}: {e}")
-            
-            if not all_data:
-                print("No valid data loaded from historical files")
-                return False
-            
-            print(f"Total accumulated samples: {total_samples}")
-            
-            # 训练回归模型
-            print("Training with accumulated data...")
-            self.train_regression(data_list=all_data, reset=True)
-            
-            # 验证模型
-            if self.is_model_fitted():
-                print("Accumulated training completed successfully!")
+        historical_paths = self.collect_historical_calibration_data()
+
+        if current_calibration_path:
+            current_jsonl = os.path.join(current_calibration_path, "train_data.jsonl")
+            if os.path.exists(current_jsonl):
+                historical_paths.append(current_jsonl)
+
+        if not historical_paths:
+            print("No historical calibration data found, training with current data only")
+            if hasattr(self, 'data_list') and self.data_list:
+                self.train_regression(reset=True)
                 return True
-            else:
-                print("Accumulated training failed")
-                return False
-                
-        except Exception as e:
-            print(f"Error in accumulated training: {e}")
+            print("No current data available either")
             return False
+
+        historical_paths.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+        if len(historical_paths) > max_datasets:
+            historical_paths = historical_paths[:max_datasets]
+            print(f"Using most recent {max_datasets} datasets for training")
+
+        all_data = []
+        total_samples = 0
+        for jsonl_path in historical_paths:
+            with jsonlines.open(jsonl_path, 'r') as reader:
+                dataset_data = list(reader)
+            all_data.extend(dataset_data)
+            total_samples += len(dataset_data)
+            print(f"Loaded {len(dataset_data)} samples from {os.path.basename(os.path.dirname(jsonl_path))}")
+
+        if not all_data:
+            print("No valid data loaded from historical files")
+            return False
+
+        print(f"Total accumulated samples: {total_samples}")
+        print("Training with accumulated data...")
+        self.train_regression(data_list=all_data, reset=True)
+
+        if self.is_model_fitted():
+            print("Accumulated training completed successfully!")
+            return True
+        print("Accumulated training failed")
+        return False
 
     def train_incremental(self, current_calibration_path=None, learning_rate_decay=0.9):
         """增量训练：在现有模型基础上用新数据进行更新"""

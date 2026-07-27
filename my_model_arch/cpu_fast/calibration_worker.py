@@ -95,6 +95,13 @@ def run_calibration(
     output: BinaryIO,
     repository_root: Path = REPOSITORY_ROOT,
 ) -> tuple[str, str]:
+    root = repository_root.resolve()
+    model_root = root / "model_weights"
+    preexisting_models = {
+        path.resolve()
+        for path in model_root.glob("*/model.pkl")
+        if path.is_file()
+    }
     pipeline = None
     pipeline_cleanup_attempted = False
     desktop_cleanup_attempted = False
@@ -112,9 +119,14 @@ def run_calibration(
                 f"model_weights/{pipeline.calibration_time}/model.pkl"
             ),
         }
+        produced_model = (root / payload["model_path"]).resolve()
+        if produced_model in preexisting_models:
+            raise RuntimeError(
+                f"calibration model existed before calibration: {produced_model}"
+            )
         payload_bytes = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         calibration_time, model_path = parse_calibration_result(
-            RESULT_PREFIX + payload_bytes, repository_root
+            RESULT_PREFIX + payload_bytes, root
         )
 
         if not pipeline.quit:

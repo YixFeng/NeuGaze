@@ -832,6 +832,77 @@ def test_public_run_closes_only_per_run_resources_on_normal_completion(
     assert pipeline.quit is False
 
 
+def test_start_calibration_does_not_turn_failed_calibration_into_success(
+    monkeypatch
+):
+    camera = SimpleNamespace(close=lambda: None)
+    pipeline = _pipeline_without_constructor()
+    _configure_public_run(pipeline, camera)
+    pipeline.calibrate = lambda camera: None
+    monkeypatch.setattr(pipeline_module.cv2, "waitKey", lambda delay: 0)
+
+    assert pipeline.start_calibration() is None
+
+
+@pytest.mark.parametrize("failure_stage", ["validation", "training", "save"])
+def test_finish_calibration_preserves_production_failure(
+    failure_stage
+):
+    pipeline = _pipeline_without_constructor()
+    pipeline.data_list = [{"sample": "current calibration"}]
+    pipeline.generate_quality_report = lambda path: None
+    pipeline.save_calibration_data = lambda path: None
+    pipeline.use_accumulated_training = False
+    pipeline.calibrate_num_points = 1
+    pipeline.every_point_has_n_images = 1
+    pipeline.validate_training_data = lambda: True
+    pipeline.train_regression = lambda reset: None
+    pipeline.is_model_fitted = lambda: True
+    pipeline.save_model = lambda: None
+    pipeline.show_calibration_success = lambda: None
+    pipeline.show_calibration_failure = lambda message: None
+    error = RuntimeError(f"{failure_stage} failed")
+
+    if failure_stage == "validation":
+        pipeline.validate_training_data = lambda: (_ for _ in ()).throw(error)
+    elif failure_stage == "training":
+        pipeline.train_regression = lambda reset: (_ for _ in ()).throw(error)
+    else:
+        pipeline.save_model = lambda: (_ for _ in ()).throw(error)
+
+    with pytest.raises(RuntimeError) as caught:
+        pipeline.finish_calibration("calibration/current", False, None, None)
+
+    assert caught.value is error
+
+
+def test_accumulated_training_preserves_training_failure(tmp_path):
+    data_path = tmp_path / "train_data.jsonl"
+    data_path.write_text('{"label":[1,2]}\n', encoding="utf-8")
+    pipeline = _pipeline_without_constructor()
+    pipeline.collect_historical_calibration_data = lambda: [str(data_path)]
+    error = RuntimeError("accumulated regression failed")
+    pipeline.train_regression = lambda **kwargs: (_ for _ in ()).throw(error)
+
+    with pytest.raises(RuntimeError) as caught:
+        pipeline.train_with_accumulated_data()
+
+    assert caught.value is error
+
+
+def test_accumulated_training_preserves_invalid_dataset_error(tmp_path):
+    data_path = tmp_path / "train_data.jsonl"
+    data_path.write_text("not json\n", encoding="utf-8")
+    pipeline = _pipeline_without_constructor()
+    pipeline.collect_historical_calibration_data = lambda: [str(data_path)]
+
+    with pytest.raises(pipeline_module.jsonlines.InvalidLineError) as caught:
+        pipeline.train_with_accumulated_data()
+
+    assert caught.value.lineno == 1
+    assert caught.value.line == "not json"
+
+
 @pytest.mark.parametrize(
     "entrypoint,cancellation",
     [

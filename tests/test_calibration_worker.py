@@ -138,18 +138,22 @@ class FakePipeline:
         completed=True,
         start_error=None,
         quit_error=None,
+        on_start=None,
     ):
         self.events = events
         self.calibration_time = calibration_time
         self.completed = completed
         self.start_error = start_error
         self.quit_error = quit_error
+        self.on_start = on_start
         self.quit = False
 
     def start_calibration(self):
         self.events.append("pipeline.start")
         if self.start_error is not None:
             raise self.start_error
+        if self.on_start is not None:
+            self.on_start()
         return self.completed
 
     def quit_pipeline(self):
@@ -182,8 +186,8 @@ def test_run_calibration_cleans_pipeline_and_desktop_before_result(lifecycle):
             return super().write(data)
 
     output = RecordingOutput()
-    model = write_model(root)
-    pipeline = FakePipeline(events)
+    pipeline = FakePipeline(events, on_start=lambda: write_model(root))
+    model = root / "model_weights" / pipeline.calibration_time / "model.pkl"
     created_with = []
     monkeypatch.setattr(
         worker,
@@ -281,8 +285,7 @@ def test_run_calibration_cleanup_failure_is_raised(lifecycle):
 
 def test_run_calibration_desktop_cleanup_failure_is_raised(lifecycle):
     root, config_path, _, events, monkeypatch = lifecycle
-    write_model(root)
-    pipeline = FakePipeline(events)
+    pipeline = FakePipeline(events, on_start=lambda: write_model(root))
     monkeypatch.setattr(worker, "RealAction", lambda **kwargs: pipeline)
 
     def close():
@@ -370,10 +373,28 @@ def test_run_calibration_rejects_missing_model(lifecycle):
     ]
 
 
-def test_run_calibration_propagates_output_write_failure_after_cleanup(lifecycle):
+def test_run_calibration_rejects_model_that_existed_before_this_run(lifecycle):
     root, config_path, _, events, monkeypatch = lifecycle
     write_model(root)
     pipeline = FakePipeline(events)
+    monkeypatch.setattr(worker, "RealAction", lambda **kwargs: pipeline)
+    output = io.BytesIO()
+
+    with pytest.raises(RuntimeError, match="existed before calibration"):
+        worker.run_calibration(config_path, output, repository_root=root)
+
+    assert output.getvalue() == b""
+    assert events == [
+        "desktop.init",
+        "pipeline.start",
+        "pipeline.quit",
+        "desktop.close",
+    ]
+
+
+def test_run_calibration_propagates_output_write_failure_after_cleanup(lifecycle):
+    root, config_path, _, events, monkeypatch = lifecycle
+    pipeline = FakePipeline(events, on_start=lambda: write_model(root))
     monkeypatch.setattr(worker, "RealAction", lambda **kwargs: pipeline)
 
     class BrokenOutput(io.BytesIO):
