@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QTabWidget,
                               QFileDialog, QMessageBox, QMenu, QGroupBox, QFormLayout, QScrollArea,
                               QDialog, QDialogButtonBox, QFrame, QSizePolicy, QWidgetItem,
                               QTreeWidgetItemIterator, QTableWidget, QHeaderView, QCheckBox, QProgressDialog)
-from PySide6.QtCore import Qt, QTimer, QSize, QRect, QPoint, QEvent
+from PySide6.QtCore import QProcess, Qt, QTimer, QSize, QRect, QPoint, QEvent
 from PySide6.QtGui import QAction, QIcon, QPainter, QPen, QColor
 import copy
 import sys
@@ -27,6 +27,7 @@ import os
 from pathlib import Path
 from PySide6.QtGui import QImage, QPixmap
 from my_model_arch.cpu_fast import desktop
+from my_model_arch.cpu_fast.calibration_worker import parse_calibration_result
 from my_model_arch.cpu_fast.camera import (
     CameraConfig,
     camera_config_from_mapping,
@@ -35,6 +36,8 @@ from my_model_arch.cpu_fast.camera import (
 )
 import warnings
 warnings.filterwarnings("ignore")
+
+REPOSITORY_ROOT = Path(__file__).resolve().parent
 
 class SymbolWidget(QWidget):
     def __init__(self, text="", parent=None):
@@ -352,6 +355,9 @@ class ConfigWindow(QMainWindow):
             "linux" if sys.platform.startswith("linux") else sys.platform
         )
         self.current_config_path = None  # 添加当前配置文件路径追踪
+        self.calibration_process = None
+        self.calibration_stdout = bytearray()
+        self.calibration_stderr = bytearray()
         self.esc_pressed = False
         
         # 启动检查热键的定时器
@@ -1503,7 +1509,7 @@ class ConfigWindow(QMainWindow):
         layout.insertWidget(layout.count() - 1, row)
 
     def start_calibration(self):
-        """Hand camera ownership to the calibration pipeline."""
+        """Hand camera ownership to calibration."""
         try:
             self._close_camera_preview()
         except Exception:
@@ -1512,23 +1518,17 @@ class ConfigWindow(QMainWindow):
             QMessageBox.critical(self, "Camera Error", formatted_traceback)
             raise
 
+        if self.camera_platform == "linux":
+            return self._start_linux_calibration()
+
         self.preview_label.clear()
         self.preview_label.setText(
             "Calibration running... Camera in use by algorithm."
         )
         if self.pipeline is None:
             self.initialize_pipeline()
-        linux_window_handoff = self.camera_platform == "linux"
-        if linux_window_handoff:
-            self.hide()
-            QApplication.processEvents()
         try:
-            try:
-                result = self.pipeline.start_calibration()
-            finally:
-                if linux_window_handoff:
-                    self.show()
-                    QApplication.processEvents()
+            result = self.pipeline.start_calibration()
         except Exception:
             formatted_traceback = traceback.format_exc()
             self._disable_camera_actions()
@@ -1541,78 +1541,136 @@ class ConfigWindow(QMainWindow):
         QTimer.singleShot(100, self.on_calibration_finished)
         return result
 
+    def _start_linux_calibration(self):
+        if self.calibration_process is not None:
+            raise RuntimeError("Linux calibration worker is already running")
+        if self.current_config_path is None:
+            raise RuntimeError("Calibration configuration path is not set")
 
-    def on_calibration_finished(self):
-        """校准完成后的回调处理"""
-        if hasattr(self, 'preview_label'):
-            self.preview_label.setText(
-                "Calibration completed. Click 'Change Camera' to restart "
-                "preview."
-            )
+        config_path = Path(self.current_config_path).resolve()
+        if not config_path.is_file():
+            raise FileNotFoundError(config_path)
 
-        print("on_calibration_finished called")
-        print(
-            "pipeline exists: "
-            f"{hasattr(self, 'pipeline') and self.pipeline is not None}"
+        self.preview_label.clear()
+        self.preview_label.setText(
+            "Calibration running... Camera in use by algorithm."
         )
-        if hasattr(self, 'pipeline') and self.pipeline:
-            print(
-                "pipeline calibration_time exists: "
-                f"{hasattr(self.pipeline, 'calibration_time')}"
+        process = QProcess(self)
+        self.calibration_process = process
+        process.readyReadStandardOutput.connect(
+            lambda: self._read_calibration_stdout()
+        )
+        process.readyReadStandardError.connect(
+            lambda: self._read_calibration_stderr()
+        )
+        process.finished.connect(
+            lambda exit_code, exit_status: self._finish_linux_calibration(
+                exit_code, exit_status
             )
-            if hasattr(self.pipeline, 'calibration_time'):
-                print(f"calibration_time value: {self.pipeline.calibration_time}")
-
-        if (
-            hasattr(self, 'pipeline')
-            and self.pipeline
-            and hasattr(self.pipeline, 'calibration_time')
-        ):
-            new_model_path = (
-                f'model_weights/{self.pipeline.calibration_time}/model.pkl'
-            )
-            print(
-                "Attempting to update regression_model_path to: "
-                f"{new_model_path}"
-            )
-
-            if os.path.exists(new_model_path):
-                print(f"Model file exists: {new_model_path}")
-            else:
-                print(
-                    "Warning: Model file does not exist yet: "
-                    f"{new_model_path}"
+        )
+        process.setProgram(sys.executable)
+        process.setArguments([
+            "-u",
+            "-m",
+            "my_model_arch.cpu_fast.calibration_worker",
+            "--config",
+            str(config_path),
+        ])
+        process.setWorkingDirectory(str(REPOSITORY_ROOT))
+        try:
+            process.start()
+            if not process.waitForStarted(5000):
+                raise RuntimeError(
+                    "Calibration worker failed to start: "
+                    f"{process.errorString()}"
                 )
-
-            if 'regression_model_path' in self.integrated_widgets:
-                self.integrated_widgets['regression_model_path'].setText(
-                    new_model_path
-                )
-                print("Updated GUI widget")
-                self.save_config()
-                print(
-                    "Configuration saved with new regression_model_path: "
-                    f"{new_model_path}"
-                )
-            else:
-                print("Warning: regression_model_path widget not found")
-        else:
-            print(
-                "Warning: Pipeline or calibration_time not available for "
-                "updating config"
+        except Exception:
+            formatted_traceback = traceback.format_exc()
+            self.calibration_process = None
+            self.camera_change_btn.setEnabled(True)
+            QMessageBox.critical(
+                self,
+                "Calibration Error",
+                formatted_traceback,
             )
+            raise
 
+        self.camera_change_btn.setEnabled(False)
+        self.calibrate_btn.setEnabled(False)
+        self.evaluate_btn.setEnabled(False)
+        self.hide()
+
+
+
+    def _read_calibration_stdout(self):
+        if self.calibration_process is None:
+            raise RuntimeError("Linux calibration worker is not running")
+        output = bytes(self.calibration_process.readAllStandardOutput())
+        self.calibration_stdout.extend(output)
+        sys.stdout.buffer.write(output)
+        sys.stdout.buffer.flush()
+
+    def _read_calibration_stderr(self):
+        if self.calibration_process is None:
+            raise RuntimeError("Linux calibration worker is not running")
+        output = bytes(self.calibration_process.readAllStandardError())
+        self.calibration_stderr.extend(output)
+        sys.stderr.buffer.write(output)
+        sys.stderr.buffer.flush()
+
+    def _finish_linux_calibration(self, exit_code, exit_status):
+        self.show()
+        process = self.calibration_process
+        if process is None:
+            raise RuntimeError("Linux calibration worker is not running")
+        stdout = bytes(self.calibration_stdout)
+        stderr = bytes(self.calibration_stderr)
+        self.calibration_process = None
+        self.calibration_stdout.clear()
+        self.calibration_stderr.clear()
+        try:
+            if exit_status != QProcess.NormalExit or exit_code != 0:
+                raise RuntimeError(
+                    "Calibration worker failed with "
+                    f"exit code {exit_code}: {stderr.decode(errors='replace')}"
+                )
+            _, model_path = parse_calibration_result(stdout, REPOSITORY_ROOT)
+            self._apply_calibration_model(model_path)
+            self.camera_change_btn.setEnabled(True)
+            self.calibrate_btn.setEnabled(True)
+            self.evaluate_btn.setEnabled(True)
+        finally:
+            process.deleteLater()
+
+    def _apply_calibration_model(self, model_path):
+        self.preview_label.setText(
+            "Calibration completed. Click 'Change Camera' to restart preview."
+        )
+        if model_path is not None:
+            self.integrated_widgets["regression_model_path"].setText(model_path)
+            self.save_config()
         reply = QMessageBox.question(
             self,
             "Calibration Complete",
             "Calibration completed successfully!\n\n"
             "Would you like to restart camera preview?",
             QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.Yes
+            QMessageBox.Yes,
         )
-
         if reply == QMessageBox.Yes:
             self.restart_camera_preview()
+
+    def on_calibration_finished(self):
+        """Apply the synchronous Windows calibration result."""
+        model_path = None
+        if (
+            self.pipeline is not None
+            and hasattr(self.pipeline, "calibration_time")
+        ):
+            model_path = (
+                f"model_weights/{self.pipeline.calibration_time}/model.pkl"
+            )
+        self._apply_calibration_model(model_path)
 
 
     def closeEvent(self, event):

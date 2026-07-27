@@ -11,7 +11,7 @@ import yaml
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QEvent, QSize
+from PySide6.QtCore import QEvent, QProcess, QSize
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 import config_gui_cpu as gui
@@ -536,6 +536,8 @@ def test_pipeline_camera_ownership_starts_after_preview_close(
 ):
     events = []
     window, _ = window_factory()
+    if entrypoint == "start_calibration":
+        window.camera_platform = "win32"
     window.camera = FakeCamera(events=events)
     window.pipeline = SimpleNamespace(
         start_calibration=lambda: events.append("pipeline.calibrate"),
@@ -549,25 +551,114 @@ def test_pipeline_camera_ownership_starts_after_preview_close(
 
 
 
-def test_linux_calibration_hides_config_window_until_pipeline_returns(
+class FakeSignal:
+    def __init__(self):
+        self.callbacks = []
+
+    def connect(self, callback):
+        self.callbacks.append(callback)
+
+    def emit(self, *args):
+        for callback in self.callbacks:
+            callback(*args)
+
+
+class FakeProcess:
+    NormalExit = QProcess.NormalExit
+
+    def __init__(self, parent, events):
+        self.parent = parent
+        self.events = events
+        self.readyReadStandardOutput = FakeSignal()
+        self.readyReadStandardError = FakeSignal()
+        self.finished = FakeSignal()
+        self.program = None
+        self.arguments = None
+        self.working_directory = None
+        self.stdout = b""
+        self.stderr = b""
+        self.started = False
+        self.wait_calls = []
+        self.delete_later_calls = 0
+        events.append("process.construct")
+
+    def setProgram(self, program):
+        self.program = program
+
+    def setArguments(self, arguments):
+        self.arguments = arguments
+
+    def setWorkingDirectory(self, directory):
+        self.working_directory = directory
+
+    def start(self):
+        self.started = True
+        self.events.append("process.start")
+
+    def waitForStarted(self, timeout):
+        self.wait_calls.append(timeout)
+        return True
+
+    def errorString(self):
+        return "not started"
+
+    def readAllStandardOutput(self):
+        stdout = self.stdout
+        self.stdout = b""
+        return stdout
+
+    def readAllStandardError(self):
+        stderr = self.stderr
+        self.stderr = b""
+        return stderr
+
+    def deleteLater(self):
+        self.delete_later_calls += 1
+
+
+def test_linux_calibration_runs_worker_process_without_local_pipeline(
     window_factory, monkeypatch
 ):
     events = []
-    window, _ = window_factory()
+    window, config_path = window_factory()
     window.camera_platform = "linux"
-    window.pipeline = SimpleNamespace(
-        start_calibration=lambda: events.append("pipeline") or True
+    window.camera = FakeCamera(events=events)
+
+    def fail_initialize_pipeline():
+        raise AssertionError("Linux calibration must not create a local pipeline")
+
+    window.initialize_pipeline = fail_initialize_pipeline
+    monkeypatch.setattr(
+        gui,
+        "QProcess",
+        lambda parent: FakeProcess(parent, events),
+        raising=False,
     )
     monkeypatch.setattr(window, "hide", lambda: events.append("hide"))
-    monkeypatch.setattr(window, "show", lambda: events.append("show"))
-    monkeypatch.setattr(
-        QApplication,
-        "processEvents",
-        lambda *args: events.append("events"),
-    )
 
-    assert window.start_calibration() is True
-    assert events == ["hide", "events", "pipeline", "show", "events"]
+    assert window.start_calibration() is None
+
+    process = window.calibration_process
+    assert events[:3] == ["close", "process.construct", "process.start"]
+    assert process.parent is window
+    assert process.program == sys.executable
+    assert process.arguments == [
+        "-u",
+        "-m",
+        "my_model_arch.cpu_fast.calibration_worker",
+        "--config",
+        str(config_path.resolve()),
+    ]
+    assert process.working_directory == str(Path(gui.__file__).resolve().parent)
+    assert len(process.readyReadStandardOutput.callbacks) == 1
+    assert len(process.readyReadStandardError.callbacks) == 1
+    assert len(process.finished.callbacks) == 1
+    assert process.wait_calls == [5000]
+    assert process.started
+    assert events[-1] == "hide"
+    assert not window.camera_change_btn.isEnabled()
+    assert not window.calibrate_btn.isEnabled()
+    assert not window.evaluate_btn.isEnabled()
 
 
 def test_windows_calibration_does_not_hide_config_window(
@@ -581,45 +672,108 @@ def test_windows_calibration_does_not_hide_config_window(
     )
     monkeypatch.setattr(window, "hide", lambda: events.append("hide"))
     monkeypatch.setattr(window, "show", lambda: events.append("show"))
+    monkeypatch.setattr(
+        gui,
+        "QProcess",
+        lambda parent: pytest.fail("Windows must not create a QProcess"),
+        raising=False,
+    )
 
     assert window.start_calibration() is True
     assert events == ["pipeline"]
 
 
-def test_linux_calibration_restores_window_before_reporting_original_error(
+def test_linux_calibration_process_stream_readers_forward_exact_byte_chunks(
     window_factory, monkeypatch
 ):
-    events = []
-    error = RuntimeError("calibration failed")
     window, _ = window_factory()
-    window.camera_platform = "linux"
+    process = FakeProcess(window, [])
+    window.calibration_process = process
+    stdout = []
+    stderr = []
 
-    def fail():
-        events.append("pipeline")
-        raise error
+    class BinaryOutput:
+        def __init__(self, writes):
+            self.writes = writes
+            self.flush_calls = 0
 
-    window.pipeline = SimpleNamespace(start_calibration=fail)
-    monkeypatch.setattr(window, "hide", lambda: events.append("hide"))
-    monkeypatch.setattr(window, "show", lambda: events.append("show"))
-    monkeypatch.setattr(
-        QApplication,
-        "processEvents",
-        lambda *args: events.append("events"),
+        def write(self, value):
+            self.writes.append(value)
+
+        def flush(self):
+            self.flush_calls += 1
+
+    stdout_buffer = BinaryOutput(stdout)
+    stderr_buffer = BinaryOutput(stderr)
+    monkeypatch.setattr(gui.sys, "stdout", SimpleNamespace(buffer=stdout_buffer))
+    monkeypatch.setattr(gui.sys, "stderr", SimpleNamespace(buffer=stderr_buffer))
+
+    process.stdout = b"worker stdout\x00chunk"
+    process.stderr = b"worker stderr\xffchunk"
+    window._read_calibration_stdout()
+    window._read_calibration_stderr()
+
+    assert bytes(window.calibration_stdout) == b"worker stdout\x00chunk"
+    assert bytes(window.calibration_stderr) == b"worker stderr\xffchunk"
+    assert stdout == [b"worker stdout\x00chunk"]
+    assert stderr == [b"worker stderr\xffchunk"]
+    assert stdout_buffer.flush_calls == 1
+    assert stderr_buffer.flush_calls == 1
+
+
+def test_linux_calibration_success_applies_worker_model_and_releases_process(
+    window_factory, monkeypatch, tmp_path
+):
+    window, _ = window_factory()
+    repository_root = tmp_path / "repository"
+    model_path = repository_root / "model_weights" / "20260727_120000" / "model.pkl"
+    model_path.parent.mkdir(parents=True)
+    model_path.write_bytes(b"model")
+    monkeypatch.setattr(gui, "REPOSITORY_ROOT", repository_root, raising=False)
+    process = FakeProcess(window, [])
+    stdout = (
+        b"worker log\n"
+        b'NEUGAZE_CALIBRATION_RESULT={"calibration_time":"20260727_120000","model_path":"model_weights/20260727_120000/model.pkl"}\n'
     )
+    window.calibration_process = process
+    window.calibration_stdout.extend(stdout)
+    window.calibration_stderr.extend(b"worker diagnostic\n")
+    window.camera_change_btn.setEnabled(False)
+    window.calibrate_btn.setEnabled(False)
+    window.evaluate_btn.setEnabled(False)
+    events = []
+    monkeypatch.setattr(window, "show", lambda: events.append("show"))
+    save_calls = []
+    monkeypatch.setattr(window, "save_config", lambda: save_calls.append(None))
+    questions = []
     monkeypatch.setattr(
         QMessageBox,
-        "critical",
-        lambda parent, title, text: events.append(("error", text)),
+        "question",
+        lambda *args: questions.append(args) or QMessageBox.No,
     )
+    original_parse = gui.parse_calibration_result
 
-    with pytest.raises(RuntimeError) as caught:
-        window.start_calibration()
+    def parse(stdout_bytes, root):
+        assert events == ["show"]
+        assert window.calibration_process is None
+        assert bytes(window.calibration_stdout) == b""
+        assert bytes(window.calibration_stderr) == b""
+        assert stdout_bytes == stdout
+        return original_parse(stdout_bytes, root)
 
-    assert caught.value is error
-    assert events[:5] == ["hide", "events", "pipeline", "show", "events"]
-    assert events[5][0] == "error"
-    assert "RuntimeError: calibration failed" in events[5][1]
+    monkeypatch.setattr(gui, "parse_calibration_result", parse)
 
+    window._finish_linux_calibration(0, QProcess.NormalExit)
+
+    assert window.integrated_widgets["regression_model_path"].text() == (
+        "model_weights/20260727_120000/model.pkl"
+    )
+    assert save_calls == [None]
+    assert len(questions) == 1
+    assert window.camera_change_btn.isEnabled()
+    assert window.calibrate_btn.isEnabled()
+    assert window.evaluate_btn.isEnabled()
+    assert process.delete_later_calls == 1
 
 def test_confirming_new_camera_retires_pipeline_with_old_camera_config(
     window_factory
