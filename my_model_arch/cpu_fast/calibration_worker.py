@@ -3,7 +3,7 @@
 import argparse
 from collections.abc import Mapping
 import json
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import re
 import sys
 from typing import BinaryIO
@@ -53,9 +53,9 @@ def parse_calibration_result(
     if CALIBRATION_TIME.fullmatch(calibration_time) is None:
         raise ValueError(f"invalid calibration_time {calibration_time!r}")
 
-    expected = PurePosixPath(f"model_weights/{calibration_time}/model.pkl")
-    if PurePosixPath(model_path) != expected:
-        raise ValueError(f"model_path must equal {expected.as_posix()!r}")
+    expected = f"model_weights/{calibration_time}/model.pkl"
+    if model_path != expected:
+        raise ValueError(f"model_path must equal {expected!r}")
 
     root = repository_root.resolve()
     resolved = (root / Path(model_path)).resolve()
@@ -63,7 +63,7 @@ def parse_calibration_result(
         raise ValueError("model_path escapes repository root")
     if not resolved.is_file():
         raise FileNotFoundError(resolved)
-    return calibration_time, expected.as_posix()
+    return calibration_time, expected
 
 
 def load_config(config_path: Path) -> Mapping[str, object]:

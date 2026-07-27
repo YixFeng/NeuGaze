@@ -74,6 +74,18 @@ def test_parse_calibration_result_accepts_one_exact_existing_model(tmp_path):
             ),
             ValueError,
         ),
+        (
+            result_line(
+                model_path="model_weights/./20260727_120000/model.pkl"
+            ),
+            ValueError,
+        ),
+        (
+            result_line(
+                model_path="model_weights//20260727_120000/model.pkl"
+            ),
+            ValueError,
+        ),
         (result_line(model_path="/tmp/model.pkl"), ValueError),
         (result_line(model_path="../model.pkl"), ValueError),
         (
