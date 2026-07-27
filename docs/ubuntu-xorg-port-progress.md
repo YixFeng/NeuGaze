@@ -434,3 +434,21 @@ missing frame、metadata、format、dimensions 与 byte-length 显式合同错�
 - README 的 3.1/3.2/3.3/3.4 分节及 shell `\\` 续行是既定文档行为；旧测试把跨小标题命令误当作必须连续的单段文本，假设已过时。
 - 现行测试先折叠 shell 续行，再以从前一位置继续的 `str.find` 严格检查完整命令及全局顺序；OpenCV 三条修复命令仍须在同一 fenced code block 内连续且内容精确，`pip check` 两行和禁止将其描述为成功的契约未放宽。README 精确检查其四条管理员命令，spec/plan 精确检查完整六条管理员命令。
 - 最终验证：`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 xvfb-run -a /home/yixiao/miniconda3/envs/neugaze/bin/python -m pytest tests/test_ubuntu_requirements.py -v` 为 11 passed；同解释器完整 suite 为 483 passed / 1 skipped / 1 deselected（484 selected）。此记录不表示 Gemini 335 真人完整校准通过。
+
+
+## Linux 独立校准 Worker（2026-07-27）
+
+### 根因与边界
+
+- 生产 stack dump 停在 `my_model_arch/cpu_fast/pipeline.py:1270` 的 `cv2.namedWindow`；当时 Xorg 窗口树中没有 `track`。
+- 当前 OpenCV HighGUI GUI backend 是 `QT5 5.15.16`，配置界面父进程是 PySide6 Qt6。同一 Python 进程同时加载两套原生 Qt GUI runtime 时，`cv2.namedWindow` 会阻塞；独立 HighGUI 进程可成功显示窗口，因此根因不是 Xorg、Gemini 335、模型、窗口尺寸或全屏参数。
+- Ubuntu 校准不在 Qt6 父进程调用 HighGUI。父进程用 `QProcess` 启动当前解释器的精确 worker 命令：`sys.executable -u -m my_model_arch.cpu_fast.calibration_worker --config <绝对配置路径>`。worker 只加载 pipeline、OpenCV Qt5、X11 desktop backend 与 Gemini 335 RGB `1280x720@30`，不加载 PySide6；父进程隐藏配置窗口、继续 Qt 事件循环，并读取 worker 输出。
+- 成功 stdout 必须恰有一行严格 UTF-8 协议：`NEUGAZE_CALIBRATION_RESULT={"calibration_time":"YYYYMMDD_HHMMSS","model_path":"model_weights/YYYYMMDD_HHMMSS/model.pkl"}`。JSON 只能有这两个键；模型路径必须是仓库内与时间戳一致的现存文件。不得从旧模型、缓存或目录时间推断成功；worker 失败、异常退出或协议无效均保留可见原始错误，不重试、不回退。
+
+### 自动化证据与未完成的人工验收
+
+- 隔离回归在 Xvfb 中由 PySide6 `QApplication` 父进程同步等待 `QProcess` 子进程；仅子进程运行 OpenCV Qt5 的 `namedWindow`、`imshow`、`waitKey` 与销毁窗口，并要求正常退出、stdout 精确为 `CALIBRATION_WORKER_WINDOW_OK\n`、stderr 为空。`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 xvfb-run -a /home/yixiao/miniconda3/envs/neugaze/bin/python -m pytest tests/test_calibration_process_isolation.py -m x11 -v`：1 passed，0.43s，未在 `namedWindow` 挂起。
+- worker 协议、Linux GUI `QProcess` 生命周期与隔离回归的本轮组合命令在 Xvfb 下为 73 passed，13.42s：`tests/test_calibration_worker.py`、`tests/test_config_gui_camera.py`、`tests/test_calibration_process_isolation.py`。GUI 测试自身设置的 `QT_QPA_PLATFORM=offscreen` 不传给 OpenCV 子进程；其 Qt5 只有 `xcb` 平台插件，继承该测试变量会原样 abort，不是生产降级路径。
+- 以上自动化只证明 worker 协议、父子进程隔离与受控窗口探针，不替代真人 Gemini 335 完整校准。用户仍必须在真实 Ubuntu Xorg 会话中确认可见全屏 `track`、完成校准后的模型与配置更新，以及一次独立 ESC+Q 取消流程；步骤见 `docs/ubuntu-xorg-manual-test.md`。
+
+- 全量最终复验：`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 xvfb-run -a /home/yixiao/miniconda3/envs/neugaze/bin/python -m pytest -v`：529 passed / 1 skipped / 1 deselected，12.95s。唯一 skip 为需要 `xcompmgr` 的正向 overlay 用例；未传 `--run-orbbec` 的 Gemini 硬件用例保持 deselected。`/home/yixiao/miniconda3/envs/neugaze/bin/python -m py_compile config_gui_cpu.py my_model_arch/cpu_fast/calibration_worker.py` 与 `git diff --check` 均 exit 0。
