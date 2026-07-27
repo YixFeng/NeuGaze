@@ -1587,12 +1587,8 @@ class ConfigWindow(QMainWindow):
         except Exception:
             formatted_traceback = traceback.format_exc()
             self.calibration_process = None
-            self.camera_change_btn.setEnabled(True)
-            QMessageBox.critical(
-                self,
-                "Calibration Error",
-                formatted_traceback,
-            )
+            process.deleteLater()
+            self._show_linux_calibration_error(formatted_traceback)
             raise
 
         self.camera_change_btn.setEnabled(False)
@@ -1600,7 +1596,15 @@ class ConfigWindow(QMainWindow):
         self.evaluate_btn.setEnabled(False)
         self.hide()
 
-
+    def _show_linux_calibration_error(self, formatted_traceback):
+        self.show()
+        self.camera_change_btn.setEnabled(True)
+        self._disable_camera_actions()
+        QMessageBox.critical(
+            self,
+            "Calibration Error",
+            formatted_traceback,
+        )
 
     def _read_calibration_stdout(self):
         if self.calibration_process is None:
@@ -1619,7 +1623,6 @@ class ConfigWindow(QMainWindow):
         sys.stderr.buffer.flush()
 
     def _finish_linux_calibration(self, exit_code, exit_status):
-        self.show()
         process = self.calibration_process
         if process is None:
             raise RuntimeError("Linux calibration worker is not running")
@@ -1632,12 +1635,27 @@ class ConfigWindow(QMainWindow):
         self.calibration_stderr.clear()
         try:
             if exit_status != QProcess.NormalExit or exit_code != 0:
-                raise RuntimeError(
-                    "Calibration worker failed with "
-                    f"exit code {exit_code}: {stderr.decode(errors='replace')}"
+                try:
+                    raise RuntimeError(
+                        "Calibration worker failed with "
+                        f"exit code {exit_code}, exit status {exit_status}: "
+                        f"{stderr.decode(errors='replace')}"
+                    )
+                except RuntimeError:
+                    self._show_linux_calibration_error(
+                        traceback.format_exc()
+                    )
+                    raise
+
+            self.show()
+            try:
+                _, model_path = parse_calibration_result(
+                    stdout, REPOSITORY_ROOT
                 )
-            _, model_path = parse_calibration_result(stdout, REPOSITORY_ROOT)
-            self._apply_calibration_model(model_path)
+                self._apply_calibration_model(model_path)
+            except Exception:
+                self._show_linux_calibration_error(traceback.format_exc())
+                raise
             self.camera_change_btn.setEnabled(True)
             self.calibrate_btn.setEnabled(True)
             self.evaluate_btn.setEnabled(True)
@@ -1677,6 +1695,18 @@ class ConfigWindow(QMainWindow):
 
     def closeEvent(self, event):
         """Close GUI-owned camera and pipeline resources."""
+        if (
+            self.calibration_process is not None
+            and self.calibration_process.state() != QProcess.NotRunning
+        ):
+            event.ignore()
+            self.show()
+            QMessageBox.warning(
+                self,
+                "Calibration Running",
+                "Calibration is still running. Press ESC+Q to cancel it.",
+            )
+            return
         self._close_camera_preview()
         if self.pipeline is not None:
             self.pipeline.quit_pipeline()
@@ -2210,6 +2240,11 @@ class ConfigWindow(QMainWindow):
     def check_hotkeys(self):
         """检查热键组合"""
         if desktop.are_keys_down(('esc', 'q')):
+            if (
+                self.calibration_process is not None
+                and self.calibration_process.state() != QProcess.NotRunning
+            ):
+                return
             if hasattr(self, 'pipeline') and self.pipeline:
                 self.pipeline.quit_pipeline()
                 self.pipeline = None

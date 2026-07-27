@@ -580,6 +580,11 @@ class FakeProcess:
         self.started = False
         self.wait_calls = []
         self.delete_later_calls = 0
+        self.wait_result = True
+        self.error_string = "not started"
+        self.process_state = QProcess.NotRunning
+        self.terminate_calls = 0
+        self.kill_calls = 0
         events.append("process.construct")
 
     def setProgram(self, program):
@@ -597,10 +602,13 @@ class FakeProcess:
 
     def waitForStarted(self, timeout):
         self.wait_calls.append(timeout)
-        return True
+        return self.wait_result
 
     def errorString(self):
-        return "not started"
+        return self.error_string
+
+    def state(self):
+        return self.process_state
 
     def readAllStandardOutput(self):
         stdout = self.stdout
@@ -615,6 +623,12 @@ class FakeProcess:
     def deleteLater(self):
         self.delete_later_calls += 1
 
+    def terminate(self):
+        self.terminate_calls += 1
+
+    def kill(self):
+        self.kill_calls += 1
+
 
 def test_linux_calibration_runs_worker_process_without_local_pipeline(
     window_factory, monkeypatch
@@ -628,12 +642,13 @@ def test_linux_calibration_runs_worker_process_without_local_pipeline(
         raise AssertionError("Linux calibration must not create a local pipeline")
 
     window.initialize_pipeline = fail_initialize_pipeline
-    monkeypatch.setattr(
-        gui,
-        "QProcess",
-        lambda parent: FakeProcess(parent, events),
-        raising=False,
-    )
+    class ProcessFactory:
+        NotRunning = QProcess.NotRunning
+
+        def __new__(cls, parent):
+            return FakeProcess(parent, events)
+
+    monkeypatch.setattr(gui, "QProcess", ProcessFactory, raising=False)
     monkeypatch.setattr(window, "hide", lambda: events.append("hide"))
 
     assert window.start_calibration() is None
@@ -661,6 +676,350 @@ def test_linux_calibration_runs_worker_process_without_local_pipeline(
     assert not window.evaluate_btn.isEnabled()
 
 
+def test_linux_calibration_failed_start_shows_error_and_releases_process(
+    window_factory, monkeypatch
+):
+    events = []
+    messages = []
+    processes = []
+    window, _ = window_factory()
+    window.camera_platform = "linux"
+    window.camera = FakeCamera(events=events)
+    error_string = "execvp: calibration worker was not found"
+
+    def construct(parent):
+        process = FakeProcess(parent, events)
+        process.wait_result = False
+        process.error_string = error_string
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(gui, "QProcess", construct)
+    monkeypatch.setattr(window, "show", lambda: events.append("show"))
+    monkeypatch.setattr(
+        QMessageBox,
+        "critical",
+        lambda parent, title, text: events.append("critical")
+        or messages.append((title, text)),
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        window.start_calibration()
+
+    assert str(caught.value) == (
+        "Calibration worker failed to start: " + error_string
+    )
+    assert len(processes) == 1
+    assert processes[0].delete_later_calls == 1
+    assert window.calibration_process is None
+    assert events.index("show") < events.index("critical")
+    assert messages[0][0] == "Calibration Error"
+    assert error_string in messages[0][1]
+    assert window.camera_change_btn.isEnabled()
+    assert not window.calibrate_btn.isEnabled()
+    assert not window.evaluate_btn.isEnabled()
+
+
+@pytest.mark.parametrize(
+    ("exit_code", "exit_status"),
+    [
+        (17, QProcess.NormalExit),
+        (23, QProcess.CrashExit),
+    ],
+)
+def test_linux_calibration_child_failure_shows_full_status_and_stderr(
+    window_factory, monkeypatch, exit_code, exit_status
+):
+    events = []
+    messages = []
+    window, _ = window_factory()
+    process = FakeProcess(window, events)
+    process.stderr = b"worker traceback line 1\nworker traceback line 2\xff"
+    window.calibration_process = process
+    window.integrated_widgets["regression_model_path"].setText(
+        "model_weights/old/model.pkl"
+    )
+    window.camera_change_btn.setEnabled(False)
+    window.calibrate_btn.setEnabled(False)
+    window.evaluate_btn.setEnabled(False)
+    monkeypatch.setattr(window, "show", lambda: events.append("show"))
+    monkeypatch.setattr(
+        QMessageBox,
+        "critical",
+        lambda parent, title, text: events.append("critical")
+        or messages.append((title, text)),
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        window._finish_linux_calibration(exit_code, exit_status)
+
+    expected_stderr = "worker traceback line 1\nworker traceback line 2�"
+    assert f"exit code {exit_code}" in str(caught.value)
+    assert f"exit status {exit_status}" in str(caught.value)
+    assert expected_stderr in str(caught.value)
+    assert process.delete_later_calls == 1
+    assert window.calibration_process is None
+    assert window.integrated_widgets["regression_model_path"].text() == (
+        "model_weights/old/model.pkl"
+    )
+    assert events.index("show") < events.index("critical")
+    assert expected_stderr in messages[0][1]
+    assert window.camera_change_btn.isEnabled()
+    assert not window.calibrate_btn.isEnabled()
+    assert not window.evaluate_btn.isEnabled()
+
+
+@pytest.mark.parametrize(
+    ("stdout", "exception"),
+    [
+        (b"worker log\n", RuntimeError),
+        (
+            b'NEUGAZE_CALIBRATION_RESULT={"calibration_time":"20260727_120000","model_path":"model_weights/20260727_120000/model.pkl"}\n'
+            b'NEUGAZE_CALIBRATION_RESULT={"calibration_time":"20260727_120000","model_path":"model_weights/20260727_120000/model.pkl"}\n',
+            RuntimeError,
+        ),
+        (b"NEUGAZE_CALIBRATION_RESULT=not json\n", ValueError),
+        (
+            b'NEUGAZE_CALIBRATION_RESULT={"calibration_time":"20260727_120000"}\n',
+            ValueError,
+        ),
+        (
+            b'NEUGAZE_CALIBRATION_RESULT={"calibration_time":"20260727_120000","model_path":"../model.pkl"}\n',
+            ValueError,
+        ),
+        (
+            b'NEUGAZE_CALIBRATION_RESULT={"calibration_time":"20260727_120000","model_path":"model_weights/20260727_120001/model.pkl"}\n',
+            ValueError,
+        ),
+        (
+            b'NEUGAZE_CALIBRATION_RESULT={"calibration_time":"20260727_120000","model_path":"model_weights/20260727_120000/model.pkl"}\n',
+            FileNotFoundError,
+        ),
+    ],
+)
+def test_linux_calibration_invalid_result_shows_error_and_releases_process(
+    window_factory, monkeypatch, tmp_path, stdout, exception
+):
+    events = []
+    messages = []
+    repository_root = tmp_path / "repository"
+    repository_root.mkdir()
+    model_path = (
+        repository_root / "model_weights" / "20260727_120000" / "model.pkl"
+    )
+    if exception is not FileNotFoundError:
+        model_path.parent.mkdir(parents=True)
+        model_path.write_bytes(b"model")
+    window, _ = window_factory()
+    process = FakeProcess(window, events)
+    window.calibration_process = process
+    window.calibration_stdout.extend(stdout)
+    window.camera_change_btn.setEnabled(False)
+    window.calibrate_btn.setEnabled(False)
+    window.evaluate_btn.setEnabled(False)
+    monkeypatch.setattr(gui, "REPOSITORY_ROOT", repository_root)
+    monkeypatch.setattr(window, "show", lambda: events.append("show"))
+    monkeypatch.setattr(
+        QMessageBox,
+        "critical",
+        lambda parent, title, text: events.append("critical")
+        or messages.append((title, text)),
+    )
+
+    with pytest.raises(exception):
+        window._finish_linux_calibration(0, QProcess.NormalExit)
+
+    assert process.delete_later_calls == 1
+    assert window.calibration_process is None
+    assert events.index("show") < events.index("critical")
+    assert messages[0][0] == "Calibration Error"
+    assert window.camera_change_btn.isEnabled()
+    assert not window.calibrate_btn.isEnabled()
+    assert not window.evaluate_btn.isEnabled()
+
+
+def test_linux_calibration_reraises_the_same_parser_error(
+    window_factory, monkeypatch
+):
+    events = []
+    messages = []
+    error = RuntimeError("result protocol parser exploded")
+    window, _ = window_factory()
+    process = FakeProcess(window, events)
+    window.calibration_process = process
+    monkeypatch.setattr(
+        gui,
+        "parse_calibration_result",
+        lambda stdout, root: (_ for _ in ()).throw(error),
+    )
+    monkeypatch.setattr(window, "show", lambda: events.append("show"))
+    monkeypatch.setattr(
+        QMessageBox,
+        "critical",
+        lambda parent, title, text: events.append("critical")
+        or messages.append((title, text)),
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        window._finish_linux_calibration(0, QProcess.NormalExit)
+
+    assert caught.value is error
+    assert process.delete_later_calls == 1
+    assert events.index("show") < events.index("critical")
+    assert "result protocol parser exploded" in messages[0][1]
+    assert window.camera_change_btn.isEnabled()
+    assert not window.calibrate_btn.isEnabled()
+    assert not window.evaluate_btn.isEnabled()
+
+
+@pytest.mark.parametrize("failure_site", ["save_config", "restart_preview"])
+def test_linux_calibration_reraises_the_same_apply_error(
+    window_factory, monkeypatch, tmp_path, failure_site
+):
+    events = []
+    messages = []
+    error = RuntimeError(f"{failure_site} exploded")
+    repository_root = tmp_path / "repository"
+    model_path = (
+        repository_root / "model_weights" / "20260727_120000" / "model.pkl"
+    )
+    model_path.parent.mkdir(parents=True)
+    model_path.write_bytes(b"model")
+    window, _ = window_factory()
+    process = FakeProcess(window, events)
+    process.stdout = (
+        b'NEUGAZE_CALIBRATION_RESULT={"calibration_time":"20260727_120000","model_path":"model_weights/20260727_120000/model.pkl"}\n'
+    )
+    window.calibration_process = process
+    monkeypatch.setattr(gui, "REPOSITORY_ROOT", repository_root)
+    monkeypatch.setattr(window, "show", lambda: events.append("show"))
+    monkeypatch.setattr(
+        QMessageBox,
+        "critical",
+        lambda parent, title, text: events.append("critical")
+        or messages.append((title, text)),
+    )
+    if failure_site == "save_config":
+        monkeypatch.setattr(
+            window,
+            "save_config",
+            lambda: (_ for _ in ()).throw(error),
+        )
+        monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.No)
+    else:
+        monkeypatch.setattr(window, "save_config", lambda: None)
+        monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.Yes)
+        monkeypatch.setattr(
+            window,
+            "restart_camera_preview",
+            lambda: (_ for _ in ()).throw(error),
+        )
+
+    with pytest.raises(RuntimeError) as caught:
+        window._finish_linux_calibration(0, QProcess.NormalExit)
+
+    assert caught.value is error
+    assert process.delete_later_calls == 1
+    assert events.index("show") < events.index("critical")
+    assert failure_site in messages[0][1]
+    assert window.camera_change_btn.isEnabled()
+    assert not window.calibrate_btn.isEnabled()
+    assert not window.evaluate_btn.isEnabled()
+
+
+def test_linux_calibration_rejects_second_running_process(
+    window_factory, monkeypatch
+):
+    window, _ = window_factory()
+    window.camera_platform = "linux"
+    running_process = FakeProcess(window, [])
+    running_process.process_state = QProcess.Running
+    window.calibration_process = running_process
+    created = []
+
+    class NoNewProcess:
+        NotRunning = QProcess.NotRunning
+
+        def __init__(self, parent):
+            created.append(parent)
+            pytest.fail("second calibration process must not be constructed")
+
+    monkeypatch.setattr(gui, "QProcess", NoNewProcess)
+
+    with pytest.raises(RuntimeError, match="already running"):
+        window.start_calibration()
+
+    assert created == []
+    running_process.process_state = NoNewProcess.NotRunning
+
+
+class FakeCloseEvent:
+    def __init__(self):
+        self.ignored = False
+
+    def ignore(self):
+        self.ignored = True
+
+
+def test_close_event_is_rejected_while_calibration_process_runs(
+    window_factory, monkeypatch
+):
+    events = []
+    warnings = []
+    window, _ = window_factory()
+    running_process = FakeProcess(window, events)
+    running_process.process_state = QProcess.Running
+    window.calibration_process = running_process
+    window.camera = FakeCamera(events=events)
+    window.pipeline = SimpleNamespace(
+        quit_pipeline=lambda: events.append("pipeline.quit")
+    )
+    shown = []
+    monkeypatch.setattr(window, "show", lambda: shown.append(True))
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda parent, title, text: warnings.append((title, text)),
+    )
+
+    event = FakeCloseEvent()
+    window.closeEvent(event)
+
+    assert event.ignored is True
+    assert shown == [True]
+    assert "ESC+Q" in warnings[0][1]
+    assert running_process.terminate_calls == 0
+    assert running_process.kill_calls == 0
+    assert window.camera.close_calls == 0
+    assert events == ["process.construct"]
+    assert window.pipeline is not None
+    running_process.process_state = QProcess.NotRunning
+
+
+def test_hotkeys_do_not_clean_parent_pipeline_while_linux_worker_runs(
+    window_factory, monkeypatch
+):
+    calls = []
+    window, _ = window_factory()
+    running_process = FakeProcess(window, [])
+    running_process.process_state = QProcess.Running
+    window.calibration_process = running_process
+    window.pipeline = SimpleNamespace(
+        quit_pipeline=lambda: calls.append("pipeline.quit")
+    )
+    monkeypatch.setattr(
+        gui.desktop,
+        "are_keys_down",
+        lambda keys: calls.append(("are_keys_down", keys)) or True,
+    )
+
+    window.check_hotkeys()
+
+    assert calls == [("are_keys_down", ("esc", "q"))]
+    assert window.pipeline is not None
+
+
+    running_process.process_state = QProcess.NotRunning
 def test_windows_calibration_does_not_hide_config_window(
     window_factory, monkeypatch
 ):
