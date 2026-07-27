@@ -428,3 +428,9 @@ missing frame、metadata、format、dimensions 与 byte-length 显式合同错�
 - 实测（Gemini 335）：pipeline 构造 0.223s；打开耗时 1.397s；首帧 0.522s，shape `(720, 1280, 3)`。
 - 本轮复验：`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 QT_QPA_PLATFORM=offscreen /home/yixiao/miniconda3/envs/neugaze/bin/python -m pytest tests/test_config_gui_camera.py tests/test_pipeline_runtime.py -v`：130 passed，9.31s（任务说明中的 126 项为过时计数）；`/home/yixiao/miniconda3/envs/neugaze/bin/python -m py_compile config_gui_cpu.py my_model_arch/cpu_fast/pipeline.py`：exit 0。
 - Gemini 335 真人完整校准仍是用户可见的人工验收项，尚未执行；自动化测试和上述单帧数据不等同于实机完整校准通过。
+
+## README 分节测试契约校正（2026-07-27）
+
+- README 的 3.1/3.2/3.3/3.4 分节及 shell `\\` 续行是既定文档行为；旧测试把跨小标题命令误当作必须连续的单段文本，假设已过时。
+- 现行测试先折叠 shell 续行，再以从前一位置继续的 `str.find` 严格检查完整命令及全局顺序；OpenCV 三条修复命令仍须在同一 fenced code block 内连续且内容精确，`pip check` 两行和禁止将其描述为成功的契约未放宽。README 精确检查其四条管理员命令，spec/plan 精确检查完整六条管理员命令。
+- 最终验证：`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 xvfb-run -a /home/yixiao/miniconda3/envs/neugaze/bin/python -m pytest tests/test_ubuntu_requirements.py -v` 为 11 passed；同解释器完整 suite 为 483 passed / 1 skipped / 1 deselected（484 selected）。此记录不表示 Gemini 335 真人完整校准通过。

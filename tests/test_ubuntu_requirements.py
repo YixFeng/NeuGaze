@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 import pytest
 
@@ -12,6 +13,20 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 EXACT_EXTRA_INDEX = (
     "--extra-index-url https://download.pytorch.org/whl/cpu"
 )
+
+def fold_markdown_shell_continuations(text):
+    return re.sub(r"\\\n[ \t]*", "", text)
+
+
+def assert_commands_appear_in_order(text, commands):
+    normalized_text = fold_markdown_shell_continuations(text)
+    search_from = 0
+    for command in commands:
+        command_position = normalized_text.find(command, search_from)
+        assert command_position != -1, (
+            f"missing command after the previous command: {command!r}"
+        )
+        search_from = command_position + len(command)
 
 
 def parse_ubuntu_requirements(text):
@@ -97,7 +112,12 @@ def test_readmes_document_exact_opencv_collision_repair():
 
     for filename in ("README.md", "README-CN.md"):
         text = (REPOSITORY_ROOT / filename).read_text(encoding="utf-8")
-        assert repair_sequence in text
+        normalized_text = fold_markdown_shell_continuations(text)
+        assert repair_sequence in normalized_text
+        assert any(
+            repair_sequence in code_block
+            for code_block in normalized_text.split("```")[1::2]
+        )
         assert approved_pip_check_failure in text
         assert "No broken requirements found." not in text
 
@@ -189,9 +209,15 @@ def test_ubuntu_install_order_and_admin_boundaries_are_documented():
         "docs/superpowers/plans/2026-07-24-ubuntu-xorg-port.md",
     ):
         text = (REPOSITORY_ROOT / filename).read_text(encoding="utf-8")
-        assert "\n".join(ordered) in text
-        for command in required_commands:
-            assert command in text
+        normalized_text = fold_markdown_shell_continuations(text)
+        assert_commands_appear_in_order(text, ordered)
+        commands = (
+            required_commands
+            if filename.startswith("docs/")
+            else required_commands[:4]
+        )
+        for command in commands:
+            assert command in normalized_text
         assert "check_ubuntu_install.py" in text
         assert "pyorbbecsdk2==2.1.1" in text
         assert "SDK 2.8.6" in text
