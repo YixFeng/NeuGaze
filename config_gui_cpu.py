@@ -1518,8 +1518,17 @@ class ConfigWindow(QMainWindow):
         )
         if self.pipeline is None:
             self.initialize_pipeline()
+        linux_window_handoff = self.camera_platform == "linux"
+        if linux_window_handoff:
+            self.hide()
+            QApplication.processEvents()
         try:
-            result = self.pipeline.start_calibration()
+            try:
+                result = self.pipeline.start_calibration()
+            finally:
+                if linux_window_handoff:
+                    self.show()
+                    QApplication.processEvents()
         except Exception:
             formatted_traceback = traceback.format_exc()
             self._disable_camera_actions()

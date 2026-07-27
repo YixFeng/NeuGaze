@@ -549,6 +549,78 @@ def test_pipeline_camera_ownership_starts_after_preview_close(
 
 
 
+def test_linux_calibration_hides_config_window_until_pipeline_returns(
+    window_factory, monkeypatch
+):
+    events = []
+    window, _ = window_factory()
+    window.camera_platform = "linux"
+    window.pipeline = SimpleNamespace(
+        start_calibration=lambda: events.append("pipeline") or True
+    )
+    monkeypatch.setattr(window, "hide", lambda: events.append("hide"))
+    monkeypatch.setattr(window, "show", lambda: events.append("show"))
+    monkeypatch.setattr(
+        QApplication,
+        "processEvents",
+        lambda *args: events.append("events"),
+    )
+
+    assert window.start_calibration() is True
+    assert events == ["hide", "events", "pipeline", "show", "events"]
+
+
+def test_windows_calibration_does_not_hide_config_window(
+    window_factory, monkeypatch
+):
+    events = []
+    window, _ = window_factory()
+    window.camera_platform = "win32"
+    window.pipeline = SimpleNamespace(
+        start_calibration=lambda: events.append("pipeline") or True
+    )
+    monkeypatch.setattr(window, "hide", lambda: events.append("hide"))
+    monkeypatch.setattr(window, "show", lambda: events.append("show"))
+
+    assert window.start_calibration() is True
+    assert events == ["pipeline"]
+
+
+def test_linux_calibration_restores_window_before_reporting_original_error(
+    window_factory, monkeypatch
+):
+    events = []
+    error = RuntimeError("calibration failed")
+    window, _ = window_factory()
+    window.camera_platform = "linux"
+
+    def fail():
+        events.append("pipeline")
+        raise error
+
+    window.pipeline = SimpleNamespace(start_calibration=fail)
+    monkeypatch.setattr(window, "hide", lambda: events.append("hide"))
+    monkeypatch.setattr(window, "show", lambda: events.append("show"))
+    monkeypatch.setattr(
+        QApplication,
+        "processEvents",
+        lambda *args: events.append("events"),
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "critical",
+        lambda parent, title, text: events.append(("error", text)),
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        window.start_calibration()
+
+    assert caught.value is error
+    assert events[:5] == ["hide", "events", "pipeline", "show", "events"]
+    assert events[5][0] == "error"
+    assert "RuntimeError: calibration failed" in events[5][1]
+
+
 def test_confirming_new_camera_retires_pipeline_with_old_camera_config(
     window_factory
 ):
