@@ -419,3 +419,12 @@ missing frame、metadata、format、dimensions 与 byte-length 显式合同错�
 实施计划中的 checkbox 是 historical execution template，不机械回填；当前完成度
 只以本 progress ledger 的 fresh 命令证据为准。Windows 实机与完整 GUI 人工
 验收边界保持不变。
+
+## 校准窗口交接修复（2026-07-27）
+
+- 症状与根因：Gemini 335 在校准启动时，Qt 配置窗口仍占据前台；校准由 Qt 主线程同步执行，同时 HighGUI 在首帧映射前请求全屏，导致窗口交接不可靠。这不是后台 worker、自动重试或后备路径问题。
+- RED/GREEN：Task 1 的 Linux 成功顺序断言在基线 RED（仅 `['pipeline']`），异常顺序断言在恢复 Task 1 前基线 RED（`['pipeline', ('error', ...)]`）；恢复实现后三项 handoff 测试 GREEN，相关 GUI 回归 27 passed。Task 2 的调用顺序断言在旧实现 RED（`move` 位于索引 1，缺少 `show`/`wait`）；实现首帧映射后 GREEN，运行时相关回归 103 passed。
+- Linux 行为：仅 Linux 在开始校准前 hide Qt 配置窗口并处理事件，且在 `finally` 中 restore 后再进入既有错误呈现；Windows 不改变。OpenCV 先创建普通窗口、`imshow` 首帧、`waitKey(1)`，再移动窗口并请求 fullscreen；不添加 fallback/retry。
+- 实测（Gemini 335）：pipeline 构造 0.223s；打开耗时 1.397s；首帧 0.522s，shape `(720, 1280, 3)`。
+- 本轮复验：`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 QT_QPA_PLATFORM=offscreen /home/yixiao/miniconda3/envs/neugaze/bin/python -m pytest tests/test_config_gui_camera.py tests/test_pipeline_runtime.py -v`：130 passed，9.31s（任务说明中的 126 项为过时计数）；`/home/yixiao/miniconda3/envs/neugaze/bin/python -m py_compile config_gui_cpu.py my_model_arch/cpu_fast/pipeline.py`：exit 0。
+- Gemini 335 真人完整校准仍是用户可见的人工验收项，尚未执行；自动化测试和上述单帧数据不等同于实机完整校准通过。
