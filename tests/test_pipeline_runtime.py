@@ -174,6 +174,60 @@ def test_start_service_opens_configured_camera_once(monkeypatch):
     assert pipeline.mid_point == (960, 540)
 
 
+def test_setup_window_maps_first_frame_before_requesting_fullscreen(monkeypatch):
+    pipeline = _pipeline_without_constructor()
+    pipeline.window_name = "track"
+    pipeline.screen_size = (1280, 720)
+    pipeline.open_windows = []
+    events = []
+
+    monkeypatch.setattr(
+        pipeline_module.cv2,
+        "namedWindow",
+        lambda name, flags: events.append(("named", name, flags)),
+    )
+    monkeypatch.setattr(
+        pipeline_module.cv2,
+        "imshow",
+        lambda name, frame: events.append(
+            ("show", name, frame.shape, frame.dtype)
+        ),
+    )
+    monkeypatch.setattr(
+        pipeline_module.cv2,
+        "waitKey",
+        lambda delay: events.append(("wait", delay)) or -1,
+    )
+    monkeypatch.setattr(
+        pipeline_module.cv2,
+        "moveWindow",
+        lambda name, x, y: events.append(("move", name, x, y)),
+    )
+    monkeypatch.setattr(
+        pipeline_module.cv2,
+        "setWindowProperty",
+        lambda name, prop, value: events.append(
+            ("fullscreen", name, prop, value)
+        ),
+    )
+
+    pipeline.setup_window()
+
+    assert events == [
+        ("named", "track", pipeline_module.cv2.WINDOW_NORMAL),
+        ("show", "track", (720, 1280, 3), pipeline_module.np.dtype("uint8")),
+        ("wait", 1),
+        ("move", "track", 0, 0),
+        (
+            "fullscreen",
+            "track",
+            pipeline_module.cv2.WND_PROP_FULLSCREEN,
+            pipeline_module.cv2.WINDOW_FULLSCREEN,
+        ),
+    ]
+    assert pipeline.open_windows == ["track"]
+
+
 def test_camera_read_exception_propagates():
     pipeline = _pipeline_without_constructor()
 

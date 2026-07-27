@@ -1261,13 +1261,21 @@ class IntegratedRegressionMediaPipeline:
         pass
 
     def setup_window(self):
-        cv2.namedWindow(self.window_name, cv2.WND_PROP_FULLSCREEN)
+        screen_width, screen_height = self.screen_size
+        first_frame = np.full(
+            (screen_height, screen_width, 3),
+            225,
+            dtype=np.uint8,
+        )
+        cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
+        cv2.imshow(self.window_name, first_frame)
+        cv2.waitKey(1)
         cv2.moveWindow(self.window_name, x=0, y=0)
-        cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-        # hwnd = self.user32.FindWindowA(None, self.window_name)
-        # # print(f'hwnd:{hwnd}')
-        # if hwnd:
-        #     self.set_window_topmost(hwnd, True)
+        cv2.setWindowProperty(
+            self.window_name,
+            cv2.WND_PROP_FULLSCREEN,
+            cv2.WINDOW_FULLSCREEN,
+        )
         self.open_windows.append(self.window_name)
 
     def destroy_window(self):
