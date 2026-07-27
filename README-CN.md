@@ -14,14 +14,6 @@ QQ 群 ：809133143
 
 用这个系统可以完成复杂的动作游戏的操控，如视频中展示的黑神话悟空打败寅虎。还可以用来玩王者荣耀这种MOBA游戏，CS2等FPS游戏。
 
-<div align="left">
-    <h3>NeuGaze wukong</h3>
-    <video src="https://github.com/user-attachments/assets/2b604e6e-7468-470c-a3df-afc302ffedb0" />
-</div>
----
-
-我们正在举办全球 CS2 军备竞赛挑战赛：冠军奖金 2000 RMB。首位完成环境配置、在军备竞赛人机模式达成击杀并录制教程者，额外奖励 500 RMB。
-
 
 
 ---
@@ -89,149 +81,134 @@ QQ 群 ：809133143
 
 ## 🚀 快速安装
 
-### 🎯 推荐安装方式
+NeuGaze 使用一条共享 Python 管线，并按平台、摄像头和测试用途增加对应组件。请安装所属平台的完整运行依赖文件，不要逐个挑选包拼装环境。
 
-#### Windows用户
-```cmd
-# 双击运行安装脚本
-install.bat
-```
+### 🧩 各依赖组安装什么功能
 
-<details>
-<summary>📋 脚本功能详情</summary>
+| 分类 | 主要组件 | 提供的功能 |
+|---|---|---|
+| 核心视觉与注视 | PyTorch、TorchVision、NumPy、MediaPipe、OpenCV、ONNX Runtime、NCNN | 人脸检测、表情识别、注视估计和模型推理 |
+| 校准与状态 | scikit-learn、FilterPy、jsonlines、PyYAML | 校准回归、注视平滑、记录和配置解析 |
+| GUI 与桌面集成 | PySide6；Ubuntu 使用 `python-xlib`；Windows 使用 PyWin32 | 配置界面、透明层、轮盘和平台桌面接口 |
+| 摄像头 | Gemini 335 使用 `pyorbbecsdk2`；Linux 普通视频设备使用 OpenCV/V4L2 | 从明确选择的后端读取 RGB 图像 |
+| 机器人词条输出 | 仅 Python 标准库 | Ubuntu 打印经过校验的机器人动作词条；不需要 SONIC |
+| 开发测试 | pytest；隔离 X11 测试使用 Xvfb/Xauth | 可选自动化测试，不属于 NeuGaze 日常运行依赖 |
 
-脚本会自动执行以下操作：
-1. ✅ 检查Python版本和conda环境
-2. ✅ 创建名为 `neugaze` 的conda环境
-3. ✅ 指导你激活环境并安装依赖
-4. ✅ 验证安装是否成功
+`requirements-ubuntu.txt` 是可复现的完整 Ubuntu 运行锁。Torchaudio 和 tqdm 没有被主 GUI 路径直接导入，但在运行环境与模型转换环境完成拆分及全新安装验证前仍保留固定版本。当前安全的精简方式，是在日常运行时不安装测试依赖和 Xvfb/Xauth。摄像头后端及模型转换包的拆分需要单独执行全新安装验证；不要手工删改运行锁。
 
-</details>
+### 1. 创建 Conda 环境
 
-#### Ubuntu 24.04 用户（Xorg）
-
-在登录界面选择用户后，点击齿轮菜单并选择 **Ubuntu on Xorg**，再进入
-桌面；NeuGaze 不支持 Wayland。Ubuntu 主机需要 XTest、XFixes；需要凝视
-透明层时还必须运行 `xcompmgr` 等 X11 合成管理器，并安装
-`libxcb-cursor0` 与 Gemini 335 设备访问所需的 Orbbec udev 规则。系统库与
-udev 规则属于一次性的管理员安装步骤；NeuGaze 日常诊断与运行命令不使用
-`sudo`。Python 摄像头权威运行时是 `pyorbbecsdk2==2.1.1` 及其内置 SDK
-2.8.6；另行安装的系统 SDK 2.9.3 不是 Python 运行前置条件。
-
-在仓库根目录先创建并激活精确环境，显式指定 Orbbec SDK 源码树绝对
-路径，并在安装 Python 包或运行 runtime 诊断之前执行只读安装检查器：
+两个平台使用相同 Python 版本：
 
 ```bash
 conda create -n neugaze python=3.11.11
 conda activate neugaze
-export NEUGAZE_ORBBEC_SDK_ROOT=/absolute/path/to/OrbbecSDK_v2
-python scripts/check_ubuntu_install.py --orbbec-sdk-root "$NEUGAZE_ORBBEC_SDK_ROOT" --require-overlay
-python -m pip install -r requirements-ubuntu.txt
-python -m pip uninstall -y opencv-python
-python -m pip install --no-deps --force-reinstall opencv-contrib-python==4.11.0.86
-python scripts/check_ubuntu_runtime.py --config configs/cpu.yaml --require-overlay
 ```
 
-安装检查器只逐项报告缺失或不一致的前置条件；它不会安装包、复制规则、
-修改权限、重载 udev 或修复主机。若报告 runtime 系统包缺失，必须先取得
-用户明确批准，再执行：
+### 2. Windows 运行组件
+
+`requirements.txt` 安装 Windows 桌面/游戏输出后端和共享注视管线。使用以下明确命令安装：
 
 ```bash
+python -m pip install -r requirements.txt
+python config_gui_cpu.py
+```
+
+### 3. Ubuntu 24.04 运行组件
+
+#### 3.1 Xorg 与 GUI 组件
+
+在登录界面的齿轮菜单选择 **Ubuntu on Xorg**。NeuGaze 不支持 Wayland。X11 后端需要 XTest 和 XFixes；`libxcb-cursor0` 支持 Qt GUI；启用凝视透明层时需要 `xcompmgr`。
+
+只读安装检查器会报告缺失的主机组件。仅当检查器明确报告缺失时才安装系统包：
+
+```bash
+export NEUGAZE_ORBBEC_SDK_ROOT=/absolute/path/to/OrbbecSDK_v2
+python scripts/check_ubuntu_install.py \
+  --orbbec-sdk-root "$NEUGAZE_ORBBEC_SDK_ROOT" \
+  --require-overlay
+
 sudo apt-get update
 sudo apt-get install --no-install-recommends xcompmgr libxcb-cursor0
 ```
 
-Xvfb 集成测试工具不是日常运行依赖。安装测试包也必须另行取得批准：
+NeuGaze 日常诊断和运行命令不使用 `sudo`。
+
+#### 3.2 Python 运行组件
+
+安装完整 CPU 运行锁，然后移除两个上游包传递安装的冲突 OpenCV wheel：
 
 ```bash
-sudo apt-get install --no-install-recommends xvfb
+python -m pip install -r requirements-ubuntu.txt
+python -m pip uninstall -y opencv-python
+python -m pip install --no-deps --force-reinstall \
+  opencv-contrib-python==4.11.0.86
 ```
 
-若 Orbbec udev 规则缺失或内容不一致，必须先取得明确批准，然后只运行
-所指定 SDK 源码树内的安装器：
+这一步会安装上表中的核心视觉、模型推理、校准、GUI、X11 和两个摄像头后端。
+
+#### 3.3 摄像头组件
+
+在 GUI 中明确选择一个后端；后端失败后 NeuGaze 不会静默切换到另一个后端。
+
+- **Orbbec SDK / Gemini 335：**使用 `pyorbbecsdk2==2.1.1` 及其内置 SDK 2.8.6。`NEUGAZE_ORBBEC_SDK_ROOT` 只提供权威 udev 规则安装器；另行安装的系统 SDK 2.9.3 不是运行前置条件。
+- **OpenCV / V4L2：**使用选中的 `/dev/videoN`，运行时不需要 Orbbec udev 规则。
+
+若检查器报告 Gemini 335 udev 规则缺失或不一致，只安装指定 SDK 源码树中的规则，然后重新检查：
 
 ```bash
 sudo "$NEUGAZE_ORBBEC_SDK_ROOT/scripts/env_setup/install_udev_rules.sh"
+python scripts/check_ubuntu_install.py \
+  --orbbec-sdk-root "$NEUGAZE_ORBBEC_SDK_ROOT" \
+  --require-overlay
 ```
 
-验证过程本身保持非特权、只读：
+#### 3.4 验证并启动
+
+运行时诊断会检查 Xorg、X11 扩展、合成器、模型文件、选中的摄像头，以及 Orbbec wheel/SDK ABI。它是只读命令，任何前置条件错误都会明确失败。
 
 ```bash
-sha256sum "$NEUGAZE_ORBBEC_SDK_ROOT/scripts/env_setup/99-obsensor-libusb.rules"
-cmp --silent "$NEUGAZE_ORBBEC_SDK_ROOT/scripts/env_setup/99-obsensor-libusb.rules" /etc/udev/rules.d/99-obsensor-libusb.rules
-python scripts/check_ubuntu_install.py --orbbec-sdk-root "$NEUGAZE_ORBBEC_SDK_ROOT" --require-overlay
-```
-
-源码规则摘要必须是
-`71a727fbe198a93213d6d6a62a91040da87489065420ff01d102d6334c89a25b`。
-`NEUGAZE_ORBBEC_SDK_ROOT` 只提供权威 udev 安装器和规则来源，不替换也不
-重定向 Python wheel 运行时；权威运行时仍是 `pyorbbecsdk2==2.1.1` 及其内置
-SDK 2.8.6。检查通过后执行已批准的 OpenCV 冲突修复，并始终以非 `sudo`
-方式启动：
-
-```bash
+python scripts/check_ubuntu_runtime.py \
+  --config configs/cpu.yaml \
+  --require-overlay
 python config_gui_cpu.py
 ```
 
-`requirements-ubuntu.txt` 只直接固定
-`opencv-contrib-python==4.11.0.86`。它固定的两个上游依赖方仍会传递安装
-`opencv-python`，所以每次全新安装或更新 requirements 后都必须执行上方
-精确的卸载与 contrib 强制重装命令。不要让 `opencv-python` 与 contrib
-同时保留：两个 wheel 拥有同一批 `cv2` 文件。但固定版本的上游 wheel
-`pyorbbecsdk2==2.1.1` 与 `ncnn==1.0.20260526` 都无条件声明依赖分发名
-`opencv-python`，而 Python 包元数据没有让 contrib wheel 满足另一分发名的
-机制。因此 `python -m pip check` 预期以 1 退出，并原样报告以下两条上游
-分发名冲突：
+不要使用 `LD_LIBRARY_PATH`、`LD_PRELOAD`、替换库文件或摄像头后端回退来掩盖诊断失败。
+
+### 4. 可选开发与硬件测试组件
+
+NeuGaze 日常运行不需要 pytest、Xvfb 或 Xauth。
+
+```bash
+python -m pip install -r requirements-dev.txt
+sudo apt-get install --no-install-recommends xvfb xauth
+```
+
+连接 Gemini 335 后，显式硬件测试会读取 100 帧、关闭设备、重新打开并再读取一帧：
+
+```bash
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+python -m pytest tests/test_orbbec_hardware.py --run-orbbec -v
+```
+
+### 5. 已知 OpenCV 元数据提示
+
+<details>
+<summary>为什么 <code>python -m pip check</code> 会报告两个缺失依赖</summary>
+
+`pyorbbecsdk2==2.1.1` 和 `ncnn==1.0.20260526` 声明依赖分发名 `opencv-python`，而 NeuGaze 有意安装 `opencv-contrib-python==4.11.0.86`。两个 wheel 拥有相同的 `cv2` 文件，不能同时安装。
+
+因此，`python -m pip check` 预期以 1 退出并报告：
 
 ```text
 pyorbbecsdk2 2.1.1 requires opencv-python, which is not installed.
 ncnn 1.0.20260526 requires opencv-python, which is not installed.
 ```
 
-这个经用户批准的上游分发名例外只适用于包元数据。不得过滤它、把
-`pip check` 记作通过、安装 alias/dummy 分发、改写已安装 metadata，或恢复
-存在文件冲突的 wheel。实际运行验证必须确认 OpenCV 4.11.0 可导入且
-metadata 中只存在 `opencv-contrib-python`，MediaPipe 与 Orbbec 可导入，
-只读诊断通过，并执行下方显式 Gemini 335 硬件测试。
+这是包元数据例外，不是 `cv2` 运行库缺失。不要安装 alias/dummy 包、改写已安装元数据或恢复 `opencv-python`；应以运行时诊断和硬件测试作为可执行验证。
 
-诊断脚本只读运行，逐项打印所有检查，并在任一前置条件错误时以非零状态
-退出。诊断退出 0 前不要启动 GUI。脚本会同时打印
-Python 分发必须为 `pyorbbecsdk2==2.1.1`，
-`pyorbbecsdk.get_version()` 必须返回 2.8.6，扩展经 `ldd` 解析到的
-`libOrbbecSDK.so.2` 必须位于导入的 `pyorbbecsdk` 包目录内。另行安装的
-系统 SDK 2.9.3 只作信息展示；解析到该系统库、其他路径/版本或其他 SDK
-版本都会失败。禁止用 `LD_LIBRARY_PATH`、`LD_PRELOAD`、替换库文件或自动
-回退掩盖偏差。
-
-GUI 中必须明确选择一个 Linux 摄像头后端：
-
-- **Orbbec SDK**：枚举型号和序列号，并使用选中的 Gemini 335 索引；
-- **OpenCV / V4L2**：使用选中的 `/dev/videoN` 设备。
-
-后端或设备失败会直接显示；NeuGaze 不会自动切换到另一后端。硬件验收
-命令使用 pytest，因此执行前先安装开发依赖；正常运行 NeuGaze 不需要这些
-依赖：
-
-```bash
-python -m pip install -r requirements-dev.txt
-```
-
-连接 Gemini 335 后，用以下显式命令验证读取 100 帧、关闭、重开并再读一帧：
-
-```bash
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest tests/test_orbbec_hardware.py --run-orbbec -v
-```
-
-### 🔧 手动环境配置（Windows）
-
-```bash
-# 创建并激活conda环境
-conda create -n neugaze python=3.11.11
-conda activate neugaze
-
-# 安装所有依赖
-pip install -r requirements.txt
-```
+</details>
 
 ---
 

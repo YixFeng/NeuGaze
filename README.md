@@ -14,13 +14,6 @@
 
 This system enables complex action game control, as demonstrated in the video showing Black Myth: Wukong defeating the Yin Tiger boss. It can also be used to play MOBA games like Honor of Kings, FPS games like CS2, and many other game types.
 
-<div align="left">
-    <h3>NeuGaze wukong</h3>
-    <video src="https://github.com/user-attachments/assets/2b604e6e-7468-470c-a3df-afc302ffedb0" />
-</div>
----
-
-We are hosting a global CS2 Arms Race Challenge: 2000 RMB for the champion. The first participant to complete the setup, achieve kills in Arms Race against bots, and publish a tutorial video will receive an additional 500 RMB bonus.
 
 ## 📋 Table of Contents
 
@@ -85,162 +78,134 @@ We conducted comprehensive testing using progressive training on multiple calibr
 
 ## 🚀 Installation
 
-### 🎯 Recommended Installation
+NeuGaze has one shared Python pipeline, plus platform-, camera-, and test-specific components. Install the complete runtime file for your platform; do not assemble a partial environment package by package.
 
-#### Windows Users
-```cmd
-# Double-click to run the installation script
-install.bat
-```
+### 🧩 What Each Dependency Group Provides
 
-<details>
-<summary>📋 Script Function Details</summary>
+| Section | Components | Required for |
+|---|---|---|
+| Core vision and gaze | PyTorch, TorchVision, NumPy, MediaPipe, OpenCV, ONNX Runtime, NCNN | Face detection, expression recognition, gaze estimation, and model inference |
+| Calibration and state | scikit-learn, FilterPy, jsonlines, PyYAML | Calibration regression, gaze smoothing, records, and configuration |
+| GUI and desktop | PySide6; `python-xlib` on Ubuntu; PyWin32 on Windows | Configuration GUI, overlay, wheel, and platform desktop integration |
+| Camera | `pyorbbecsdk2` for Gemini 335; OpenCV/V4L2 for standard Linux video devices | RGB frame acquisition from the explicitly selected backend |
+| Robot terminal output | Python standard library only | Printing validated robot action terms on Ubuntu; no SONIC dependency |
+| Development tests | pytest; Xvfb/Xauth for isolated X11 tests | Optional automated testing, not normal NeuGaze runtime |
 
-The script will automatically:
-1. ✅ Check Python version and conda environment
-2. ✅ Create a conda environment named `neugaze`
-3. ✅ Guide you to activate the environment and install dependencies
-4. ✅ Verify successful installation
+`requirements-ubuntu.txt` is the reproducible full Ubuntu runtime lock. Torchaudio and tqdm are not directly imported by the main GUI path, but they remain pinned until the runtime and model-conversion environments are split and clean-install tested. Today, the safe reduction is to leave test requirements and Xvfb/Xauth uninstalled during normal runtime. Camera/backend and conversion-package splits require a separate clean-install change; do not hand-edit the runtime lock.
 
-</details>
+### 1. Create the Conda Environment
 
-#### Ubuntu 24.04 Users (Xorg)
-
-At the login screen, select your account, use the gear menu, and choose
-**Ubuntu on Xorg** before signing in. NeuGaze does not support Wayland. The
-Ubuntu host must provide XTest, XFixes, an X11 compositing manager such as
-`xcompmgr` when the gaze overlay is required, `libxcb-cursor0`, and Orbbec
-device-access udev rules for Gemini 335. Installing system libraries or udev
-rules is a one-time administrator operation; normal NeuGaze diagnostics and
-runtime commands do not use `sudo`. The authoritative Python camera runtime is
-`pyorbbecsdk2==2.1.1` with its bundled SDK 2.8.6. A separately installed system
-SDK 2.9.3 is not a Python runtime prerequisite.
-
-From the repository root, create and activate the exact environment, name the
-absolute Orbbec SDK source tree, and run the read-only installation checker
-before installing Python packages or running the runtime diagnostic:
+Use the same Python version on both platforms:
 
 ```bash
 conda create -n neugaze python=3.11.11
 conda activate neugaze
-export NEUGAZE_ORBBEC_SDK_ROOT=/absolute/path/to/OrbbecSDK_v2
-python scripts/check_ubuntu_install.py --orbbec-sdk-root "$NEUGAZE_ORBBEC_SDK_ROOT" --require-overlay
-python -m pip install -r requirements-ubuntu.txt
-python -m pip uninstall -y opencv-python
-python -m pip install --no-deps --force-reinstall opencv-contrib-python==4.11.0.86
-python scripts/check_ubuntu_runtime.py --config configs/cpu.yaml --require-overlay
 ```
 
-The installation checker only reports every missing or mismatched prerequisite;
-it never installs packages, copies rules, changes permissions, reloads udev, or
-repairs the host. If it reports missing runtime packages, obtain explicit user
-approval before running these administrator commands:
+### 2. Windows Runtime
+
+`requirements.txt` installs the Windows desktop/game output backend and the shared gaze pipeline. Install it with explicit commands:
 
 ```bash
+python -m pip install -r requirements.txt
+python config_gui_cpu.py
+```
+
+### 3. Ubuntu 24.04 Runtime
+
+#### 3.1 Xorg and GUI Components
+
+Select **Ubuntu on Xorg** from the login-screen gear menu. Wayland is not supported. XTest and XFixes are required by the X11 backend. `libxcb-cursor0` supports the Qt GUI; `xcompmgr` is required when the gaze overlay is enabled.
+
+The read-only checker reports missing host components. Install system packages only when it reports them missing:
+
+```bash
+export NEUGAZE_ORBBEC_SDK_ROOT=/absolute/path/to/OrbbecSDK_v2
+python scripts/check_ubuntu_install.py \
+  --orbbec-sdk-root "$NEUGAZE_ORBBEC_SDK_ROOT" \
+  --require-overlay
+
 sudo apt-get update
 sudo apt-get install --no-install-recommends xcompmgr libxcb-cursor0
 ```
 
-The Xvfb integration tools are optional for normal runtime. Obtain approval
-separately before installing the test package:
+Normal NeuGaze diagnostics and runtime commands do not use `sudo`.
+
+#### 3.2 Python Runtime Components
+
+Install the complete CPU runtime lock, then remove the conflicting OpenCV wheel that two upstream packages install transitively:
 
 ```bash
-sudo apt-get install --no-install-recommends xvfb
+python -m pip install -r requirements-ubuntu.txt
+python -m pip uninstall -y opencv-python
+python -m pip install --no-deps --force-reinstall \
+  opencv-contrib-python==4.11.0.86
 ```
 
-If the Orbbec udev rule is missing or differs, obtain explicit approval before
-running only the SDK installer named by the configured source root:
+This installs the core vision, model inference, calibration, GUI, X11, and both camera backends listed above.
+
+#### 3.3 Camera Components
+
+Choose exactly one backend in the GUI; NeuGaze does not silently switch to the other backend after a failure.
+
+- **Orbbec SDK / Gemini 335:** uses `pyorbbecsdk2==2.1.1` and its bundled SDK 2.8.6. `NEUGAZE_ORBBEC_SDK_ROOT` is only the authoritative source for the udev rule installer. A separately installed system SDK 2.9.3 is not required.
+- **OpenCV / V4L2:** uses the selected `/dev/videoN` device and does not require the Orbbec udev rule at runtime.
+
+If the checker reports a missing or mismatched Gemini 335 udev rule, install only the rule from the selected SDK source tree, then rerun the checker:
 
 ```bash
 sudo "$NEUGAZE_ORBBEC_SDK_ROOT/scripts/env_setup/install_udev_rules.sh"
+python scripts/check_ubuntu_install.py \
+  --orbbec-sdk-root "$NEUGAZE_ORBBEC_SDK_ROOT" \
+  --require-overlay
 ```
 
-Verification itself remains unprivileged and read-only:
+#### 3.4 Verify and Launch
+
+The runtime diagnostic verifies Xorg, X11 extensions, the compositor, model assets, the selected camera, and the Orbbec wheel/SDK ABI. It is read-only and fails visibly when a requirement is wrong.
 
 ```bash
-sha256sum "$NEUGAZE_ORBBEC_SDK_ROOT/scripts/env_setup/99-obsensor-libusb.rules"
-cmp --silent "$NEUGAZE_ORBBEC_SDK_ROOT/scripts/env_setup/99-obsensor-libusb.rules" /etc/udev/rules.d/99-obsensor-libusb.rules
-python scripts/check_ubuntu_install.py --orbbec-sdk-root "$NEUGAZE_ORBBEC_SDK_ROOT" --require-overlay
-```
-
-The source digest must be
-`71a727fbe198a93213d6d6a62a91040da87489065420ff01d102d6334c89a25b`.
-`NEUGAZE_ORBBEC_SDK_ROOT` supplies only the authoritative udev installer and
-rule source; it does not replace or redirect the Python wheel runtime, which
-remains `pyorbbecsdk2==2.1.1` with bundled SDK 2.8.6. After the checker passes,
-perform the approved OpenCV collision repair and launch without `sudo`:
-
-```bash
+python scripts/check_ubuntu_runtime.py \
+  --config configs/cpu.yaml \
+  --require-overlay
 python config_gui_cpu.py
 ```
 
-`requirements-ubuntu.txt` directly pins only
-`opencv-contrib-python==4.11.0.86`. Its two pinned upstream dependents still
-pull `opencv-python` transitively, so the exact uninstall and contrib
-force-reinstall commands above are required after every clean install or
-requirements update. Do not keep `opencv-python` alongside contrib: both wheels
-own the same `cv2` files. The pinned upstream wheels
-`pyorbbecsdk2==2.1.1` and `ncnn==1.0.20260526` nevertheless declare an
-unconditional dependency on the distribution name `opencv-python`; Python
-package metadata has no mechanism for the contrib wheel to satisfy that other
-name. Consequently, `python -m pip check` is expected to exit 1 with exactly
-these upstream distribution-name complaints:
+Do not use `LD_LIBRARY_PATH`, `LD_PRELOAD`, library replacement, or a camera backend fallback to hide a diagnostic failure.
+
+### 4. Optional Development and Hardware Tests
+
+Normal NeuGaze runtime does not require pytest, Xvfb, or Xauth.
+
+```bash
+python -m pip install -r requirements-dev.txt
+sudo apt-get install --no-install-recommends xvfb xauth
+```
+
+With a Gemini 335 connected, the explicit hardware test reads 100 frames, closes the device, reopens it, and reads one more frame:
+
+```bash
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+python -m pytest tests/test_orbbec_hardware.py --run-orbbec -v
+```
+
+### 5. Known OpenCV Metadata Warning
+
+<details>
+<summary>Why <code>python -m pip check</code> reports two missing dependencies</summary>
+
+`pyorbbecsdk2==2.1.1` and `ncnn==1.0.20260526` declare the distribution name `opencv-python`, while NeuGaze deliberately installs `opencv-contrib-python==4.11.0.86`. Both wheels own the same `cv2` files and must not be installed together.
+
+Consequently, `python -m pip check` is expected to exit 1 with:
 
 ```text
 pyorbbecsdk2 2.1.1 requires opencv-python, which is not installed.
 ncnn 1.0.20260526 requires opencv-python, which is not installed.
 ```
 
-This user-approved upstream distribution-name exception is limited to package
-metadata. Do not filter it, report `pip check` as passed, install an alias or
-dummy distribution, edit installed metadata, or restore the colliding wheel.
-Runtime verification instead requires a successful OpenCV 4.11.0 import backed
-only by `opencv-contrib-python` metadata, successful MediaPipe and Orbbec
-imports, the read-only diagnostic, and the explicit Gemini 335 hardware test
-below.
+This is a package-metadata exception, not a missing `cv2` runtime. Do not install an alias/dummy package, edit installed metadata, or restore `opencv-python`. Use the runtime diagnostic and hardware test as the executable checks.
 
-The diagnostic is read-only, prints every check, and exits nonzero if any
-prerequisite is wrong. Do not start the GUI until it exits zero. In particular,
-it requires distribution `pyorbbecsdk2==2.1.1`,
-`pyorbbecsdk.get_version() == 2.8.6`, and an `ldd`-resolved
-`libOrbbecSDK.so.2` under the imported `pyorbbecsdk` package directory. A
-separately installed system SDK 2.9.3 is printed as informational discovery
-only; resolving that system library, another path/version, or another SDK
-version is a failure. Do not use `LD_LIBRARY_PATH`, `LD_PRELOAD`, library
-replacement, or an automatic fallback to hide a mismatch.
-
-In the GUI, choose exactly one Linux camera backend:
-
-- **Orbbec SDK** enumerates model and serial information and uses the selected
-  Gemini 335 index.
-- **OpenCV / V4L2** uses the selected `/dev/videoN` device.
-
-A selected backend or device failure is reported directly; NeuGaze never
-switches to the other backend automatically. The hardware acceptance command
-uses pytest, so install the development requirements before running it; these
-are not required for normal NeuGaze runtime:
-
-```bash
-python -m pip install -r requirements-dev.txt
-```
-
-With a Gemini 335 connected, run the explicit 100-frame, close, reopen, and
-one-frame hardware check:
-
-```bash
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest tests/test_orbbec_hardware.py --run-orbbec -v
-```
-
-### 🔧 Manual Environment Setup (Windows)
-
-```bash
-# Create and activate conda environment
-conda create -n neugaze python=3.11.11
-conda activate neugaze
-
-# Install all dependencies
-pip install -r requirements.txt
-```
+</details>
 
 ---
 
