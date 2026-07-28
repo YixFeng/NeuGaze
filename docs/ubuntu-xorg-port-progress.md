@@ -528,3 +528,11 @@ missing frame、metadata、format、dimensions 与 byte-length 显式合同错�
 - 覆盖层启动要求 X11 compositor。缺少 compositor、主屏幕尺寸与管线不一致、子进程异常、协议消息异常或停止超时都会保留 traceback 并明确失败；不会切回 Tk 或隐藏错误。
 - 聚焦回归：`tests/test_cardinal_overlay_x11.py tests/test_pipeline_runtime.py tests/test_robot_actions.py` 为 155 passed / 1 conditional skip；隔离无 compositor Xorg 为 2 passed / 1 positive skip；隔离 `xcompmgr` 联合机器人选择层与凝视层为 4 passed / 2 negative skips；fresh 完整 Xvfb suite 为 565 passed / 2 skipped / 1 deselected，17.83s。
 - 真人视觉验收仍未执行。需要在真实 `DISPLAY` 上确认覆盖整个主屏幕、桌面可见、标签大小合适、四个区域高亮正确，并完成每方向至少 5 次闭嘴提交。
+
+## Evaluation 复用标定模型与 HiDPI 覆盖层修复（2026-07-28）
+
+- 已确认不需要每次启动都重新标定。`configs/cpu.yaml` 当前本地 `regression_model_path` 指向 `model_weights/20260728_162725/model.pkl`，文件存在且为 5634 bytes；pipeline 构造时直接 `pickle.load`，不会重新训练。换使用者、移动摄像头或改变屏幕分辨率/缩放/布局时应重新标定。
+- 用户直接点击 Evaluation 时失败并非缺少标定，而是覆盖层尺寸校验混用了 X11 物理像素和 Qt HiDPI 逻辑像素。真实 `DISPLAY=:1` 证据为：Qt logical `(2048, 1080)`、`devicePixelRatio=2.0`、Qt physical `(4096, 2160)`，X11 pipeline `(4096, 2160)`。
+- 新校验显式计算 `round(Qt logical × devicePixelRatio)` 后再与 pipeline 物理尺寸比较；100%、125%、200% 缩放均有单元测试。比例为 0、负数或 NaN 仍明确失败；真正的物理尺寸不一致也保留 logical、DPR、physical 和 pipeline 四组诊断值，不关闭错误。
+- 当前真实 `DISPLAY=:1` 已实际完成 `CardinalOverlay((4096, 2160)).start()`、监督检查和同步 `stop()`，输出 `REAL_DISPLAY_OVERLAY_START_STOP_OK`，此前的 screen mismatch 不再出现。
+- focused：HiDPI 覆盖层、Evaluation pipeline、动作合同和 GUI 配置 203 passed / 1 conditional skip；隔离 `xcompmgr` 的机器人选择层与凝视层联合测试 4 passed / 2 negative skips。fresh 完整 Xvfb suite 为 571 passed / 2 skipped / 1 deselected，17.97s。

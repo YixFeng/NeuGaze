@@ -38,6 +38,50 @@ class FakeOverlay:
         self.calls.append(("stop", None))
 
 
+@pytest.mark.parametrize(
+    ("logical_size", "device_pixel_ratio", "physical_size"),
+    [
+        ((1920, 1080), 1.0, (1920, 1080)),
+        ((2048, 1080), 2.0, (4096, 2160)),
+        ((1536, 864), 1.25, (1920, 1080)),
+    ],
+)
+def test_physical_screen_size_applies_qt_device_pixel_ratio(
+    logical_size,
+    device_pixel_ratio,
+    physical_size,
+):
+    screen = SimpleNamespace(
+        geometry=lambda: SimpleNamespace(
+            width=lambda: logical_size[0],
+            height=lambda: logical_size[1],
+        ),
+        devicePixelRatio=lambda: device_pixel_ratio,
+    )
+
+    assert overlay_module._physical_screen_size(screen) == (
+        logical_size,
+        device_pixel_ratio,
+        physical_size,
+    )
+
+
+@pytest.mark.parametrize("device_pixel_ratio", [0, -1, float("nan")])
+def test_physical_screen_size_rejects_invalid_qt_scale(
+    device_pixel_ratio,
+):
+    screen = SimpleNamespace(
+        geometry=lambda: SimpleNamespace(
+            width=lambda: 1920,
+            height=lambda: 1080,
+        ),
+        devicePixelRatio=lambda: device_pixel_ratio,
+    )
+
+    with pytest.raises(RuntimeError, match="device pixel ratio"):
+        overlay_module._physical_screen_size(screen)
+
+
 def _wheel(monkeypatch, screen_size=(3840, 2160)):
     created = []
 
@@ -216,8 +260,8 @@ def test_overlay_show_select_hide_and_stop_with_compositor():
     screen = app.primaryScreen()
     if screen is None:
         pytest.fail("X11 test has no primary screen")
-    geometry = screen.geometry()
-    overlay = CardinalOverlay((geometry.width(), geometry.height()))
+    _, _, physical_size = overlay_module._physical_screen_size(screen)
+    overlay = CardinalOverlay(physical_size)
 
     overlay.start()
     try:

@@ -1,3 +1,4 @@
+import math
 import multiprocessing
 import traceback
 
@@ -11,6 +12,22 @@ from .gaze_overlay_x11 import _x11_compositor_owner_exists
 _START_TIMEOUT_SECONDS = 5.0
 _STOP_TIMEOUT_SECONDS = 5.0
 _POLL_INTERVAL_MS = 16
+
+
+def _physical_screen_size(screen):
+    geometry = screen.geometry()
+    logical_size = (geometry.width(), geometry.height())
+    device_pixel_ratio = float(screen.devicePixelRatio())
+    if not math.isfinite(device_pixel_ratio) or device_pixel_ratio <= 0:
+        raise RuntimeError(
+            "robot action overlay received invalid Qt device pixel ratio: "
+            f"{device_pixel_ratio!r}"
+        )
+    physical_size = tuple(
+        round(dimension * device_pixel_ratio)
+        for dimension in logical_size
+    )
+    return logical_size, device_pixel_ratio, physical_size
 
 
 class _CardinalOverlayWidget(QWidget):
@@ -141,12 +158,16 @@ def _run_overlay(control_connection, expected_screen_size):
     if screen is None:
         raise RuntimeError("robot action overlay has no primary X11 screen")
     geometry = screen.geometry()
-    actual_screen_size = (geometry.width(), geometry.height())
-    if actual_screen_size != tuple(expected_screen_size):
+    logical_size, device_pixel_ratio, physical_size = (
+        _physical_screen_size(screen)
+    )
+    if physical_size != tuple(expected_screen_size):
         raise RuntimeError(
             "robot action overlay screen mismatch: "
             f"pipeline={tuple(expected_screen_size)!r}, "
-            f"X11={actual_screen_size!r}"
+            f"Qt logical={logical_size!r}, "
+            f"Qt devicePixelRatio={device_pixel_ratio!r}, "
+            f"Qt physical={physical_size!r}"
         )
 
     widget = _CardinalOverlayWidget()
@@ -198,7 +219,7 @@ def _run_overlay(control_connection, expected_screen_size):
 
     timer.timeout.connect(poll_parent)
     timer.start(_POLL_INTERVAL_MS)
-    control_connection.send(("ready", actual_screen_size))
+    control_connection.send(("ready", physical_size))
     exit_code = app.exec()
     if callback_traceback is not None:
         return callback_traceback

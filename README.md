@@ -243,9 +243,12 @@ python config_gui_cpu.py
 #### 4️⃣ Start Control
 
 - Click "Start Evaluation"
+- After one successful calibration, the GUI stores the generated `model.pkl` path in `regression_model_path`; later launches can go directly to "Start Evaluation" without recalibrating every time
 - Open your mouth to show the transparent full-screen four-region selector; keep it open, select with gaze, then close your mouth to confirm
 - Pucker your lips, raise your inner brows, or close only your left eye to trigger direct robot action labels
 - Ubuntu prints `[ROBOT_ACTION]` lines and does not emit keyboard or mouse events
+
+Recalibrate when the model file is missing, the user changes, the camera moves substantially, or the screen resolution, scaling, or monitor layout changes. Model-loading errors remain visible; NeuGaze does not silently use an uncalibrated model.
 
 ---
 
