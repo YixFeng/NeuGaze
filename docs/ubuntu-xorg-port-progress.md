@@ -475,3 +475,19 @@ missing frame、metadata、format、dimensions 与 byte-length 显式合同错�
 - fresh 完整 Xvfb suite：547 passed / 1 skipped / 1 deselected，17.09s；唯一 skip 仍为需要 `xcompmgr` 的正向 overlay 用例。
 - `py_compile`（worker 与两项测试）和 `git diff --check` 均 exit 0；现有 `Log/` 保持未跟踪且未修改。
 - Gemini 335 真人完整校准仍需用户重新执行并确认可见全屏 `track`、模型/配置更新和 ESC+Q 取消；上述探针不等同于真人校准通过。
+
+## Gemini 335 首次校准帧与 Xorg 全屏修复（2026-07-28）
+
+- 用户实测已进入新校准会话和第 1/9 点，证明独立 worker 与 HighGUI 创建链路已恢复；随后第一帧进入 MediaPipe 时因 `RealAction.milliseconds` 不存在而退出，同时 `track` 仅显示为左上角小窗口。
+- 时间戳根因是平台相机重构只保留了 `camera.read()`，删除了旧实现随成功帧更新 MediaPipe timestamp 的逻辑。现在每次成功读帧后使用 `time.monotonic_ns()` 生成毫秒时间戳，要求它严格递增，并保留最近 10 个值；不递增时直接抛出包含前值和当前值的错误。
+- 全屏根因由真实 `DISPLAY=:1` 测量确认：Xorg 尚未处理 `moveWindow()` 时，OpenCV Qt5 会静默忽略紧随其后的全屏请求，报告 `fullscreen=0`，图像区约为 `400×210`。现在移动后处理 100 ms 窗口事件，再请求全屏并继续处理 100 ms；随后读取并验证 `WND_PROP_FULLSCREEN`，未进入全屏就明确失败，不继续小窗口校准。
+- 该修复没有自动重试、备用窗口实现或 silent fallback。
+
+### 验证
+
+- 新增三项可信 RED：窗口事件顺序不符、忽略全屏请求未报错、首次读帧没有 `milliseconds`；修复后三项均通过。另有一项回归测试要求时间戳不递增时保留旧状态并明确失败。
+- 真实 Xorg 修复后稳定测量：X11 物理画布 `4096×2160`，OpenCV Qt5 HiDPI 逻辑窗口 `fullscreen=1.0`、`rect=(0, 0, 2048, 1080)`。
+- Gemini 335 实机 RGB 三帧均为 `1280×720` 并实际进入 `detect_async`；单调时间戳为 `13390960`、`13390988`、`13391021`，原 `AttributeError` 路径未再出现。
+- 校准 pipeline、worker 与进程隔离组合：144 passed，7.24s。
+- fresh 完整 Xvfb suite：550 passed / 1 skipped / 1 deselected，17.02s；唯一 skip 仍为需要 `xcompmgr` 的正向 overlay 用例。
+- 真人 9 点完整数据采集、模型生成和 GUI 回写仍需用户再次执行确认，不能由三帧硬件探针替代。

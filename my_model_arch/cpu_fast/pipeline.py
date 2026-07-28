@@ -1158,6 +1158,19 @@ class IntegratedRegressionMediaPipeline:
 
     def cap_read_img(self):
         self.frame = self.camera.read()
+        milliseconds = time.monotonic_ns() // 1_000_000
+        if (
+            self.milliseconds_list
+            and milliseconds <= self.milliseconds_list[-1]
+        ):
+            raise RuntimeError(
+                "MediaPipe frame timestamp did not advance: "
+                f"previous={self.milliseconds_list[-1]}, "
+                f"current={milliseconds}"
+            )
+        self.milliseconds = milliseconds
+        self.milliseconds_list.append(milliseconds)
+        self.milliseconds_list = self.milliseconds_list[-10:]
 
     def get_results_from_capture(self):
         count = 0
@@ -1271,11 +1284,24 @@ class IntegratedRegressionMediaPipeline:
         cv2.imshow(self.window_name, first_frame)
         cv2.waitKey(1)
         cv2.moveWindow(self.window_name, x=0, y=0)
+        # Xorg applies the move asynchronously. Qt5 ignores a fullscreen
+        # request sent before the window manager has processed that move.
+        cv2.waitKey(100)
         cv2.setWindowProperty(
             self.window_name,
             cv2.WND_PROP_FULLSCREEN,
             cv2.WINDOW_FULLSCREEN,
         )
+        cv2.waitKey(100)
+        fullscreen = cv2.getWindowProperty(
+            self.window_name,
+            cv2.WND_PROP_FULLSCREEN,
+        )
+        if fullscreen != float(cv2.WINDOW_FULLSCREEN):
+            raise RuntimeError(
+                f"calibration window {self.window_name!r} did not enter "
+                f"fullscreen; OpenCV reported {fullscreen!r}"
+            )
         self.open_windows.append(self.window_name)
 
     def destroy_window(self):

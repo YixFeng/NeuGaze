@@ -210,6 +210,12 @@ def test_setup_window_maps_first_frame_before_requesting_fullscreen(monkeypatch)
             ("fullscreen", name, prop, value)
         ),
     )
+    monkeypatch.setattr(
+        pipeline_module.cv2,
+        "getWindowProperty",
+        lambda name, prop: events.append(("property", name, prop))
+        or pipeline_module.cv2.WINDOW_FULLSCREEN,
+    )
 
     pipeline.setup_window()
 
@@ -218,14 +224,97 @@ def test_setup_window_maps_first_frame_before_requesting_fullscreen(monkeypatch)
         ("show", "track", (720, 1280, 3), pipeline_module.np.dtype("uint8")),
         ("wait", 1),
         ("move", "track", 0, 0),
+        ("wait", 100),
         (
             "fullscreen",
             "track",
             pipeline_module.cv2.WND_PROP_FULLSCREEN,
             pipeline_module.cv2.WINDOW_FULLSCREEN,
         ),
+        ("wait", 100),
+        (
+            "property",
+            "track",
+            pipeline_module.cv2.WND_PROP_FULLSCREEN,
+        ),
     ]
     assert pipeline.open_windows == ["track"]
+
+
+def test_setup_window_rejects_ignored_fullscreen_request(monkeypatch):
+    pipeline = _pipeline_without_constructor()
+    pipeline.window_name = "track"
+    pipeline.screen_size = (1280, 720)
+    pipeline.open_windows = []
+    monkeypatch.setattr(pipeline_module.cv2, "namedWindow", lambda *args: None)
+    monkeypatch.setattr(pipeline_module.cv2, "imshow", lambda *args: None)
+    monkeypatch.setattr(pipeline_module.cv2, "waitKey", lambda delay: -1)
+    monkeypatch.setattr(
+        pipeline_module.cv2,
+        "moveWindow",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        pipeline_module.cv2, "setWindowProperty", lambda *args: None
+    )
+    monkeypatch.setattr(
+        pipeline_module.cv2,
+        "getWindowProperty",
+        lambda *args: pipeline_module.cv2.WINDOW_NORMAL,
+    )
+
+    with pytest.raises(RuntimeError, match="did not enter fullscreen"):
+        pipeline.setup_window()
+
+    assert pipeline.open_windows == []
+
+
+def test_cap_read_img_updates_strictly_increasing_mediapipe_timestamp(
+    monkeypatch,
+):
+    frames = [object(), object()]
+    pipeline = _pipeline_without_constructor()
+    pipeline.camera = SimpleNamespace(read=lambda: frames.pop(0))
+    pipeline.milliseconds_list = []
+    timestamps_ns = iter([1_000_000, 3_000_000])
+    monkeypatch.setattr(
+        pipeline_module.time,
+        "monotonic_ns",
+        lambda: next(timestamps_ns),
+    )
+
+    pipeline.cap_read_img()
+    first_frame = pipeline.frame
+    first_timestamp = pipeline.milliseconds
+    pipeline.cap_read_img()
+
+    assert first_frame is not pipeline.frame
+    assert first_timestamp == 1
+    assert pipeline.milliseconds == 3
+    assert pipeline.milliseconds_list == [1, 3]
+
+
+def test_cap_read_img_rejects_non_increasing_mediapipe_timestamp(
+    monkeypatch,
+):
+    pipeline = _pipeline_without_constructor()
+    pipeline.camera = SimpleNamespace(read=lambda: object())
+    pipeline.milliseconds = 5
+    pipeline.milliseconds_list = [5]
+    monkeypatch.setattr(
+        pipeline_module.time,
+        "monotonic_ns",
+        lambda: 5_000_000,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"timestamp did not advance: previous=5, current=5",
+    ):
+        pipeline.cap_read_img()
+
+    assert pipeline.milliseconds == 5
+    assert pipeline.milliseconds_list == [5]
 
 
 def test_camera_read_exception_propagates():
