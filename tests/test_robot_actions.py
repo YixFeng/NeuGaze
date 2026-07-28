@@ -1,6 +1,7 @@
 import copy
 from dataclasses import FrozenInstanceError
 from io import StringIO
+from pathlib import Path
 
 import pytest
 
@@ -194,3 +195,70 @@ def test_resolve_robot_action_returns_label_and_rejects_unknown_id(valid_config)
     assert action == RobotAction("wave", "挥手", "expression")
     with pytest.raises(ValueError, match="missing"):
         robot_actions.resolve_robot_action(valid_config, "missing", "wheel")
+
+
+@pytest.mark.parametrize(
+    ("filename", "expression_rows", "wheel_rows", "obsolete_rows"),
+    [
+        (
+            "README-CN.md",
+            (
+                "| **张嘴** | `jawOpen > 0.4`",
+                "| **嘟嘴** | `mouthPucker > 0.97`",
+                "| **抬内眉** | `browInnerUp > 0.8`",
+                "| **仅闭左眼** | `eyeBlinkLeft > 0.6`",
+            ),
+            (
+                "| **上方** | `move_forward_step` | **前进一步** |",
+                "| **下方** | `move_backward_step` | **后退一步** |",
+                "| **左方** | `turn_left` | **左转** |",
+                "| **右方** | `turn_right` | **右转** |",
+            ),
+            ("鼠标左键点击", "W/S键", "### 🎮 控制模式"),
+        ),
+        (
+            "README.md",
+            (
+                "| **Open mouth** | `jawOpen > 0.4`",
+                "| **Pucker lips** | `mouthPucker > 0.97`",
+                "| **Raise inner brows** | `browInnerUp > 0.8`",
+                "| **Close only the left eye** | `eyeBlinkLeft > 0.6`",
+            ),
+            (
+                "| **Top** | `move_forward_step` | **前进一步** |",
+                "| **Bottom** | `move_backward_step` | **后退一步** |",
+                "| **Left** | `turn_left` | **左转** |",
+                "| **Right** | `turn_right` | **右转** |",
+            ),
+            ("Left mouse click", "W/S keys", "### 🎮 Control Modes"),
+        ),
+    ],
+)
+def test_readmes_document_current_robot_action_contract(
+    filename,
+    expression_rows,
+    wheel_rows,
+    obsolete_rows,
+):
+    repository_root = Path(__file__).parents[1]
+    text = (repository_root / filename).read_text(encoding="utf-8")
+
+    for row in (*expression_rows, *wheel_rows):
+        assert row in text
+    for action_id, label in VALID_CONFIG["actions"].items():
+        source = (
+            "wheel"
+            if action_id
+            in VALID_CONFIG["expressions"]["numlock"]["wheel"]
+            else "expression"
+        )
+        assert (
+            f"[ROBOT_ACTION] id={action_id} "
+            f"label={label} source={source}"
+        ) in text
+    assert (
+        "[ROBOT_ACTION_CANCELLED] reason=no_selection source=wheel"
+        in text
+    )
+    for obsolete in obsolete_rows:
+        assert obsolete not in text

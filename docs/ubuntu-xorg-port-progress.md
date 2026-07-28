@@ -508,3 +508,13 @@ missing frame、metadata、format、dimensions 与 byte-length 显式合同错�
 - fresh 完整 Xvfb suite：551 passed / 1 skipped / 1 deselected，17.68s；唯一 skip 仍为需要 `xcompmgr` 的正向 overlay 用例。
 - protobuf `SymbolDatabase.GetPrototype()` 行是依赖库弃用警告，不是 worker 退出原因；本轮不隐藏该警告。
 - 真人 9 点的面部采样与 GUI 模型回写仍需用户重试确认；本轮不把硬件探针和合成训练写成真人校准通过。
+
+## README 机器人动作契约修正（2026-07-28）
+
+- 用户指出中英文 README 仍把张嘴、嘟嘴、下颌、微笑和头部动作描述为旧游戏鼠标/键盘操作，与 Ubuntu `robot_terminal` 实现冲突。
+- `README-CN.md` 与 `README.md` 现在以 `configs/cpu.yaml` 为事实来源，明确记录四个实际触发：张嘴 `numlock` 打开轮盘、嘟嘴 `left_click` 输出挥手、抬内眉 `num8` 输出舞蹈、仅闭左眼 `extra` 输出停止。内部 ID 不再解释成 Ubuntu 鼠标或键盘事件。
+- 四方向注视区域逐项记录为上/下/左/右对应前进一步、后退一步、左转、右转；文档说明保持张嘴选择、闭嘴确认，以及无有效选区时的显式取消协议。
+- 两份 README 均列出全部七条 `[ROBOT_ACTION]` 输出、取消输出、固定轮盘半径 400，以及当前只打印词条、尚未启动 GR00T/WBC/SONIC 的边界。旧 `game`、`game_cs`、`game_wz`、`type` 键位表，鼠标点击和 WASD/滚轮映射已从当前控制说明移除。
+- 新增参数化文档契约测试，要求两份 README 都包含四个表情条件、四个轮盘方向、七条动作输出和取消输出，并拒绝旧映射文本。
+- 文档与安装 focused：30 passed；fresh 完整 Xvfb suite：553 passed / 1 skipped / 1 deselected，17.72s。
+- GUI 在本轮期间把 `configs/cpu.yaml` 的 `regression_model_path` 更新为 `model_weights/20260728_162725/model.pkl`；这是用户运行产生的独立配置改动，本轮只读保留，不纳入 README 提交。

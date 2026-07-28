@@ -12,7 +12,7 @@
 
 *A non-invasive computer control system that combines facial expression recognition, head movement tracking, and gaze estimation, designed for hands-free human-computer interaction.*
 
-This system enables complex action game control, as demonstrated in the video showing Black Myth: Wukong defeating the Yin Tiger boss. It can also be used to play MOBA games like Honor of Kings, FPS games like CS2, and many other game types.
+The current Ubuntu 24.04 Xorg path combines facial actions with gaze-wheel selection and prints robot action labels for the planned GR00T Whole-Body Control and SONIC reference-motion integration. Ubuntu does not emit game keys.
 
 
 ## 📋 Table of Contents
@@ -47,9 +47,9 @@ Traditional assistive technologies face significant limitations: invasive brain-
 
 | Feature | Description | Icon |
 |---------|-------------|------|
-| **Gaze-based mouse control** | Real-time calibration, precise tracking | 🎯 |
-| **Facial expression mapping** | Keyboard/mouse action mapping | 😊 |
-| **Three-modal control** | Combining gaze, expressions, and head movements | 🎮 |
+| **Gaze-based wheel selection** | Real-time calibration and four-way robot action selection | 🎯 |
+| **Facial expression mapping** | Validated robot action labels | 😊 |
+| **Multi-modal control** | Combining gaze position with facial actions | 🤖 |
 | **Customizable configurations** | Adaptable for different use cases | ⚙️ |
 | **Real-time performance** | CPU-optimized inference | 🚀 |
 
@@ -242,32 +242,38 @@ python config_gui_cpu.py
 
 #### 4️⃣ Start Control
 
-- 🎮 Click "Start Evaluation"
-- 🖱️ Your mouse cursor will now follow your gaze
-- 😊 Use facial expressions to trigger actions
+- Click "Start Evaluation"
+- Open your mouth to show the four-way robot wheel; keep it open, select with gaze, then close your mouth to confirm
+- Pucker your lips, raise your inner brows, or close only your left eye to trigger direct robot action labels
+- Ubuntu prints `[ROBOT_ACTION]` lines and does not emit keyboard or mouse events
 
 ---
 
 ## 😊 Expression & Control Configuration
 
-NeuGaze uses a sophisticated expression recognition system defined in `configs/cpu.yaml`. The system supports multiple control modes and customizable mappings.
+NeuGaze recognizes expressions through `expression_evaluator_config` in
+`configs/cpu.yaml`, then maps them to robot action labels through
+`robot_action_config`. Ubuntu currently prints labels to validate recognition and
+wheel selection; it does not call SONIC or WBC yet.
 
 ### 🎭 Expression Detection
 
-The system recognizes facial expressions through MediaPipe landmarks and maps them to specific actions:
+MediaPipe blendshapes provide the facial signals. This table is the complete current
+Ubuntu robot-output contract:
 
 #### Core Expression Mapping
 
-| Expression | Action Description | Triggered Operation |
-|------------|-------------------|---------------------|
-| **Open Mouth** (`jawOpen`) | *Drop your jaw naturally* | 🎯 Mode selector - displays available control wheels |
-| **Pucker Lips** (`mouthPucker`) | *Make a kissing motion with pursed lips* | 🖱️ Left mouse click |
-| **Jaw Left** (`jawLeft`) | *Shift your jaw to the left side* | 🖱️ Right mouse click |
-| **Jaw Right** (`jawRight`) | *Shift your jaw to the right side* | 🖱️ Middle mouse click |
-| **Smile Left** (`mouthSmileLeft`) | *Smile with only the left side of your mouth* | 🧭 Navigation/selection |
-| **Smile Right** (`mouthSmileRight`) | *Smile with only the right side of your mouth* | 🧭 Navigation/selection |
-| **Both Sides Smile** | *Full natural smile with both sides* | ⚡ Special commands |
-| **Head Movements** | *Tilt, turn, and nod your head* | ⌨️ WASD keys and scrolling |
+| User action | MediaPipe condition | Internal expression ID | Current Ubuntu behavior |
+|-------------|---------------------|------------------------|-------------------------|
+| **Open mouth** | `jawOpen > 0.4`, with no substantial left/right jaw shift | `numlock` | Open the four-way robot wheel; hold, select with gaze, and close to confirm |
+| **Pucker lips** | `mouthPucker > 0.97` and `mouthFunnel < 0.2` | `left_click` | Emit `wave` / **挥手** |
+| **Raise inner brows** | `browInnerUp > 0.8` | `num8` | Emit `dance` / **舞蹈** |
+| **Close only the left eye** | `eyeBlinkLeft > 0.6` and `eyeBlinkRight < 0.25` | `extra` | Emit `stop` / **停止** |
+
+`left_click`, `num8`, `extra`, and `numlock` are retained internal expression IDs;
+they do not mean that Ubuntu clicks a mouse or sends those keyboard keys. Jaw shifts,
+left/right or bilateral smiles, and head movement remain detectable but currently have
+no robot action binding, so they emit no label.
 
 #### Expression Threshold Adjustment
 
@@ -291,83 +297,81 @@ left_click:
   combine: AND
 ```
 
-### 🎮 Control Modes
+### 🤖 Ubuntu Robot Action Output
 
-The system supports multiple operation modes through the wheel interface:
+Ubuntu has one `robot_terminal` output path. It does not use the `game`, `game_cs`,
+`game_wz`, or `type` key tables and does not emit desktop keyboard/mouse events.
 
-#### 🎯 1. Game Mode (`game`)
+#### Direct expression actions
 
-Optimized for gaming with WASD movement and common game keys:
+A direct expression emits once on its rising edge. Holding the expression does not
+repeat the output.
 
-| Wheel Position | Key Mapping | Function Description |
-|----------------|-------------|---------------------|
-| **num1** | Z/X/C keys | 🎮 Common game actions |
-| **num2** | Shift | 🏃 Sprint/crouch |
-| **num4** | Number keys 1-4 | ⚔️ Weapon selection |
-| **num6** | Q/R/F/T keys | 🎯 Interaction keys |
-| **num8** | Space | ⚡ Jump |
+| Internal expression ID | Action ID | Terminal label | Source |
+|------------------------|-----------|----------------|--------|
+| `left_click` | `wave` | **挥手** | `expression` |
+| `num8` | `dance` | **舞蹈** | `expression` |
+| `extra` | `stop` | **停止** | `expression` |
 
-#### 🎯 2. CS:GO Mode (`game_cs`)
+#### Open-mouth plus gaze wheel
 
-Specialized for Counter-Strike with tactical bindings:
+| Gaze region | Action ID | Terminal label |
+|-------------|-----------|----------------|
+| **Top** | `move_forward_step` | **前进一步** |
+| **Bottom** | `move_backward_step` | **后退一步** |
+| **Left** | `turn_left` | **左转** |
+| **Right** | `turn_right` | **右转** |
 
-| Wheel Position | Key Mapping | Function Description |
-|----------------|-------------|---------------------|
-| **num2** | Space | ⬆️ Jump |
-| **num8** | Shift | 🚶 Walk/precision |
-| **Mouse lock** | Disabled | 🎯 For precise aiming |
+Usage sequence:
 
-#### 🎯 3. Honor of Kings Mode (`game_wz`)
+1. Open your mouth to trigger `numlock` and show a cardinal wheel of radius 400 around the screen center.
+2. Keep your mouth open and move your gaze into the top, bottom, left, or right region.
+3. Close your mouth to confirm; exactly one selected action label is emitted.
+4. If no region is valid when you close your mouth, NeuGaze emits an explicit cancellation line and no action.
 
-Optimized for MOBA gameplay (王者荣耀/Arena of Valor):
+#### Terminal output format
 
-| Wheel Position | Key Mapping | Function Description |
-|----------------|-------------|---------------------|
-| **num1-3** | Skill activation | ⚔️ Skills 1-3 |
-| **num4** | M key | 🗺️ Map |
+```text
+[ROBOT_ACTION] id=wave label=挥手 source=expression
+[ROBOT_ACTION] id=dance label=舞蹈 source=expression
+[ROBOT_ACTION] id=stop label=停止 source=expression
+[ROBOT_ACTION] id=move_forward_step label=前进一步 source=wheel
+[ROBOT_ACTION] id=move_backward_step label=后退一步 source=wheel
+[ROBOT_ACTION] id=turn_left label=左转 source=wheel
+[ROBOT_ACTION] id=turn_right label=右转 source=wheel
+```
 
-#### ⌨️ 4. Typing Mode (`type`)
+No wheel selection produces:
 
-Full keyboard access for text input:
+```text
+[ROBOT_ACTION_CANCELLED] reason=no_selection source=wheel
+```
 
-| Wheel Position | Key Mapping | Function Description |
-|----------------|-------------|---------------------|
-| **num4** | Complete alphabet | 🔤 Square layout letters |
-| **num6** | Numbers and symbols | 🔢 Square layout numbers and symbols |
-| **num2** | Modifier keys | ⌨️ Shift, Ctrl, Alt, etc. |
-| **num3** | Common shortcuts | 📋 Ctrl+C, Ctrl+V, etc. |
+These labels are stable action identifiers for the planned GR00T Whole-Body Control /
+SONIC reference-motion integration. The current version only prints them.
 
 ### ⚙️ Advanced Configuration
 
-#### 🎯 Expression Priorities
-
-The system includes priority rules to prevent conflicting expressions:
+Action IDs, Chinese labels, and expression bindings have one source of truth:
+`robot_action_config` in `configs/cpu.yaml`. Unknown or missing actions and invalid wheel
+configuration fail during startup.
 
 ```yaml
-priority_rules:
-- when: num7
-  disable: [num2]
-  except: []
+robot_wheel_config:
+  radius: 400
+robot_action_config:
+  actions:
+    move_forward_step: 前进一步
+    move_backward_step: 后退一步
+    turn_left: 左转
+    turn_right: 右转
+    wave: 挥手
+    dance: 舞蹈
+    stop: 停止
 ```
 
-#### 🎨 Wheel Layouts
-
-Different input modes support different wheel layouts:
-
-| Layout Type | Description | Use Case |
-|-------------|-------------|----------|
-| **Default** | Circular arrangement | 🎮 Gaming modes |
-| **Square** | Grid layout | ⌨️ Letter and symbol input |
-
-#### 🎯 Head Movement Integration
-
-Head orientation controls additional functions:
-
-| Head Movement | Key Mapping | Function Description |
-|---------------|-------------|---------------------|
-| **Pitch (up/down)** | W/S keys | ⬆️⬇️ Up/down movement |
-| **Yaw (left/right)** | A/D keys | ⬅️➡️ Left/right movement |
-| **Roll (tilt)** | Scroll wheel | 🔄 Scrolling operations |
+The robot wheel is a fixed four-way layout with radius 400. Head pitch, yaw, and roll
+are still estimated but have no robot binding and do not map to W/S, A/D, or scrolling.
 
 ---
 
@@ -378,13 +382,10 @@ Head orientation controls additional functions:
 - **🦽 Mobility Assistance**: Hands-free computer operation for users with limited mobility
 - **🏥 Rehabilitation**: Motor skill training through controlled head and facial movements
 
-### 🎮 Gaming & Entertainment
+### 🤖 Robot Control
 
-- **🎯 Immersive Gaming**: Novel input method for enhanced gaming experiences
-- **🐒 Action Games**: Complex action game control as demonstrated with Black Myth: Wukong boss battles
-- **🏆 MOBA Games**: Strategic gameplay in Honor of Kings and similar MOBAs
-- **🎯 FPS Games**: Precision control for Counter-Strike 2 and other competitive shooters
-- **💪 Muscle Training**: Facial and neck muscle exercise through interactive control
+- **Action-label validation**: Check expression recognition and wheel selection in the terminal
+- **Reference-motion integration**: Map the seven stable action IDs to GR00T/WBC reference motions
 
 ### 🤖 Smart Device Integration
 
@@ -400,9 +401,9 @@ Head orientation controls additional functions:
 | Component | Function Description | Technical Implementation |
 |-----------|---------------------|-------------------------|
 | **🎯 Intent Recognition** | Comprehensive analysis of facial expressions, head movements, and gaze patterns | MediaPipe + custom algorithms |
-| **🔄 Intent Mapping** | Translation of recognized intents into specific keyboard/mouse actions | Configuration-driven mapping system |
+| **🔄 Intent Mapping** | Convert expressions and wheel regions into stable robot action IDs | `robot_action_config` |
 | **🎭 Multi-Modal Fusion** | Integration and prioritization of multiple simultaneous intents | Priority rule engine |
-| **⚡ Action Execution** | Coordinated control system enabling complex gaming operations | Real-time control interface |
+| **⚡ Action Output** | Print action ID, Chinese label, and source | `[ROBOT_ACTION]` terminal protocol |
 | **🚀 Optimization** | CPU-optimized inference pipeline for real-time performance | CPU-optimized inference |
 
 ### ⚠️ Limitations
