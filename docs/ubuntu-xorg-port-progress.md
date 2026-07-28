@@ -536,3 +536,23 @@ missing frame、metadata、format、dimensions 与 byte-length 显式合同错�
 - 新校验显式计算 `round(Qt logical × devicePixelRatio)` 后再与 pipeline 物理尺寸比较；100%、125%、200% 缩放均有单元测试。比例为 0、负数或 NaN 仍明确失败；真正的物理尺寸不一致也保留 logical、DPR、physical 和 pipeline 四组诊断值，不关闭错误。
 - 当前真实 `DISPLAY=:1` 已实际完成 `CardinalOverlay((4096, 2160)).start()`、监督检查和同步 `stop()`，输出 `REAL_DISPLAY_OVERLAY_START_STOP_OK`，此前的 screen mismatch 不再出现。
 - focused：HiDPI 覆盖层、Evaluation pipeline、动作合同和 GUI 配置 203 passed / 1 conditional skip；隔离 `xcompmgr` 的机器人选择层与凝视层联合测试 4 passed / 2 negative skips。fresh 完整 Xvfb suite 为 571 passed / 2 skipped / 1 deselected，17.97s。
+
+## 头姿四方向选择与非阻塞 Evaluation（2026-07-28）
+
+- 用户实测认为凝视选择误差过大。Ubuntu `robot_terminal` 路径现已停止使用凝视坐标选轮盘：张嘴仍负责打开透明全屏四分区，MediaPipe 头姿俯仰/偏航负责选择，闭嘴负责提交。Windows 桌面/游戏路径未改。
+- 固定映射为：抬头 → `move_forward_step` / 前进一步，低头 → `move_backward_step` / 后退一步，向左转头 → `turn_left` / 左转，向右转头 → `turn_right` / 右转。默认俯仰阈值 `10°`、偏航阈值 `12°`；阈值内为中立死区并清除选区。双轴同时越界时，采用相对各自阈值偏移更大的方向。
+- `robot_wheel_config` 的事实来源现在精确要求 `layout: fullscreen_cardinal`、`selection: head_pose`、`yaw_threshold_degrees` 和 `pitch_threshold_degrees`。缺字段、未知字段、非数值、布尔值、非有限值或 `(0, 45]` 之外的阈值均直接失败；不回退到凝视或旧圆形轮盘。
+- Ubuntu 机器人路径不再启动 gaze mouse controller，也丢弃 `predicted_position` 的鼠标输出；透明全屏区域仅作为头部方向反馈，不发送系统键鼠事件。
+- GUI 的 Evaluation 已从 Qt 主线程移到受监督的 `QThread`。运行时配置标签页仍可切换查看；相机确认/切换和重新标定按钮因资源冲突明确禁用，Evaluation 按钮变为 `Stop Evaluation`。停止、ESC+Q 和关窗均保留线程/流水线所有权，直到 worker 完成；worker 原始异常和 traceback 会显示，线程启动失败会清理流水线并保留主错误。
+- README 中英文版和 `docs/ubuntu-robot-terminal-acceptance.md` 已同步为头姿选择、阈值、中立取消、后台 Evaluation 和按钮状态；旧“保持张嘴并用注视选择”由文档契约测试拒绝。
+
+验证记录：
+
+| 验证 | 结果 |
+|---|---|
+| 头姿选区、pipeline、动作契约、GUI focused | `211 passed / 1 skipped`，15.62s；skip 为需要无 compositor 隔离显示的条件测试 |
+| Xvfb + `xcompmgr` 透明层 | `4 passed / 2 skipped / 17 deselected`，2.74s；两个 skip 为无 compositor negative 用例 |
+| Xvfb 无 compositor fail-fast | `4 passed / 2 skipped / 17 deselected`，2.49s；两个 skip 为需要 `xcompmgr` 的 positive 用例 |
+| fresh 完整 Xvfb suite | `579 passed / 2 skipped / 1 deselected`，18.78s；两个 skip 均为 compositor 条件分支，Gemini 硬件测试未带开关因此 deselected |
+| Gemini 335 RGB 硬件 | `tests/test_orbbec_hardware.py --run-orbbec`：`1 passed`，8.35s；读取 100 帧、关闭、重开并再读 1 帧 |
+| 真人头姿与 GUI 视觉验收 | 未执行；抬头/低头/左右转头方向、10°/12° 舒适度、闭嘴提交和中立取消仍需用户面对 Gemini 335 验证 |

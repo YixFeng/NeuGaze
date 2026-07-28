@@ -472,6 +472,7 @@ def test_real_action_publishes_current_gaze_and_checks_overlay_failure(
 ):
     calls = []
     pipeline = object.__new__(RealAction)
+    pipeline.action_output = "desktop"
     pipeline.predicted_position = (123.9, 456.1)
     pipeline.mouse_dict = None
     pipeline.key_control = False

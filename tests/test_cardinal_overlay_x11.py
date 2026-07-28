@@ -93,36 +93,39 @@ def _wheel(monkeypatch, screen_size=(3840, 2160)):
     monkeypatch.setattr(overlay_module, "CardinalOverlay", make_overlay)
     subject = SimpleNamespace(
         screen_size=screen_size,
-        op_xy_generation=0,
-        published_op_xy_generation=0,
-        op_xy=(None, None),
+        head_angles={"pitch": 0.0, "yaw": 0.0},
     )
-    return FullscreenCardinalWheel(subject), subject, created[0]
+    return (
+        FullscreenCardinalWheel(
+            subject,
+            yaw_threshold_degrees=12.0,
+            pitch_threshold_degrees=10.0,
+        ),
+        subject,
+        created[0],
+    )
 
 
 @pytest.mark.parametrize(
-    ("point", "expected_index"),
+    ("head_pose", "expected_index"),
     [
-        ((1920, 1), 0),
-        ((1920, 2159), 1),
-        ((1, 1080), 2),
-        ((3839, 1080), 3),
-        ((1000, 200), 0),
-        ((2840, 1960), 1),
-        ((1920, 1080), None),
+        ((10.0, 0.0), 0),
+        ((-10.0, 0.0), 1),
+        ((0.0, 12.0), 2),
+        ((0.0, -12.0), 3),
+        ((9.9, 11.9), None),
+        ((15.0, 12.1), 0),
+        ((10.1, 18.0), 2),
     ],
 )
-def test_fullscreen_wheel_maps_the_entire_screen_by_normalized_direction(
-    monkeypatch, point, expected_index
+def test_fullscreen_wheel_maps_head_pose_with_neutral_dead_zone(
+    monkeypatch, head_pose, expected_index
 ):
     wheel, _, _ = _wheel(monkeypatch)
 
-    assert (
-        wheel.get_cardinal_from_screen_position(*point) == expected_index
-    )
+    assert wheel.get_cardinal_from_head_pose(*head_pose) == expected_index
 
-
-def test_fullscreen_wheel_shows_chinese_labels_and_tracks_latest_gaze(
+def test_fullscreen_wheel_shows_labels_and_tracks_latest_head_pose(
     monkeypatch,
 ):
     wheel, subject, overlay = _wheel(monkeypatch)
@@ -135,9 +138,8 @@ def test_fullscreen_wheel_shows_chinese_labels_and_tracks_latest_gaze(
 
     wheel.start()
     wheel.update_categories(actions)
-    subject.op_xy = (20, 1080)
-    subject.published_op_xy_generation = 1
-    wheel.check_op_xy()
+    subject.head_angles = {"pitch": 0.0, "yaw": 14.0}
+    wheel.check_head_pose()
     wheel.hide()
     wheel.stop()
 
@@ -150,6 +152,12 @@ def test_fullscreen_wheel_shows_chinese_labels_and_tracks_latest_gaze(
         ("stop", None),
     ]
 
+
+def test_fullscreen_wheel_rejects_nonfinite_head_pose(monkeypatch):
+    wheel, _, _ = _wheel(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="head pose must be finite"):
+        wheel.get_cardinal_from_head_pose(float("nan"), 0.0)
 
 def test_fullscreen_wheel_rejects_non_cardinal_or_incomplete_categories(
     monkeypatch,
@@ -181,8 +189,12 @@ def test_robot_observer_uses_fullscreen_overlay_without_creating_tk(
     )
 
     class RunOnceWheel:
-        def __init__(self, received_subject):
+        def __init__(self, received_subject, **configuration):
             assert received_subject is subject
+            assert configuration == {
+                "yaw_threshold_degrees": 12.0,
+                "pitch_threshold_degrees": 10.0,
+            }
             events.append("construct")
 
         def start(self):
@@ -200,6 +212,9 @@ def test_robot_observer_uses_fullscreen_overlay_without_creating_tk(
     wheel = ObserverWithSectorWheel(
         subject,
         layout="fullscreen_cardinal",
+        selection="head_pose",
+        yaw_threshold_degrees=12.0,
+        pitch_threshold_degrees=10.0,
     )
     wheel.should_run = True
 

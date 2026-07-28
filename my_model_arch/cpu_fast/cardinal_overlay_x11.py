@@ -410,16 +410,30 @@ class CardinalOverlay:
 
 
 class FullscreenCardinalWheel:
-    def __init__(self, subject):
+    def __init__(
+        self,
+        subject,
+        yaw_threshold_degrees,
+        pitch_threshold_degrees,
+    ):
         self.subject = subject
         self.screen_width, self.screen_height = subject.screen_size
         if self.screen_width <= 0 or self.screen_height <= 0:
             raise ValueError(
                 "fullscreen cardinal wheel requires a positive screen size"
             )
+        self.yaw_threshold_degrees = float(yaw_threshold_degrees)
+        self.pitch_threshold_degrees = float(pitch_threshold_degrees)
+        for field_name, value in (
+            ("yaw_threshold_degrees", self.yaw_threshold_degrees),
+            ("pitch_threshold_degrees", self.pitch_threshold_degrees),
+        ):
+            if not math.isfinite(value) or not 0 < value <= 45:
+                raise ValueError(
+                    f"{field_name} must be finite and in the interval (0, 45]"
+                )
         self.categories = ()
         self.selected_sector = None
-        self.last_op_xy_generation = subject.op_xy_generation
         self._selected_index = None
         self._overlay = CardinalOverlay(subject.screen_size)
 
@@ -438,7 +452,6 @@ class FullscreenCardinalWheel:
         self.categories = tuple(categories)
         self.selected_sector = None
         self._selected_index = None
-        self.last_op_xy_generation = self.subject.op_xy_generation
         self._overlay.show(
             tuple(
                 category.label
@@ -448,26 +461,27 @@ class FullscreenCardinalWheel:
             )
         )
 
-    def get_cardinal_from_screen_position(self, screen_x, screen_y):
-        center_x = self.screen_width / 2
-        center_y = self.screen_height / 2
-        dx = screen_x - center_x
-        dy = screen_y - center_y
-        if dx == 0 and dy == 0:
+    def get_cardinal_from_head_pose(self, pitch, yaw):
+        pitch = float(pitch)
+        yaw = float(yaw)
+        if not math.isfinite(pitch) or not math.isfinite(yaw):
+            raise RuntimeError(
+                f"head pose must be finite, got pitch={pitch!r}, yaw={yaw!r}"
+            )
+        pitch_ratio = abs(pitch) / self.pitch_threshold_degrees
+        yaw_ratio = abs(yaw) / self.yaw_threshold_degrees
+        if pitch_ratio < 1 and yaw_ratio < 1:
             return None
-        normalized_x = dx / center_x
-        normalized_y = dy / center_y
-        if abs(normalized_y) >= abs(normalized_x):
-            return 0 if dy < 0 else 1
-        return 2 if dx < 0 else 3
+        if pitch_ratio >= yaw_ratio:
+            return 0 if pitch > 0 else 1
+        return 2 if yaw > 0 else 3
 
-    def check_op_xy(self):
-        generation = self.subject.published_op_xy_generation
-        if generation <= self.last_op_xy_generation:
-            self._overlay.raise_if_failed()
-            return
-        self.last_op_xy_generation = generation
-        index = self.get_cardinal_from_screen_position(*self.subject.op_xy)
+    def check_head_pose(self):
+        head_angles = self.subject.head_angles
+        index = self.get_cardinal_from_head_pose(
+            head_angles["pitch"],
+            head_angles["yaw"],
+        )
         self.selected_sector = (
             self.categories[index] if index is not None else None
         )

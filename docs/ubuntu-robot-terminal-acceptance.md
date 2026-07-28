@@ -30,7 +30,7 @@ export NEUGAZE_ORBBEC_SDK_ROOT=/home/yixiao/Users/yixiao/Misc/OrbbecSDK_v2
 /home/yixiao/miniconda3/envs/neugaze/bin/python config_gui_cpu.py
 ```
 
-在 GUI 选择 **Orbbec**、选中 Gemini 335（型号/序列号）并确认预览；完成所需校准后点击 **Start Evaluation**。保持中立表情连续 2 分钟，预期没有任何 `[ROBOT_ACTION]` 或 `[ROBOT_ACTION_CANCELLED]` 行；记录起止时间和实际行数。
+在 GUI 选择 **Orbbec**、选中 Gemini 335（型号/序列号）并确认预览；完成所需校准后点击 **Start Evaluation**。确认按钮变为 **Stop Evaluation**，Camera Setup 里的相机切换与标定按钮禁用，但其他配置标签页仍可点击查看。保持中立表情连续 2 分钟，预期没有任何 `[ROBOT_ACTION]` 或 `[ROBOT_ACTION_CANCELLED]` 行；记录起止时间和实际行数。
 
 ## 直接表情：各 5 次
 
@@ -42,20 +42,20 @@ export NEUGAZE_ORBBEC_SDK_ROOT=/home/yixiao/Users/yixiao/Misc/OrbbecSDK_v2
 | 抬眉（`browInnerUp`） | 5 | `[ROBOT_ACTION] id=dance label=舞蹈 source=expression` | 未执行 |
 | 左眼单眨（`eyeBlinkLeft`，右眼不触发） | 5 | `[ROBOT_ACTION] id=stop label=停止 source=expression` | 未执行 |
 
-## 透明全屏四分区：各 5 次
+## 头部方向控制的透明全屏四分区：各 5 次
 
-每次均按真实身体序列执行：**张嘴并保持以打开透明全屏选择层 → 注视目标分区 → 闭嘴提交**。确认选择层覆盖整个主屏幕，桌面仍可见，只有对角分区线、四个中文动作标签和当前区域的低透明蓝色高亮；窗口不得抢焦点或拦截点击。当前 `numlock` 由 `jawOpen` 触发；选择层只使用内部凝视坐标，闭嘴时读取当前选区并提交。前、后、左、右每个方向都完整重复该序列 5 次；每次等待对应输出后再开始下一次。
+每次均按真实身体序列执行：**张嘴并保持以打开透明全屏选择层 → 头部从中立位向目标方向移动并保持 → 闭嘴提交**。确认选择层覆盖整个主屏幕，桌面仍可见，只有对角分区线、四个中文动作标签和当前方向的低透明蓝色高亮；窗口不得抢焦点或拦截点击。当前 `numlock` 由 `jawOpen` 触发；选择只使用 MediaPipe 头姿角，不使用注视坐标。默认俯仰阈值为 `10°`、偏航阈值为 `12°`。前、后、左、右每个方向都完整重复该序列 5 次；每次等待对应输出后再开始下一次。
 
-| 方向 | 次数 | 精确预期 Terminal 输出 | 状态 |
+| 身体动作 / 方向 | 次数 | 精确预期 Terminal 输出 | 状态 |
 |---|---:|---|---|
-| 前进 | 5 | `[ROBOT_ACTION] id=move_forward_step label=前进一步 source=wheel` | 未执行 |
-| 后退 | 5 | `[ROBOT_ACTION] id=move_backward_step label=后退一步 source=wheel` | 未执行 |
-| 左转 | 5 | `[ROBOT_ACTION] id=turn_left label=左转 source=wheel` | 未执行 |
-| 右转 | 5 | `[ROBOT_ACTION] id=turn_right label=右转 source=wheel` | 未执行 |
+| 抬头 / 前进 | 5 | `[ROBOT_ACTION] id=move_forward_step label=前进一步 source=wheel` | 未执行 |
+| 低头 / 后退 | 5 | `[ROBOT_ACTION] id=move_backward_step label=后退一步 source=wheel` | 未执行 |
+| 向左转头 / 左转 | 5 | `[ROBOT_ACTION] id=turn_left label=左转 source=wheel` | 未执行 |
+| 向右转头 / 右转 | 5 | `[ROBOT_ACTION] id=turn_right label=右转 source=wheel` | 未执行 |
 
 ### 无选区取消
 
-张嘴打开选择层后立即闭嘴，使其来不及接收新的凝视点。预期只出现：
+张嘴打开选择层后保持头部位于俯仰和偏航阈值以内的中立死区，再闭嘴。预期只出现：
 
 ```text
 [ROBOT_ACTION_CANCELLED] reason=no_selection source=wheel
@@ -69,7 +69,7 @@ export NEUGAZE_ORBBEC_SDK_ROOT=/home/yixiao/Users/yixiao/Misc/OrbbecSDK_v2
 
 ## 退出与资源检查
 
-在评估窗口按 **ESC+Q** 停止 evaluation；随后正常关闭 GUI。确认 GUI 已关闭后，再执行：
+点击 **Stop Evaluation**（也可按 **ESC+Q**）停止 evaluation；等待按钮恢复为 **Start Evaluation** 后正常关闭 GUI。确认 GUI 已关闭后，再执行：
 
 ```bash
 pgrep -af 'config_gui_cpu\.py|my_model_arch\.cpu_fast\.pipeline'

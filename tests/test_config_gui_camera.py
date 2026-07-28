@@ -35,6 +35,49 @@ def config_mapping():
     return mapping
 
 
+class FakeSignal:
+    def __init__(self):
+        self.callbacks = []
+
+    def connect(self, callback):
+        self.callbacks.append(callback)
+
+    def emit(self, *args):
+        for callback in self.callbacks:
+            callback(*args)
+
+
+class FakeEvaluationThread:
+    def __init__(self, pipeline, parent=None):
+        self.pipeline = pipeline
+        self.parent = parent
+        self.finished = FakeSignal()
+        self.failure_info = None
+        self.running = False
+        self.deleted = False
+
+    def start(self):
+        self.running = True
+        self.pipeline.start_evaluation()
+
+    def isRunning(self):
+        return self.running
+
+    def wait(self):
+        if self.running:
+            raise RuntimeError("cannot wait for a running fake evaluation")
+
+    def deleteLater(self):
+        self.deleted = True
+
+    def finish(self, failure_info=None):
+        if not self.running:
+            raise RuntimeError("fake evaluation is not running")
+        self.failure_info = failure_info
+        self.running = False
+        self.finished.emit()
+
+
 class FakeCamera:
     def __init__(self, frame=None, events=None):
         self.frame = (
@@ -532,12 +575,14 @@ def test_pipeline_receives_and_save_preserves_robot_configs(
     ],
 )
 def test_pipeline_camera_ownership_starts_after_preview_close(
-    window_factory, entrypoint, pipeline_event
+    window_factory, monkeypatch, entrypoint, pipeline_event
 ):
     events = []
     window, _ = window_factory()
     if entrypoint == "start_calibration":
         window.camera_platform = "win32"
+    else:
+        monkeypatch.setattr(gui, "EvaluationThread", FakeEvaluationThread)
     window.camera = FakeCamera(events=events)
     window.pipeline = SimpleNamespace(
         start_calibration=lambda: events.append("pipeline.calibrate"),
@@ -548,19 +593,196 @@ def test_pipeline_camera_ownership_starts_after_preview_close(
 
     assert events[:2] == ["close", pipeline_event]
     assert window.camera is None
+    if entrypoint == "start_evaluation":
+        window.evaluation_thread.finish()
 
 
 
-class FakeSignal:
-    def __init__(self):
-        self.callbacks = []
+def test_evaluation_thread_preserves_original_failure_info():
+    error = RuntimeError("evaluation worker failed")
 
-    def connect(self, callback):
-        self.callbacks.append(callback)
+    def fail():
+        raise error
 
-    def emit(self, *args):
-        for callback in self.callbacks:
-            callback(*args)
+    thread = gui.EvaluationThread(
+        SimpleNamespace(start_evaluation=fail)
+    )
+    thread.run()
+
+    assert thread.failure_info[0] is RuntimeError
+    assert thread.failure_info[1] is error
+    assert thread.failure_info[2] is error.__traceback__
+
+
+def test_evaluation_thread_start_failure_cleans_pipeline_and_reraises(
+    window_factory, monkeypatch
+):
+    messages = []
+    cleanup_calls = []
+    error = RuntimeError("QThread start failed")
+    window, _ = window_factory()
+    window.pipeline = SimpleNamespace(
+        quit_pipeline=lambda: cleanup_calls.append("quit")
+    )
+
+    class FailingEvaluationThread(FakeEvaluationThread):
+        instance = None
+
+        def __init__(self, pipeline, parent=None):
+            super().__init__(pipeline, parent)
+            FailingEvaluationThread.instance = self
+
+        def start(self):
+            raise error
+
+    monkeypatch.setattr(gui, "EvaluationThread", FailingEvaluationThread)
+    monkeypatch.setattr(
+        QMessageBox,
+        "critical",
+        lambda parent, title, text: messages.append((title, text)),
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        window.start_evaluation()
+
+    assert caught.value is error
+    assert cleanup_calls == ["quit"]
+    assert window.pipeline is None
+    assert window.evaluation_thread is None
+    assert FailingEvaluationThread.instance.deleted
+    assert len(messages) == 1
+    assert messages[0][1].startswith("Traceback (most recent call last):")
+    assert "RuntimeError: QThread start failed" in messages[0][1]
+    assert not window.evaluate_btn.isEnabled()
+
+
+def test_evaluation_runs_without_disabling_configuration_tabs(
+    window_factory, monkeypatch
+):
+    events = []
+    window, _ = window_factory()
+    window.pipeline = SimpleNamespace(
+        start_evaluation=lambda: events.append("evaluate"),
+        quit_pipeline=lambda: events.append("quit"),
+    )
+    monkeypatch.setattr(gui, "EvaluationThread", FakeEvaluationThread)
+
+    window.start_evaluation()
+
+    thread = window.evaluation_thread
+    assert events == ["evaluate"]
+    assert thread.isRunning()
+    assert window.tabs.isEnabled()
+    window.tabs.setCurrentIndex(1)
+    assert window.tabs.currentIndex() == 1
+    assert not window.camera_confirm_btn.isEnabled()
+    assert not window.camera_change_btn.isEnabled()
+    assert not window.calibrate_btn.isEnabled()
+    assert window.evaluate_btn.isEnabled()
+    assert window.evaluate_btn.text() == "Stop Evaluation"
+
+    window.start_evaluation()
+
+    assert events == ["evaluate", "quit"]
+    assert window.pipeline is not None
+    assert window.evaluation_thread is thread
+    assert not window.evaluate_btn.isEnabled()
+    assert window.evaluate_btn.text() == "Stopping Evaluation..."
+
+    thread.finish()
+
+    assert window.evaluation_thread is None
+    assert window.pipeline is None
+    assert thread.deleted
+    assert window.camera_change_btn.isEnabled()
+    assert window.calibrate_btn.isEnabled()
+    assert window.evaluate_btn.isEnabled()
+    assert window.evaluate_btn.text() == "Start Evaluation"
+
+
+def test_evaluation_failure_displays_original_traceback_and_disables_actions(
+    window_factory, monkeypatch
+):
+    messages = []
+    window, _ = window_factory()
+    window.pipeline = SimpleNamespace(start_evaluation=lambda: None)
+    monkeypatch.setattr(gui, "EvaluationThread", FakeEvaluationThread)
+    monkeypatch.setattr(
+        QMessageBox,
+        "critical",
+        lambda parent, title, text: messages.append((title, text)),
+    )
+    error = RuntimeError("evaluation frame failed")
+    try:
+        raise error
+    except RuntimeError:
+        failure_info = sys.exc_info()
+
+    window.start_evaluation()
+    thread = window.evaluation_thread
+    thread.finish(failure_info)
+
+    assert window.evaluation_thread is None
+    assert window.pipeline is None
+    assert thread.deleted
+    assert len(messages) == 1
+    assert messages[0][0] == "Evaluation Error"
+    assert messages[0][1].startswith("Traceback (most recent call last):")
+    assert "RuntimeError: evaluation frame failed" in messages[0][1]
+    assert not window.camera_change_btn.isEnabled()
+    assert not window.calibrate_btn.isEnabled()
+    assert not window.evaluate_btn.isEnabled()
+
+
+def test_close_event_is_rejected_while_evaluation_runs(
+    window_factory, monkeypatch
+):
+    warnings = []
+    window, _ = window_factory()
+    window.pipeline = SimpleNamespace(start_evaluation=lambda: None)
+    monkeypatch.setattr(gui, "EvaluationThread", FakeEvaluationThread)
+    monkeypatch.setattr(window, "show", lambda: None)
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda parent, title, text: warnings.append((title, text)),
+    )
+    window.start_evaluation()
+    thread = window.evaluation_thread
+    event = FakeCloseEvent()
+
+    window.closeEvent(event)
+
+    assert event.ignored
+    assert warnings == [
+        ("Evaluation Running", "Stop Evaluation before closing this window.")
+    ]
+    assert window.evaluation_thread is thread
+    assert window.pipeline is not None
+    thread.finish()
+
+
+def test_hotkey_requests_evaluation_stop_without_dropping_pipeline(
+    window_factory, monkeypatch
+):
+    events = []
+    window, _ = window_factory()
+    window.pipeline = SimpleNamespace(
+        start_evaluation=lambda: events.append("evaluate"),
+        quit_pipeline=lambda: events.append("quit"),
+    )
+    monkeypatch.setattr(gui, "EvaluationThread", FakeEvaluationThread)
+    monkeypatch.setattr(gui.desktop, "are_keys_down", lambda keys: True)
+    window.start_evaluation()
+    thread = window.evaluation_thread
+
+    window.check_hotkeys()
+
+    assert events == ["evaluate", "quit"]
+    assert window.pipeline is not None
+    assert window.evaluation_thread is thread
+    thread.finish()
+
 
 
 class FakeProcess:
@@ -1290,6 +1512,7 @@ def test_linux_calibration_model_is_used_by_the_next_evaluation(
         "my_model_arch.cpu_fast.pipeline",
         SimpleNamespace(RealAction=EvaluationPipeline),
     )
+    monkeypatch.setattr(gui, "EvaluationThread", FakeEvaluationThread)
 
     window._finish_linux_calibration(0, QProcess.NormalExit)
     window.start_evaluation()
@@ -1300,6 +1523,7 @@ def test_linux_calibration_model_is_used_by_the_next_evaluation(
     assert reused == []
     assert len(constructed) == 1
     assert constructed[0]["regression_model_path"] == expected
+    window.evaluation_thread.finish()
 
 
 def test_linux_calibration_completion_drains_pending_process_output(

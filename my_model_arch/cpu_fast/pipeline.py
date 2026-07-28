@@ -11,6 +11,7 @@
 # =============================================================================
 
 from collections.abc import Mapping
+from numbers import Real
 import copy
 import os
 import pathlib
@@ -2335,13 +2336,22 @@ class RealAction(BindKeys):
                 raise ValueError("robot_wheel_config.layout is required")
             if not isinstance(robot_wheel_config, Mapping):
                 raise TypeError("robot_wheel_config must be a mapping")
+            allowed_wheel_fields = (
+                "layout",
+                "selection",
+                "yaw_threshold_degrees",
+                "pitch_threshold_degrees",
+            )
             for field_name in robot_wheel_config:
-                if field_name != "layout":
+                if field_name not in allowed_wheel_fields:
                     raise ValueError(
                         f"robot_wheel_config.{field_name} is not allowed"
                     )
-            if "layout" not in robot_wheel_config:
-                raise ValueError("robot_wheel_config.layout is required")
+            for field_name in allowed_wheel_fields:
+                if field_name not in robot_wheel_config:
+                    raise ValueError(
+                        f"robot_wheel_config.{field_name} is required"
+                    )
             layout = robot_wheel_config["layout"]
             if not isinstance(layout, str):
                 raise TypeError("robot_wheel_config.layout must be a string")
@@ -2350,6 +2360,29 @@ class RealAction(BindKeys):
                     "robot_wheel_config.layout must equal "
                     "'fullscreen_cardinal'"
                 )
+            selection = robot_wheel_config["selection"]
+            if not isinstance(selection, str):
+                raise TypeError(
+                    "robot_wheel_config.selection must be a string"
+                )
+            if selection != "head_pose":
+                raise ValueError(
+                    "robot_wheel_config.selection must equal 'head_pose'"
+                )
+            for field_name in (
+                "yaw_threshold_degrees",
+                "pitch_threshold_degrees",
+            ):
+                value = robot_wheel_config[field_name]
+                if isinstance(value, bool) or not isinstance(value, Real):
+                    raise TypeError(
+                        f"robot_wheel_config.{field_name} must be a number"
+                    )
+                if not 0 < value <= 45:
+                    raise ValueError(
+                        f"robot_wheel_config.{field_name} must be in "
+                        "the interval (0, 45]"
+                    )
             validated_robot_wheel_config = copy.deepcopy(robot_wheel_config)
 
         super().__init__(
@@ -2439,10 +2472,7 @@ class RealAction(BindKeys):
 
     def move_mouse(self):
         if self.action_output == "robot_terminal":
-            predicted_position = self.predicted_position
-            if predicted_position is not None:
-                x, y = predicted_position
-                self.mouse_dict = {"x": x, "y": y}
+            self.mouse_dict = None
             return
         super().move_mouse()
 
@@ -2580,7 +2610,8 @@ class RealAction(BindKeys):
             self.gaze_mouse_controller.update_screen_size(
                 self.screen_size[0], self.screen_size[1]
             )
-            self.gaze_mouse_controller.start()
+            if self.action_output == "desktop":
+                self.gaze_mouse_controller.start()
 
     def _discard_actions(self):
         while True:
@@ -2856,8 +2887,10 @@ class RealAction(BindKeys):
         # keys_dict, shared_keys_state_dict,shared_keys_time_dict,mouse_dict,head_dict
         self.decode()
         t2 = time.time()
-        if self.mouse_dict is not None:
-            self.gaze_mouse_controller.update_gaze(self.mouse_dict['x'], self.mouse_dict['y'])
+        if self.action_output == "desktop" and self.mouse_dict is not None:
+            self.gaze_mouse_controller.update_gaze(
+                self.mouse_dict['x'], self.mouse_dict['y']
+            )
         self._drain_actions()
 
 
@@ -3180,11 +3213,17 @@ class ObserverWithSectorWheel:
         subject: RealAction,
         radius=800,
         layout=None,
+        selection=None,
+        yaw_threshold_degrees=None,
+        pitch_threshold_degrees=None,
         **sector_wheel_config,
     ):
         self.subject = subject
         self.radius = radius
         self.layout = layout
+        self.selection = selection
+        self.yaw_threshold_degrees = yaw_threshold_degrees
+        self.pitch_threshold_degrees = pitch_threshold_degrees
         self.sector_wheel_config = sector_wheel_config
         self.lock = Lock()
         self._thread = None
@@ -3270,7 +3309,15 @@ class ObserverWithSectorWheel:
                     )
                 from .cardinal_overlay_x11 import FullscreenCardinalWheel
 
-                self.sector_wheel = FullscreenCardinalWheel(self.subject)
+                if self.selection != "head_pose":
+                    raise RuntimeError(
+                        "robot terminal requires head_pose wheel selection"
+                    )
+                self.sector_wheel = FullscreenCardinalWheel(
+                    self.subject,
+                    yaw_threshold_degrees=self.yaw_threshold_degrees,
+                    pitch_threshold_degrees=self.pitch_threshold_degrees,
+                )
                 self.sector_wheel.start()
                 while self.should_run and not self.subject.quit:
                     self.sector_wheel_main_loop(schedule_next=False)
@@ -3349,10 +3396,10 @@ class ObserverWithSectorWheel:
                                 )
                                 self.is_hidden = False
                             elif self.subject.action_output == "robot_terminal":
-                                self.sector_wheel.check_op_xy()
+                                self.sector_wheel.check_head_pose()
                         elif not self.is_hidden:
                             if self.subject.action_output == "robot_terminal":
-                                self.sector_wheel.check_op_xy()
+                                self.sector_wheel.check_head_pose()
                             self.sector_wheel.hide()
                             selected = self.sector_wheel.selected_sector
                             action = self.subject.make_wheel_action(selected)

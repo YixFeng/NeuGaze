@@ -13,9 +13,11 @@ import yaml
 
 from my_model_arch.cpu_fast import desktop
 from my_model_arch.cpu_fast.camera import CameraConfig
+from my_model_arch.cpu_fast import cardinal_overlay_x11 as cardinal_module
 from my_model_arch.cpu_fast import eye_gaze_mouse_control as controller_module
 from my_model_arch.cpu_fast import pipeline as pipeline_module
 from my_model_arch.cpu_fast.keyboard_utils import Action, OpType
+from my_model_arch.cpu_fast.cardinal_overlay_x11 import FullscreenCardinalWheel
 from my_model_arch.cpu_fast.robot_actions import RobotAction
 from my_model_arch.cpu_fast.pipeline import (
     BindKeys,
@@ -2104,7 +2106,10 @@ def test_default_yaml_builds_fullscreen_robot_and_fixed_windows_wheel(
     robot_wheel_config["layout"] = "changed_after_construction"
     assert linux_pipeline.wheel.layout == "fullscreen_cardinal"
     assert linux_pipeline.robot_wheel_config == {
-        "layout": "fullscreen_cardinal"
+        "layout": "fullscreen_cardinal",
+        "selection": "head_pose",
+        "yaw_threshold_degrees": 12.0,
+        "pitch_threshold_degrees": 10.0,
     }
     assert windows_pipeline.wheel.radius == 1000
 
@@ -2116,16 +2121,55 @@ def test_default_yaml_builds_fullscreen_robot_and_fixed_windows_wheel(
         ([], TypeError, r"robot_wheel_config"),
         ({}, ValueError, r"robot_wheel_config\.layout"),
         (
-            {"layout": "fullscreen_cardinal", "font": "Arial"},
+            {
+                "layout": "fullscreen_cardinal",
+                "selection": "head_pose",
+                "yaw_threshold_degrees": 12.0,
+                "pitch_threshold_degrees": 10.0,
+                "font": "Arial",
+            },
             ValueError,
             r"robot_wheel_config\.font",
         ),
-        ({"layout": True}, TypeError, r"robot_wheel_config\.layout"),
-        ({"layout": 400}, TypeError, r"robot_wheel_config\.layout"),
         (
-            {"layout": "circle"},
-            ValueError,
+            {
+                "layout": True,
+                "selection": "head_pose",
+                "yaw_threshold_degrees": 12.0,
+                "pitch_threshold_degrees": 10.0,
+            },
+            TypeError,
             r"robot_wheel_config\.layout",
+        ),
+        (
+            {
+                "layout": "fullscreen_cardinal",
+                "selection": "gaze",
+                "yaw_threshold_degrees": 12.0,
+                "pitch_threshold_degrees": 10.0,
+            },
+            ValueError,
+            r"robot_wheel_config\.selection",
+        ),
+        (
+            {
+                "layout": "fullscreen_cardinal",
+                "selection": "head_pose",
+                "yaw_threshold_degrees": True,
+                "pitch_threshold_degrees": 10.0,
+            },
+            TypeError,
+            r"robot_wheel_config\.yaw_threshold_degrees",
+        ),
+        (
+            {
+                "layout": "fullscreen_cardinal",
+                "selection": "head_pose",
+                "yaw_threshold_degrees": 46.0,
+                "pitch_threshold_degrees": 10.0,
+            },
+            ValueError,
+            r"robot_wheel_config\.yaw_threshold_degrees",
         ),
     ],
 )
@@ -2148,7 +2192,6 @@ def test_linux_rejects_invalid_robot_wheel_config_at_construction(
             configuration=mapping["key_config"],
             **common,
         )
-
 
 def test_windows_does_not_require_or_consume_robot_wheel_config(monkeypatch):
     mapping = yaml.safe_load(
@@ -2282,9 +2325,10 @@ def test_real_action_rejects_robot_desktop_mouse_config(
     assert captured == []
 
 
-def test_robot_move_mouse_keeps_gaze_internal(monkeypatch):
+def test_robot_move_mouse_discards_gaze_prediction(monkeypatch):
     pipeline = _robot_pipeline_without_constructor()
     pipeline.predicted_position = (321, 123)
+    pipeline.mouse_dict = {"x": 1, "y": 2}
     monkeypatch.setattr(
         desktop,
         "get_pointer_position",
@@ -2293,7 +2337,7 @@ def test_robot_move_mouse_keeps_gaze_internal(monkeypatch):
 
     pipeline.move_mouse()
 
-    assert pipeline.mouse_dict == {"x": 321, "y": 123}
+    assert pipeline.mouse_dict is None
 
 
 def test_robot_quit_does_not_release_desktop_input(monkeypatch):
@@ -2312,7 +2356,29 @@ def test_robot_quit_does_not_release_desktop_input(monkeypatch):
     assert calls == ["wheel.stop", "destroy"]
 
 
-def test_robot_actions_emit_seven_lines_without_desktop_input(
+def _fullscreen_head_wheel(monkeypatch, pipeline):
+    overlay = SimpleNamespace(
+        show=lambda labels: None,
+        select=lambda index: None,
+        hide=lambda: None,
+        raise_if_failed=lambda: None,
+        stop=lambda: None,
+    )
+    monkeypatch.setattr(
+        cardinal_module,
+        "CardinalOverlay",
+        lambda screen_size: overlay,
+    )
+    pipeline.screen_size = (1920, 1080)
+    pipeline.head_angles = {"pitch": 0.0, "yaw": 0.0}
+    return FullscreenCardinalWheel(
+        pipeline,
+        yaw_threshold_degrees=12.0,
+        pitch_threshold_degrees=10.0,
+    )
+
+
+def test_robot_actions_emit_seven_lines_from_expressions_and_head_pose(
     monkeypatch, capsys
 ):
     pipeline = _robot_pipeline_without_constructor()
@@ -2344,25 +2410,7 @@ def test_robot_actions_emit_seven_lines_without_desktop_input(
         state_dict={"numlock": {"v": True}}
     )
 
-    sector_wheel = object.__new__(SectorWheel)
-    sector_wheel.radius = 400
-    sector_wheel.subject = pipeline
-    sector_wheel.font = "Arial"
-    sector_wheel.font_size = 12
-    sector_wheel.canvas = SimpleNamespace(
-        delete=lambda *args: None,
-        create_arc=lambda *args, **kwargs: None,
-        create_text=lambda *args, **kwargs: None,
-        after=lambda *args: None,
-    )
-    sector_wheel.messagebox = SimpleNamespace(
-        winfo_rootx=lambda: 560,
-        winfo_rooty=lambda: 140,
-        deiconify=lambda: None,
-        withdraw=lambda: None,
-    )
-    sector_wheel.last_op_xy = pipeline.op_xy
-
+    sector_wheel = _fullscreen_head_wheel(monkeypatch, pipeline)
     wheel = object.__new__(ObserverWithSectorWheel)
     wheel.should_run = True
     wheel._thread = None
@@ -2376,36 +2424,19 @@ def test_robot_actions_emit_seven_lines_without_desktop_input(
     wheel.root = SimpleNamespace(after=lambda *args: None)
     pipeline.wheel = wheel
 
-    controller = controller_module.GazeMouseController(
-        pipeline,
-        screen_width=1920,
-        screen_height=1080,
-        desktop_pointer_control=False,
-    )
-    monkeypatch.setattr(
-        controller_module.time,
-        "sleep",
-        lambda duration: setattr(controller, "running", False),
-    )
-
-    for gaze, expected_action in (
-        ((960, 240), wheel_actions[0]),
-        ((960, 840), wheel_actions[1]),
-        ((660, 540), wheel_actions[2]),
-        ((1260, 540), wheel_actions[3]),
+    for head_pose, expected_action in (
+        ({"pitch": 11.0, "yaw": 0.0}, wheel_actions[0]),
+        ({"pitch": -11.0, "yaw": 0.0}, wheel_actions[1]),
+        ({"pitch": 0.0, "yaw": 13.0}, wheel_actions[2]),
+        ({"pitch": 0.0, "yaw": -13.0}, wheel_actions[3]),
     ):
         wheel.is_hidden = True
         pipeline.keys_dict.state_dict["numlock"]["v"] = True
         wheel.sector_wheel_main_loop()
         assert wheel.is_hidden is False
 
-        controller.running = True
-        controller.update_gaze(*gaze)
-        controller._control_loop()
-        controller.raise_if_failed()
-        assert pipeline.op_xy == gaze
-
-        sector_wheel.check_op_xy()
+        pipeline.head_angles = head_pose
+        sector_wheel.check_head_pose()
         assert sector_wheel.selected_sector is expected_action
 
         pipeline.keys_dict.state_dict["numlock"]["v"] = False
@@ -2426,104 +2457,48 @@ def test_robot_actions_emit_seven_lines_without_desktop_input(
     ]
 
 
-def test_robot_wheel_consumes_same_gaze_in_two_fresh_open_cycles(
+def test_robot_wheel_consumes_held_head_pose_in_fresh_open_cycles(
     monkeypatch, capsys
 ):
     pipeline = _robot_pipeline_without_constructor()
     pipeline.quit = False
-    pipeline.mouse_control = True
     pipeline.action_queue = queue.Queue()
-    wheel_actions = [
-        RobotAction("move_forward_step", "前进一步", "wheel"),
-        RobotAction("move_backward_step", "后退一步", "wheel"),
-        RobotAction("turn_left", "左转", "wheel"),
-        RobotAction("turn_right", "右转", "wheel"),
-    ]
-    pipeline.wheel_categories = wheel_actions
+    selected = RobotAction("turn_left", "左转", "wheel")
+    pipeline.wheel_categories = [selected] * 4
     pipeline.key_keeps_wheel_opening = "numlock"
     pipeline.wheel_layout_type = "cardinal"
     pipeline.keys_dict = SimpleNamespace(
         state_dict={"numlock": {"v": True}}
     )
-
-    sector_wheel = object.__new__(SectorWheel)
-    sector_wheel.radius = 400
-    sector_wheel.subject = pipeline
-    sector_wheel.font = "Arial"
-    sector_wheel.font_size = 12
-    sector_wheel.canvas = SimpleNamespace(
-        delete=lambda *args: None,
-        create_arc=lambda *args, **kwargs: None,
-        create_text=lambda *args, **kwargs: None,
-        after=lambda *args: None,
-    )
-    sector_wheel.messagebox = SimpleNamespace(
-        winfo_rootx=lambda: 560,
-        winfo_rooty=lambda: 140,
-        deiconify=lambda: None,
-        withdraw=lambda: None,
-    )
-    sector_wheel.last_op_xy = pipeline.op_xy
-    sector_wheel.last_op_xy_generation = pipeline.op_xy_generation
-
+    sector_wheel = _fullscreen_head_wheel(monkeypatch, pipeline)
     wheel = object.__new__(ObserverWithSectorWheel)
     wheel.should_run = True
-    wheel._thread = None
     wheel._worker_error = None
     wheel.lock = threading.Lock()
-    wheel.current_categories = None
-    wheel.selected_sector = None
     wheel.is_hidden = True
     wheel.subject = pipeline
     wheel.sector_wheel = sector_wheel
     wheel.root = SimpleNamespace(after=lambda *args: None)
-    pipeline.wheel = wheel
 
-    controller = controller_module.GazeMouseController(
-        pipeline,
-        screen_width=1920,
-        screen_height=1080,
-        desktop_pointer_control=False,
-    )
-    monkeypatch.setattr(
-        controller_module.time,
-        "sleep",
-        lambda duration: setattr(controller, "running", False),
-    )
-
-    def run_cycle(*, gaze_timing):
-        if gaze_timing == "before_open":
-            controller.update_gaze(660, 540)
-
+    def run_cycle(head_pose):
+        pipeline.head_angles = head_pose
         pipeline.keys_dict.state_dict["numlock"]["v"] = True
         wheel.sector_wheel_main_loop()
         assert wheel.is_hidden is False
-        sector_wheel.check_op_xy()
-
-        if gaze_timing == "after_open":
-            controller.update_gaze(660, 540)
-
-        if gaze_timing != "none":
-            controller.running = True
-            controller._control_loop()
-            controller.raise_if_failed()
-            sector_wheel.check_op_xy()
-
         pipeline.keys_dict.state_dict["numlock"]["v"] = False
         wheel.sector_wheel_main_loop()
         assert wheel.is_hidden is True
         pipeline._drain_actions()
 
-    run_cycle(gaze_timing="after_open")
-    run_cycle(gaze_timing="after_open")
-    run_cycle(gaze_timing="before_open")
+    run_cycle({"pitch": 0.0, "yaw": 14.0})
+    run_cycle({"pitch": 0.0, "yaw": 14.0})
+    run_cycle({"pitch": 0.0, "yaw": 0.0})
 
     assert capsys.readouterr().out.splitlines() == [
         "[ROBOT_ACTION] id=turn_left label=左转 source=wheel",
         "[ROBOT_ACTION] id=turn_left label=左转 source=wheel",
         "[ROBOT_ACTION_CANCELLED] reason=no_selection source=wheel",
     ]
-
 
 
 def _robot_pipeline_without_constructor():
@@ -2754,7 +2729,7 @@ def test_robot_wheel_selection_keeps_robot_action_identity_and_emits_once(
     wheel.subject = pipeline
     wheel.sector_wheel = SimpleNamespace(
         selected_sector=selected,
-        check_op_xy=lambda: None,
+        check_head_pose=lambda: None,
         hide=lambda: setattr(wheel, "should_run", False),
     )
     wheel.root = SimpleNamespace(after=lambda *args: None)
@@ -2785,7 +2760,7 @@ def test_robot_wheel_cancel_is_silent_except_for_explicit_cancel_line(capsys):
     wheel.subject = pipeline
     wheel.sector_wheel = SimpleNamespace(
         selected_sector=None,
-        check_op_xy=lambda: None,
+        check_head_pose=lambda: None,
         hide=lambda: setattr(wheel, "should_run", False),
     )
     wheel.root = SimpleNamespace(after=lambda *args: None)

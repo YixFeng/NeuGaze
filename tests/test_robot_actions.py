@@ -209,12 +209,17 @@ def test_resolve_robot_action_returns_label_and_rejects_unknown_id(valid_config)
                 "| **仅闭左眼** | `eyeBlinkLeft > 0.6`",
             ),
             (
-                "| **上方** | `move_forward_step` | **前进一步** |",
-                "| **下方** | `move_backward_step` | **后退一步** |",
-                "| **左方** | `turn_left` | **左转** |",
-                "| **右方** | `turn_right` | **右转** |",
+                "| **抬头** | `move_forward_step` | **前进一步** |",
+                "| **低头** | `move_backward_step` | **后退一步** |",
+                "| **向左转头** | `turn_left` | **左转** |",
+                "| **向右转头** | `turn_right` | **右转** |",
             ),
-            ("鼠标左键点击", "W/S键", "### 🎮 控制模式"),
+            (
+                "鼠标左键点击",
+                "W/S键",
+                "### 🎮 控制模式",
+                "保持张嘴并用注视选择",
+            ),
         ),
         (
             "README.md",
@@ -225,12 +230,17 @@ def test_resolve_robot_action_returns_label_and_rejects_unknown_id(valid_config)
                 "| **Close only the left eye** | `eyeBlinkLeft > 0.6`",
             ),
             (
-                "| **Top** | `move_forward_step` | **前进一步** |",
-                "| **Bottom** | `move_backward_step` | **后退一步** |",
-                "| **Left** | `turn_left` | **左转** |",
-                "| **Right** | `turn_right` | **右转** |",
+                "| **Up** | `move_forward_step` | **前进一步** |",
+                "| **Down** | `move_backward_step` | **后退一步** |",
+                "| **Turn left** | `turn_left` | **左转** |",
+                "| **Turn right** | `turn_right` | **右转** |",
             ),
-            ("Left mouse click", "W/S keys", "### 🎮 Control Modes"),
+            (
+                "Left mouse click",
+                "W/S keys",
+                "### 🎮 Control Modes",
+                "select with gaze",
+            ),
         ),
     ],
 )
@@ -261,6 +271,9 @@ def test_readmes_document_current_robot_action_contract(
         in text
     )
     assert "fullscreen_cardinal" in text
+    assert "selection: head_pose" in text
+    assert "yaw_threshold_degrees: 12.0" in text
+    assert "pitch_threshold_degrees: 10.0" in text
     assert "radius: 400" not in text
     assert "regression_model_path" in text
     for obsolete in obsolete_rows:
