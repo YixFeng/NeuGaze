@@ -13,9 +13,8 @@ _START_TIMEOUT_SECONDS = 5.0
 _STOP_TIMEOUT_SECONDS = 5.0
 _POLL_INTERVAL_MS = 16
 _SELECTION_STABLE_FRAMES = 5
-_NEUTRAL_OPENER_STABLE_FRAMES = 3
-_OPENER_RELEASE_STABLE_FRAMES = 5
-_CANCEL_STABLE_FRAMES = 30
+_NEUTRAL_RELEASE_STABLE_FRAMES = 3
+_CONFIRMATION_STABLE_FRAMES = 5
 
 
 def _physical_screen_size(screen):
@@ -441,9 +440,8 @@ class FullscreenCardinalWheel:
         self._selected_index = None
         self._candidate_index = None
         self._candidate_frames = 0
-        self._neutral_opener_frames = 0
-        self._released_frames = 0
-        self._cancel_frames = 0
+        self._neutral_release_frames = 0
+        self._confirmation_frames = 0
         self._confirmation_armed = False
         self._overlay = CardinalOverlay(subject.screen_size)
 
@@ -464,9 +462,8 @@ class FullscreenCardinalWheel:
         self._selected_index = None
         self._candidate_index = None
         self._candidate_frames = 0
-        self._neutral_opener_frames = 0
-        self._released_frames = 0
-        self._cancel_frames = 0
+        self._neutral_release_frames = 0
+        self._confirmation_frames = 0
         self._confirmation_armed = False
         self._overlay.show(
             tuple(
@@ -503,9 +500,8 @@ class FullscreenCardinalWheel:
         if not face_detected:
             self._candidate_index = None
             self._candidate_frames = 0
-            self._neutral_opener_frames = 0
-            self._released_frames = 0
-            self._cancel_frames = 0
+            self._neutral_release_frames = 0
+            self._confirmation_frames = 0
             self._confirmation_armed = False
             self._overlay.raise_if_failed()
             return None
@@ -516,9 +512,8 @@ class FullscreenCardinalWheel:
 
         index = self.get_cardinal_from_head_pose(pitch, yaw)
         if index is not None:
-            self._neutral_opener_frames = 0
-            self._released_frames = 0
-            self._cancel_frames = 0
+            self._neutral_release_frames = 0
+            self._confirmation_frames = 0
             self._confirmation_armed = False
             if index == self._candidate_index:
                 self._candidate_frames += 1
@@ -538,35 +533,28 @@ class FullscreenCardinalWheel:
 
         self._candidate_index = None
         self._candidate_frames = 0
-        if self.selected_sector is None:
-            if opener_active:
-                self._cancel_frames = 0
-            else:
-                self._cancel_frames += 1
-                if self._cancel_frames >= _CANCEL_STABLE_FRAMES:
-                    return "cancel"
-            self._overlay.raise_if_failed()
-            return None
-
-        self._cancel_frames = 0
-        if opener_active:
-            self._neutral_opener_frames += 1
-            self._released_frames = 0
+        if not opener_active:
+            self._neutral_release_frames += 1
+            self._confirmation_frames = 0
             if (
-                self._neutral_opener_frames
-                >= _NEUTRAL_OPENER_STABLE_FRAMES
+                self._neutral_release_frames
+                >= _NEUTRAL_RELEASE_STABLE_FRAMES
             ):
                 self._confirmation_armed = True
             self._overlay.raise_if_failed()
             return None
 
-        self._neutral_opener_frames = 0
-        if self._confirmation_armed:
-            self._released_frames += 1
-            if self._released_frames >= _OPENER_RELEASE_STABLE_FRAMES:
-                return "submit"
-        else:
-            self._released_frames = 0
+        self._neutral_release_frames = 0
+        if not self._confirmation_armed:
+            self._confirmation_frames = 0
+            self._overlay.raise_if_failed()
+            return None
+
+        self._confirmation_frames += 1
+        if self._confirmation_frames >= _CONFIRMATION_STABLE_FRAMES:
+            if self.selected_sector is None:
+                return "cancel"
+            return "submit"
         self._overlay.raise_if_failed()
         return None
 

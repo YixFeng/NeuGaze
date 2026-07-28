@@ -3517,6 +3517,7 @@ class ObserverWithSectorWheel:
                                             )
                                         self.is_hidden = True
                                         self.active_robot_wheel_key = None
+                                        self.subject.key_keeps_wheel_opening = None
                         elif key_is_active:
                             if self.is_hidden:
                                 desktop.move_pointer(

@@ -213,35 +213,46 @@ def test_resolve_robot_action_returns_label_and_rejects_unknown_id(valid_config)
             "README-CN.md",
             (
                 "方向必须连续稳定 5 个有效处理帧",
-                "回到阈值内的中立死区，同时继续张嘴",
-                "连续 5 个有效帧识别为闭嘴",
+                "第一次张嘴只负责打开轮盘",
+                "转头选择期间不需要持续张嘴",
+                "回到阈值内的中立死区并保持闭嘴",
+                "再次张嘴连续 5 个有效帧",
+                "转头选择期间不需要持续抬眉",
+                "再次抬眉连续 5 个有效帧",
                 "人脸或 blendshape 丢失不会提交",
-                "连续 3 个有效帧保持抬眉",
-                "连续 5 个有效帧放松眉毛",
             ),
             (
                 "保持目标方向并闭嘴确认",
                 "中立死区会清除选区",
+                "同时继续张嘴",
+                "连续 5 个有效帧识别为闭嘴",
+                "连续 3 个有效帧保持抬眉",
+                "连续 5 个有效帧放松眉毛",
             ),
         ),
         (
             "README.md",
             (
                 "stable for 5 valid processing frames",
-                "return your head to the neutral dead zone while keeping your mouth open",
-                "after 5 valid closed-mouth frames",
+                "This first activation only opens the wheel",
+                "You do not need to keep your mouth open while selecting",
+                "Open your mouth again while centered",
+                "you do not need to keep the brows raised while selecting",
+                "raise them again for 5 valid frames",
                 "Loss of the face or blendshapes never submits",
-                "keep the brows raised for 3 valid frames",
-                "relax them for 5 valid frames",
             ),
             (
                 "Hold the target direction and close your mouth to confirm",
                 "Returning to the neutral dead zone clears the selection",
+                "while keeping your mouth open",
+                "after 5 valid closed-mouth frames",
+                "keep the brows raised for 3 valid frames",
+                "relax them for 5 valid frames",
             ),
         ),
     ],
 )
-def test_readmes_document_guarded_head_pose_confirmation(
+def test_readmes_document_repeated_expression_confirmation(
     filename, required_rows, obsolete_rows
 ):
     text = (Path(__file__).parents[1] / filename).read_text(

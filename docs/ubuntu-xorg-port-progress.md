@@ -644,3 +644,13 @@ missing frame、metadata、format、dimensions 与 byte-length 显式合同错�
 - README 中英文版与中文真人验收文档已同步。
 - 验证结果：focused 状态机/pipeline/动作/文档 `162 passed / 3 deselected`；fresh 完整 Xvfb `597 passed / 2 skipped / 1 deselected`；带 `xcompmgr` 的透明层正向集成 `4 passed / 2 conditional skips / 20 deselected`。
 - 真实 `DISPLAY=:1` + Gemini 335 Evaluation 中立运行 5 秒，SIGTERM exit 0 且无 `[ROBOT_ACTION]`/取消输出；随后相机再次读取 100 帧、关闭、重开并读取 1 帧，`1 passed`。抬眉与四方向的真人动作识别仍须按中文验收文档执行。
+
+## 同表情二次触发确认（2026-07-29）
+
+- 用户指出旧“保持开启表情 → 释放提交”来自凝视选区时代；头姿选区不需要用持续表情维持轮盘，因此张嘴和抬眉统一改为同一表情的两次独立触发。
+- 当前交互为：第一次张嘴/抬眉打开轮盘并释放；表情释放后转头，方向连续稳定 5 帧锁定；头部回到中立且表情保持未触发 3 帧；再次张嘴/抬眉连续 5 帧立即提交，不要求提交后再次释放。
+- 未锁定方向时，同样以“中立释放 3 帧 → 第二次触发 5 帧”输出显式取消。方向未回正、第一次表情持续保持、人脸/blendshape 丢失或另一个轮盘的观测都不能提交。
+- 提交或取消后，observer 显式清除当前开启表达式 ID；确认表情即使仍处于激活状态也不会立即重新打开轮盘。必须先释放并产生下一次上升沿，才能开启新会话。
+- Windows 桌面轮盘路径未改；README 中英文版和中文真人验收文档已同步。
+- 验证结果：focused 状态机/pipeline/动作/文档 `164 passed / 3 deselected`；fresh 完整 Xvfb `599 passed / 2 skipped / 1 deselected`；带 `xcompmgr` 的透明层正向集成 `4 passed / 2 conditional skips / 22 deselected`。
+- 真实 `DISPLAY=:1` + Gemini 335 Evaluation 中立运行 5 秒，SIGTERM exit 0 且无 `[ROBOT_ACTION]`/取消输出；随后相机读取 100 帧、关闭、重开并读取 1 帧，`1 passed`。真实“打开 → 释放 → 选向 → 回正 → 再次触发”动作序列仍须用户按中文验收文档执行。

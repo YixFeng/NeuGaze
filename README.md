@@ -244,8 +244,8 @@ python config_gui_cpu.py
 
 - Click "Start Evaluation". Recognition runs in a separate process, so configuration tabs remain viewable and interactive. Camera switching and recalibration controls are disabled while the camera is in use, and the button changes to "Stop Evaluation"
 - After one successful calibration, the GUI stores the generated `model.pkl` path in `regression_model_path`; later launches can go directly to "Start Evaluation" without recalibrating every time
-- Open your mouth to show the forward/backward/turn selector, hold a head direction until it locks, return to neutral while keeping your mouth open, and then close your mouth to confirm
-- Raise your inner brows to show the wave/dance/strafe selector; return to neutral while keeping the brows raised, then relax them to confirm
+- Open your mouth to show the forward/backward/turn selector; release it, select with head direction, return to neutral, and open your mouth again to submit
+- Raise your inner brows to show the wave/dance/strafe selector; relax them, select with head direction, return to neutral, and raise them again to submit
 - Pucker your lips or close only your left eye to trigger direct robot action labels
 - Ubuntu prints `[ROBOT_ACTION]` lines and does not emit keyboard or mouse events
 
@@ -269,9 +269,9 @@ Ubuntu robot-output contract:
 
 | User action | MediaPipe condition | Internal expression ID | Current Ubuntu behavior |
 |-------------|---------------------|------------------------|-------------------------|
-| **Open mouth** | `jawOpen > 0.4`, with no substantial left/right jaw shift | `numlock` | Open the full-screen selector; lock a direction, return to neutral while still open, then close to confirm |
+| **Open mouth** | `jawOpen > 0.4`, with no substantial left/right jaw shift | `numlock` | The first activation opens the full-screen selector; lock a direction, return to neutral, then open again to submit |
 | **Pucker lips** | `mouthPucker > 0.97` and `mouthFunnel < 0.2` | `left_click` | Emit `wave` / **挥手** |
-| **Raise inner brows** | `browInnerUp > 0.8` | `num8` | Open the full-screen selector; lock a direction, return to neutral while still raised, then relax to confirm |
+| **Raise inner brows** | `browInnerUp > 0.8` | `num8` | The first activation opens the full-screen selector; lock a direction, return to neutral, then raise again to submit |
 | **Close only the left eye** | `eyeBlinkLeft > 0.6` and `eyeBlinkRight < 0.25` | `extra` | Emit `stop` / **停止** |
 
 `left_click`, `num8`, `extra`, and `numlock` are retained internal expression IDs;
@@ -327,11 +327,11 @@ repeat the output.
 
 Usage sequence:
 
-1. Open your mouth to trigger `numlock` and show a transparent selector over the entire primary screen.
-2. Move your head up, down, left, or right from neutral. After pitch exceeds `18°` or yaw exceeds `12°`, the direction must remain stable for 5 valid processing frames before it locks and highlights. If both axes exceed their thresholds, the larger threshold-normalized movement wins. A temporary `jawOpen` drop while turning cannot submit an action.
-3. After the direction highlights, return your head to the neutral dead zone while keeping your mouth open. Closing is armed only after 3 valid neutral frames recognize the mouth as open; the locked highlight remains visible while centered.
-4. Close your mouth while centered. Exactly one locked action is emitted after 5 valid closed-mouth frames. Loss of the face or blendshapes never submits and disarms closing, so step 3 must be repeated after tracking recovers.
-5. With no locked direction, keeping the head neutral and the mouth closed for 30 valid frames emits only an explicit cancellation line.
+1. Open your mouth once to trigger `numlock` and show a transparent selector over the entire primary screen. This first activation only opens the wheel, so you may close your mouth immediately.
+2. You do not need to keep your mouth open while selecting. Move your head up, down, left, or right from neutral. After pitch exceeds `18°` or yaw exceeds `12°`, the direction must remain stable for 5 valid processing frames before it locks and highlights. If both axes exceed their thresholds, the larger threshold-normalized movement wins.
+3. After the direction highlights, return your head to the neutral dead zone with your mouth closed. Three valid neutral released frames establish that the first activation has ended; the locked highlight remains visible while centered.
+4. Open your mouth again while centered. Exactly one locked action is emitted after 5 valid active frames, with no final close required. Loss of the face or blendshapes never submits and disarms confirmation, so step 3 must be repeated after tracking recovers.
+5. With no locked direction, 3 valid neutral released frames followed by a second 5-frame mouth activation emit only an explicit cancellation line. After submission or cancellation, release the expression before another activation can open a new wheel.
 
 #### Raised-brow plus full-screen head-direction regions
 
@@ -342,7 +342,7 @@ Usage sequence:
 | **Turn left** | `strafe_left` | **向左横移** |
 | **Turn right** | `strafe_right` | **向右横移** |
 
-Raising the inner brows triggers `num8` and opens the second transparent full-screen selector. A direction must again remain stable for 5 valid processing frames. After it locks, return to the neutral dead zone and keep the brows raised for 3 valid frames, then relax them for 5 valid frames to submit. A temporary brow-recognition drop while turning, loss of the face, or loss of blendshapes never submits. With no locked direction, relaxing the brows while centered for 30 valid frames emits only an explicit cancellation line.
+Raise the inner brows once to trigger `num8` and open the second transparent full-screen selector, then relax them; you do not need to keep the brows raised while selecting. After a direction remains stable for 5 valid processing frames, return to the neutral dead zone with the brows relaxed for 3 valid frames, then raise them again for 5 valid frames to submit immediately. No final relaxation is required. Loss of the face or blendshapes never submits and disarms confirmation. With no locked direction, the same “3 released frames, then 5 raised frames” sequence emits only an explicit cancellation line. After submission or cancellation, relax the brows before another raise can open a new wheel.
 
 The selector has a fully transparent background and does not obscure the desktop. It draws only subtle separators, a low-opacity blue highlight for the active head direction, and clean `Noto Sans CJK SC` labels on compact dark rounded panels. The window stays on top, passes clicks through, and never takes focus. The full-screen regions are visual direction feedback; gaze coordinates no longer select an action.
 

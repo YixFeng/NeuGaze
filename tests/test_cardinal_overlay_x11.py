@@ -147,13 +147,13 @@ def test_wider_pitch_dead_zone_preserves_left_and_right_selection(
     assert wheel.get_cardinal_from_head_pose(14.0, -13.0) == 3
 
 
-def test_fullscreen_wheel_requires_stable_selection_and_explicit_close(
+def test_fullscreen_wheel_requires_stable_selection_and_second_activation(
     monkeypatch,
 ):
     wheel, _, overlay = _wheel(monkeypatch)
     actions = (
-        RobotAction("move_forward_step", "前进一步", "wheel"),
-        RobotAction("move_backward_step", "后退一步", "wheel"),
+        RobotAction("move_forward_step", "前进", "wheel"),
+        RobotAction("move_backward_step", "后退", "wheel"),
         RobotAction("turn_left", "左转", "wheel"),
         RobotAction("turn_right", "右转", "wheel"),
     )
@@ -180,20 +180,20 @@ def test_fullscreen_wheel_requires_stable_selection_and_explicit_close(
     for _ in range(3):
         assert wheel.observe_control_frame(
             face_detected=True,
-            opener_active=True,
+            opener_active=False,
             pitch=0.0,
             yaw=0.0,
         ) is None
     for _ in range(4):
         assert wheel.observe_control_frame(
             face_detected=True,
-            opener_active=False,
+            opener_active=True,
             pitch=0.0,
             yaw=0.0,
         ) is None
     assert wheel.observe_control_frame(
         face_detected=True,
-        opener_active=False,
+        opener_active=True,
         pitch=0.0,
         yaw=0.0,
     ) == "submit"
@@ -204,7 +204,7 @@ def test_fullscreen_wheel_requires_stable_selection_and_explicit_close(
         call for call in overlay.calls if call[0] != "raise_if_failed"
     ] == [
         ("start", None),
-        ("show", ("前进一步", "后退一步", "左转", "右转")),
+        ("show", ("前进", "后退", "左转", "右转")),
         ("select", 2),
         ("hide", None),
         ("stop", None),
@@ -251,7 +251,7 @@ def test_tracking_loss_and_turning_mouth_dropout_never_submit(monkeypatch):
         ) is None
 
 
-def test_tracking_loss_disarms_previously_armed_close(monkeypatch):
+def test_tracking_loss_disarms_previously_armed_confirmation(monkeypatch):
     wheel, _, _ = _wheel(monkeypatch)
     wheel.update_categories(tuple(str(index) for index in range(4)))
     for _ in range(5):
@@ -264,7 +264,7 @@ def test_tracking_loss_disarms_previously_armed_close(monkeypatch):
     for _ in range(3):
         wheel.observe_control_frame(
             face_detected=True,
-            opener_active=True,
+            opener_active=False,
             pitch=0.0,
             yaw=0.0,
         )
@@ -278,10 +278,55 @@ def test_tracking_loss_disarms_previously_armed_close(monkeypatch):
     for _ in range(10):
         assert wheel.observe_control_frame(
             face_detected=True,
+            opener_active=True,
+            pitch=0.0,
+            yaw=0.0,
+        ) is None
+
+
+def test_held_initial_activation_cannot_confirm_after_selection(monkeypatch):
+    wheel, _, _ = _wheel(monkeypatch)
+    wheel.update_categories(tuple(str(index) for index in range(4)))
+    for _ in range(5):
+        wheel.observe_control_frame(
+            face_detected=True,
+            opener_active=True,
+            pitch=0.0,
+            yaw=14.0,
+        )
+
+    for _ in range(20):
+        assert wheel.observe_control_frame(
+            face_detected=True,
+            opener_active=True,
+            pitch=0.0,
+            yaw=0.0,
+        ) is None
+
+
+def test_second_activation_without_selection_cancels(monkeypatch):
+    wheel, _, _ = _wheel(monkeypatch)
+    wheel.update_categories(tuple(str(index) for index in range(4)))
+    for _ in range(3):
+        assert wheel.observe_control_frame(
+            face_detected=True,
             opener_active=False,
             pitch=0.0,
             yaw=0.0,
         ) is None
+    for _ in range(4):
+        assert wheel.observe_control_frame(
+            face_detected=True,
+            opener_active=True,
+            pitch=0.0,
+            yaw=0.0,
+        ) is None
+    assert wheel.observe_control_frame(
+        face_detected=True,
+        opener_active=True,
+        pitch=0.0,
+        yaw=0.0,
+    ) == "cancel"
 
 
 def test_fullscreen_wheel_rejects_nonfinite_head_pose(monkeypatch):
