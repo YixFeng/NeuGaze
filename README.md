@@ -243,7 +243,7 @@ python config_gui_cpu.py
 #### 4️⃣ Start Control
 
 - Click "Start Evaluation"
-- Open your mouth to show the four-way robot wheel; keep it open, select with gaze, then close your mouth to confirm
+- Open your mouth to show the transparent full-screen four-region selector; keep it open, select with gaze, then close your mouth to confirm
 - Pucker your lips, raise your inner brows, or close only your left eye to trigger direct robot action labels
 - Ubuntu prints `[ROBOT_ACTION]` lines and does not emit keyboard or mouse events
 
@@ -265,7 +265,7 @@ Ubuntu robot-output contract:
 
 | User action | MediaPipe condition | Internal expression ID | Current Ubuntu behavior |
 |-------------|---------------------|------------------------|-------------------------|
-| **Open mouth** | `jawOpen > 0.4`, with no substantial left/right jaw shift | `numlock` | Open the four-way robot wheel; hold, select with gaze, and close to confirm |
+| **Open mouth** | `jawOpen > 0.4`, with no substantial left/right jaw shift | `numlock` | Open the transparent full-screen four-region selector; hold, select with gaze, and close to confirm |
 | **Pucker lips** | `mouthPucker > 0.97` and `mouthFunnel < 0.2` | `left_click` | Emit `wave` / **挥手** |
 | **Raise inner brows** | `browInnerUp > 0.8` | `num8` | Emit `dance` / **舞蹈** |
 | **Close only the left eye** | `eyeBlinkLeft > 0.6` and `eyeBlinkRight < 0.25` | `extra` | Emit `stop` / **停止** |
@@ -313,7 +313,7 @@ repeat the output.
 | `num8` | `dance` | **舞蹈** | `expression` |
 | `extra` | `stop` | **停止** | `expression` |
 
-#### Open-mouth plus gaze wheel
+#### Open-mouth plus full-screen gaze regions
 
 | Gaze region | Action ID | Terminal label |
 |-------------|-----------|----------------|
@@ -324,10 +324,12 @@ repeat the output.
 
 Usage sequence:
 
-1. Open your mouth to trigger `numlock` and show a cardinal wheel of radius 400 around the screen center.
-2. Keep your mouth open and move your gaze into the top, bottom, left, or right region.
+1. Open your mouth to trigger `numlock` and show a transparent selector over the entire primary screen.
+2. Four corner-to-center boundaries divide the screen into equal-area top, bottom, left, and right triangles. Keep your mouth open and look into the target region. The whole screen is selectable; there is no center-circle radius limit.
 3. Close your mouth to confirm; exactly one selected action label is emitted.
-4. If no region is valid when you close your mouth, NeuGaze emits an explicit cancellation line and no action.
+4. Closing before a new gaze point arrives, or while the gaze point is exactly at the center, emits an explicit cancellation line and no action.
+
+The selector has a fully transparent background and does not obscure the desktop. It draws only subtle separators, a low-opacity blue highlight for the active region, and clean `Noto Sans CJK SC` labels on compact dark rounded panels. The window stays on top, passes clicks through, and never takes focus.
 
 #### Terminal output format
 
@@ -358,7 +360,7 @@ configuration fail during startup.
 
 ```yaml
 robot_wheel_config:
-  radius: 400
+  layout: fullscreen_cardinal
 robot_action_config:
   actions:
     move_forward_step: 前进一步
@@ -370,8 +372,10 @@ robot_action_config:
     stop: 停止
 ```
 
-The robot wheel is a fixed four-way layout with radius 400. Head pitch, yaw, and roll
-are still estimated but have no robot binding and do not map to W/S, A/D, or scrolling.
+The robot selector is a fixed transparent full-screen four-way layout. The configuration
+no longer accepts `radius`; any layout other than `fullscreen_cardinal` fails during
+startup. Head pitch, yaw, and roll are still estimated but have no robot binding and do
+not map to W/S, A/D, or scrolling.
 
 ---
 

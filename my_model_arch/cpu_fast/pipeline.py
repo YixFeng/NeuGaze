@@ -12,7 +12,6 @@
 
 from collections.abc import Mapping
 import copy
-from numbers import Real
 import os
 import pathlib
 import queue
@@ -2333,24 +2332,23 @@ class RealAction(BindKeys):
             if robot_action_config is None:
                 raise ValueError("robot_action_config is required")
             if robot_wheel_config is None:
-                raise ValueError("robot_wheel_config.radius is required")
+                raise ValueError("robot_wheel_config.layout is required")
             if not isinstance(robot_wheel_config, Mapping):
                 raise TypeError("robot_wheel_config must be a mapping")
             for field_name in robot_wheel_config:
-                if field_name != "radius":
+                if field_name != "layout":
                     raise ValueError(
                         f"robot_wheel_config.{field_name} is not allowed"
                     )
-            if "radius" not in robot_wheel_config:
-                raise ValueError("robot_wheel_config.radius is required")
-            radius = robot_wheel_config["radius"]
-            if isinstance(radius, bool) or not isinstance(radius, Real):
-                raise TypeError(
-                    "robot_wheel_config.radius must be the number 400"
-                )
-            if radius != 400:
+            if "layout" not in robot_wheel_config:
+                raise ValueError("robot_wheel_config.layout is required")
+            layout = robot_wheel_config["layout"]
+            if not isinstance(layout, str):
+                raise TypeError("robot_wheel_config.layout must be a string")
+            if layout != "fullscreen_cardinal":
                 raise ValueError(
-                    "robot_wheel_config.radius must equal 400"
+                    "robot_wheel_config.layout must equal "
+                    "'fullscreen_cardinal'"
                 )
             validated_robot_wheel_config = copy.deepcopy(robot_wheel_config)
 
@@ -3177,9 +3175,16 @@ class ObserverWithSectorWheel:
     get the subject when initializing, subject is the object that this class is listening to
     """
 
-    def __init__(self, subject: RealAction, radius=800, **sector_wheel_config):
+    def __init__(
+        self,
+        subject: RealAction,
+        radius=800,
+        layout=None,
+        **sector_wheel_config,
+    ):
         self.subject = subject
         self.radius = radius
+        self.layout = layout
         self.sector_wheel_config = sector_wheel_config
         self.lock = Lock()
         self._thread = None
@@ -3256,7 +3261,22 @@ class ObserverWithSectorWheel:
         self.messagebox.geometry(f"{2 * self.radius}x{2 * self.radius}+{x_cordinate}+{y_cordinate}")
 
     def run_sector_wheel(self):
+        primary_error = None
         try:
+            if self.subject.action_output == "robot_terminal":
+                if self.layout != "fullscreen_cardinal":
+                    raise RuntimeError(
+                        "robot terminal requires fullscreen_cardinal wheel"
+                    )
+                from .cardinal_overlay_x11 import FullscreenCardinalWheel
+
+                self.sector_wheel = FullscreenCardinalWheel(self.subject)
+                self.sector_wheel.start()
+                while self.should_run and not self.subject.quit:
+                    self.sector_wheel_main_loop(schedule_next=False)
+                    time.sleep(0.02)
+                return
+
             self.root = tk.Tk()
             self.root.withdraw()
 
@@ -3279,18 +3299,37 @@ class ObserverWithSectorWheel:
                 self.root.after(0, self.root.destroy)
             self.root.mainloop()
         except BaseException:
-            self._worker_error = sys.exc_info()
+            primary_error = sys.exc_info()
             self.should_run = False
         finally:
+            if primary_error is None and self._worker_error is not None:
+                primary_error = self._worker_error
+            if (
+                self.subject.action_output == "robot_terminal"
+                and self.sector_wheel is not None
+            ):
+                try:
+                    self.sector_wheel.stop()
+                except BaseException as cleanup_error:
+                    if primary_error is None:
+                        primary_error = sys.exc_info()
+                    else:
+                        primary_error[1].add_note(
+                            "robot action overlay cleanup failed with "
+                            f"{type(cleanup_error).__name__}: {cleanup_error}"
+                        )
+            if primary_error is not None:
+                self._worker_error = primary_error
             self.should_run = False
             self.root = None
             self.messagebox = None
             self.sector_wheel = None
 
-    def sector_wheel_main_loop(self):
+    def sector_wheel_main_loop(self, schedule_next=True):
         try:
             if not self.should_run or self.subject.quit:
-                self.root.destroy()
+                if self.root is not None:
+                    self.root.destroy()
                 return
             if self.subject.keys_dict is not None:
                 with self.lock:
@@ -3309,16 +3348,25 @@ class ObserverWithSectorWheel:
                                     layout_type=self.subject.wheel_layout_type,
                                 )
                                 self.is_hidden = False
+                            elif self.subject.action_output == "robot_terminal":
+                                self.sector_wheel.check_op_xy()
                         elif not self.is_hidden:
+                            if self.subject.action_output == "robot_terminal":
+                                self.sector_wheel.check_op_xy()
                             self.sector_wheel.hide()
                             selected = self.sector_wheel.selected_sector
                             action = self.subject.make_wheel_action(selected)
                             if action is not None:
                                 self.subject.action_queue.put(action)
                             self.is_hidden = True
-            if self.should_run and not self.subject.quit:
+            if (
+                schedule_next
+                and self.should_run
+                and not self.subject.quit
+            ):
                 self.root.after(20, self.sector_wheel_main_loop)
         except BaseException:
             self._worker_error = sys.exc_info()
             self.should_run = False
-            self.root.destroy()
+            if self.root is not None:
+                self.root.destroy()

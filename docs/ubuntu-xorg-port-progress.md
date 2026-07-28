@@ -514,7 +514,17 @@ missing frame、metadata、format、dimensions 与 byte-length 显式合同错�
 - 用户指出中英文 README 仍把张嘴、嘟嘴、下颌、微笑和头部动作描述为旧游戏鼠标/键盘操作，与 Ubuntu `robot_terminal` 实现冲突。
 - `README-CN.md` 与 `README.md` 现在以 `configs/cpu.yaml` 为事实来源，明确记录四个实际触发：张嘴 `numlock` 打开轮盘、嘟嘴 `left_click` 输出挥手、抬内眉 `num8` 输出舞蹈、仅闭左眼 `extra` 输出停止。内部 ID 不再解释成 Ubuntu 鼠标或键盘事件。
 - 四方向注视区域逐项记录为上/下/左/右对应前进一步、后退一步、左转、右转；文档说明保持张嘴选择、闭嘴确认，以及无有效选区时的显式取消协议。
-- 两份 README 均列出全部七条 `[ROBOT_ACTION]` 输出、取消输出、固定轮盘半径 400，以及当前只打印词条、尚未启动 GR00T/WBC/SONIC 的边界。旧 `game`、`game_cs`、`game_wz`、`type` 键位表，鼠标点击和 WASD/滚轮映射已从当前控制说明移除。
+- 两份 README 当时均列出全部七条 `[ROBOT_ACTION]` 输出、取消输出、轮盘半径 400，以及当前只打印词条、尚未启动 GR00T/WBC/SONIC 的边界。旧 `game`、`game_cs`、`game_wz`、`type` 键位表，鼠标点击和 WASD/滚轮映射已从当前控制说明移除。半径 400 的界面已在后续‘透明全屏四分区’阶段被替换。
 - 新增参数化文档契约测试，要求两份 README 都包含四个表情条件、四个轮盘方向、七条动作输出和取消输出，并拒绝旧映射文本。
 - 文档与安装 focused：30 passed；fresh 完整 Xvfb suite：553 passed / 1 skipped / 1 deselected，17.72s。
 - GUI 在本轮期间把 `configs/cpu.yaml` 的 `regression_model_path` 更新为 `model_weights/20260728_162725/model.pkl`；这是用户运行产生的独立配置改动，本轮只读保留，不纳入 README 提交。
+
+## 透明全屏四分区选择层（2026-07-28）
+
+- 用户实测发现张嘴后的旧 Tk 轮盘只占屏幕中心约 `800×800`，白色画布即使设置统一 alpha 仍明显遮挡桌面，红色 Arial 大字也不适合作为机器人动作界面。
+- Ubuntu `robot_terminal` 路径不再创建 Tk 圆形轮盘。新 `FullscreenCardinalWheel` 直接使用完整主屏幕坐标；四条‘屏幕角落到中心’的边界形成上、下、左、右四个等面积三角区。命中计算先按屏幕宽高归一化，因此宽屏上四个方向仍保持等面积，屏幕边缘和旧圆外区域均可选择。
+- 新 `CardinalOverlay` 在独立 spawn 进程中运行 PySide6 透明全屏窗口。背景不填色，只画低透明分隔线；当前区使用低透明蓝色高亮；中文标签使用系统已安装的 `Noto Sans CJK SC`、深色圆角底板。窗口置顶、点击穿透且不获取焦点。
+- 配置事实来源由 `robot_wheel_config.radius: 400` 改为 `robot_wheel_config.layout: fullscreen_cardinal`。旧 `radius`、未知字段、非字符串布局或其他布局均在构造时明确失败，不静默退回圆形轮盘。
+- 覆盖层启动要求 X11 compositor。缺少 compositor、主屏幕尺寸与管线不一致、子进程异常、协议消息异常或停止超时都会保留 traceback 并明确失败；不会切回 Tk 或隐藏错误。
+- 聚焦回归：`tests/test_cardinal_overlay_x11.py tests/test_pipeline_runtime.py tests/test_robot_actions.py` 为 155 passed / 1 conditional skip；隔离无 compositor Xorg 为 2 passed / 1 positive skip；隔离 `xcompmgr` 联合机器人选择层与凝视层为 4 passed / 2 negative skips；fresh 完整 Xvfb suite 为 565 passed / 2 skipped / 1 deselected，17.83s。
+- 真人视觉验收仍未执行。需要在真实 `DISPLAY` 上确认覆盖整个主屏幕、桌面可见、标签大小合适、四个区域高亮正确，并完成每方向至少 5 次闭嘴提交。

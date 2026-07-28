@@ -1691,7 +1691,10 @@ def test_wheel_stop_requests_tk_destroy_and_joins_stored_thread(
     monkeypatch.setattr(
         ObserverWithSectorWheel, "setup_messagebox", lambda self: None
     )
-    wheel = ObserverWithSectorWheel(SimpleNamespace(quit=False), radius=100)
+    wheel = ObserverWithSectorWheel(
+        SimpleNamespace(quit=False, action_output="desktop"),
+        radius=100,
+    )
 
     wheel.start()
     assert mainloop_started.wait(1)
@@ -1731,7 +1734,10 @@ def test_wheel_stop_preserves_worker_error_when_destroy_request_fails():
         def join(self):
             self.joined = True
 
-    wheel = ObserverWithSectorWheel(SimpleNamespace(quit=False), radius=100)
+    wheel = ObserverWithSectorWheel(
+        SimpleNamespace(quit=False, action_output="desktop"),
+        radius=100,
+    )
     wheel.root = FailingRoot()
     wheel._thread = JoinedThread()
     wheel._worker_error = fail_in_worker()
@@ -2068,7 +2074,9 @@ def test_real_action_routes_platforms_and_rejects_missing_config(
         RealAction(action_platform="darwin", **common)
 
 
-def test_default_yaml_builds_fixed_robot_and_windows_wheel_sizes(monkeypatch):
+def test_default_yaml_builds_fullscreen_robot_and_fixed_windows_wheel(
+    monkeypatch,
+):
     mapping = yaml.safe_load(
         (Path(__file__).parents[1] / "configs/cpu.yaml").read_text(
             encoding="utf-8"
@@ -2093,26 +2101,32 @@ def test_default_yaml_builds_fixed_robot_and_windows_wheel_sizes(monkeypatch):
         **common,
     )
 
-    robot_wheel_config["radius"] = 200
-    assert linux_pipeline.wheel.radius == 400
-    assert linux_pipeline.robot_wheel_config == {"radius": 400}
+    robot_wheel_config["layout"] = "changed_after_construction"
+    assert linux_pipeline.wheel.layout == "fullscreen_cardinal"
+    assert linux_pipeline.robot_wheel_config == {
+        "layout": "fullscreen_cardinal"
+    }
     assert windows_pipeline.wheel.radius == 1000
 
 
 @pytest.mark.parametrize(
     ("robot_wheel_config", "error_type", "message"),
     [
-        (None, ValueError, r"robot_wheel_config\.radius"),
+        (None, ValueError, r"robot_wheel_config\.layout"),
         ([], TypeError, r"robot_wheel_config"),
-        ({}, ValueError, r"robot_wheel_config\.radius"),
+        ({}, ValueError, r"robot_wheel_config\.layout"),
         (
-            {"radius": 400, "font": "Arial"},
+            {"layout": "fullscreen_cardinal", "font": "Arial"},
             ValueError,
             r"robot_wheel_config\.font",
         ),
-        ({"radius": True}, TypeError, r"robot_wheel_config\.radius"),
-        ({"radius": "400"}, TypeError, r"robot_wheel_config\.radius"),
-        ({"radius": 399}, ValueError, r"robot_wheel_config\.radius"),
+        ({"layout": True}, TypeError, r"robot_wheel_config\.layout"),
+        ({"layout": 400}, TypeError, r"robot_wheel_config\.layout"),
+        (
+            {"layout": "circle"},
+            ValueError,
+            r"robot_wheel_config\.layout",
+        ),
     ],
 )
 def test_linux_rejects_invalid_robot_wheel_config_at_construction(
@@ -2740,8 +2754,10 @@ def test_robot_wheel_selection_keeps_robot_action_identity_and_emits_once(
     wheel.subject = pipeline
     wheel.sector_wheel = SimpleNamespace(
         selected_sector=selected,
+        check_op_xy=lambda: None,
         hide=lambda: setattr(wheel, "should_run", False),
     )
+    wheel.root = SimpleNamespace(after=lambda *args: None)
 
     wheel.sector_wheel_main_loop()
 
@@ -2769,8 +2785,10 @@ def test_robot_wheel_cancel_is_silent_except_for_explicit_cancel_line(capsys):
     wheel.subject = pipeline
     wheel.sector_wheel = SimpleNamespace(
         selected_sector=None,
+        check_op_xy=lambda: None,
         hide=lambda: setattr(wheel, "should_run", False),
     )
+    wheel.root = SimpleNamespace(after=lambda *args: None)
 
     wheel.sector_wheel_main_loop()
 

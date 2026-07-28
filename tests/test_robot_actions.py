@@ -260,5 +260,7 @@ def test_readmes_document_current_robot_action_contract(
         "[ROBOT_ACTION_CANCELLED] reason=no_selection source=wheel"
         in text
     )
+    assert "fullscreen_cardinal" in text
+    assert "radius: 400" not in text
     for obsolete in obsolete_rows:
         assert obsolete not in text

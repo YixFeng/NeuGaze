@@ -42,9 +42,9 @@ export NEUGAZE_ORBBEC_SDK_ROOT=/home/yixiao/Users/yixiao/Misc/OrbbecSDK_v2
 | 抬眉（`browInnerUp`） | 5 | `[ROBOT_ACTION] id=dance label=舞蹈 source=expression` | 未执行 |
 | 左眼单眨（`eyeBlinkLeft`，右眼不触发） | 5 | `[ROBOT_ACTION] id=stop label=停止 source=expression` | 未执行 |
 
-## 四向轮盘：各 5 次
+## 透明全屏四分区：各 5 次
 
-每次均按真实身体序列执行：**张嘴并保持以打开轮盘 → 注视目标扇区 → 闭嘴提交**。当前 `numlock` 由 `jawOpen` 触发；轮盘只使用内部凝视坐标，闭嘴时读取当前选区并提交。前、后、左、右每个方向都完整重复该序列 5 次；每次等待对应输出后再开始下一次。
+每次均按真实身体序列执行：**张嘴并保持以打开透明全屏选择层 → 注视目标分区 → 闭嘴提交**。确认选择层覆盖整个主屏幕，桌面仍可见，只有对角分区线、四个中文动作标签和当前区域的低透明蓝色高亮；窗口不得抢焦点或拦截点击。当前 `numlock` 由 `jawOpen` 触发；选择层只使用内部凝视坐标，闭嘴时读取当前选区并提交。前、后、左、右每个方向都完整重复该序列 5 次；每次等待对应输出后再开始下一次。
 
 | 方向 | 次数 | 精确预期 Terminal 输出 | 状态 |
 |---|---:|---|---|
@@ -55,7 +55,7 @@ export NEUGAZE_ORBBEC_SDK_ROOT=/home/yixiao/Users/yixiao/Misc/OrbbecSDK_v2
 
 ### 无选区取消
 
-打开轮盘后停在中心无选区，或未选扇区时关闭轮盘。预期只出现：
+张嘴打开选择层后立即闭嘴，使其来不及接收新的凝视点。预期只出现：
 
 ```text
 [ROBOT_ACTION_CANCELLED] reason=no_selection source=wheel

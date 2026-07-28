@@ -22,7 +22,7 @@ wheel_config:
   font_size: 14
   font: Arial
 robot_wheel_config:
-  radius: 400
+  layout: fullscreen_cardinal
 real_action_config:
   scroll_coef: 1.0
   sys_mode: game_cs
