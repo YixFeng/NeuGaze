@@ -251,6 +251,7 @@ class IntegratedRegressionMediaPipeline:
         self.start_with_calibration=start_with_calibration
         self.is_calibrating=start_with_calibration
         self.end_calibration_signal=False
+        self.evaluation_stop_requested = False
         self.frame_size=None
         # 累积训练配置
         self.use_accumulated_training = use_accumulated_training
@@ -1364,19 +1365,29 @@ class IntegratedRegressionMediaPipeline:
     def end_calibration(self):
         self.end_calibration_signal = True
 
+    def request_evaluation_stop(self):
+        """Interrupt a blocking camera read from the supervisor thread."""
+        self.evaluation_stop_requested = True
+        self.end_calibration_signal = True
+        camera = self.camera
+        if camera is not None:
+            camera.close()
+
     def start_evaluation(self):
         try:
             count = 0
             tl = []
             first_iteration = True
+            self.end_calibration_signal = False
             while True:
                 with self._lifecycle_lock:
                     if first_iteration:
+                        if self.evaluation_stop_requested:
+                            break
                         if self.quit:
                             raise RuntimeError("pipeline has been shut down")
                         if self.camera is None:
                             self.start_service()
-                        self.end_calibration_signal = False
                         self.call_before_while_loop()
                     if self.quit:
                         break
@@ -1405,6 +1416,17 @@ class IntegratedRegressionMediaPipeline:
                     self.call_after_while_loop()
                     self._finish_run()
         except BaseException as error:
+            if self.evaluation_stop_requested:
+                try:
+                    self.quit_pipeline()
+                except BaseException as cleanup_error:
+                    cleanup_error.add_note(
+                        "camera read was interrupted by an explicit "
+                        f"evaluation stop request: {type(error).__name__}: "
+                        f"{error}"
+                    )
+                    raise
+                return
             self.quit_pipeline(error)
 
     def quit_pipeline(self, primary_error: BaseException | None = None):

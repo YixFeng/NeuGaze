@@ -30,7 +30,7 @@ export NEUGAZE_ORBBEC_SDK_ROOT=/home/yixiao/Users/yixiao/Misc/OrbbecSDK_v2
 /home/yixiao/miniconda3/envs/neugaze/bin/python config_gui_cpu.py
 ```
 
-在 GUI 选择 **Orbbec**、选中 Gemini 335（型号/序列号）并确认预览；完成所需校准后点击 **Start Evaluation**。确认按钮变为 **Stop Evaluation**，Camera Setup 里的相机切换与标定按钮禁用，但其他配置标签页仍可点击查看。保持中立表情连续 2 分钟，预期没有任何 `[ROBOT_ACTION]` 或 `[ROBOT_ACTION_CANCELLED]` 行；记录起止时间和实际行数。
+在 GUI 选择 **Orbbec**、选中 Gemini 335（型号/序列号）并确认预览；完成所需校准后点击 **Start Evaluation**。确认按钮变为 **Stop Evaluation**，Camera Setup 里的相机切换与标定按钮禁用，但其他配置标签页仍可点击查看和操作。保持中立表情连续 2 分钟，预期没有任何 `[ROBOT_ACTION]` 或 `[ROBOT_ACTION_CANCELLED]` 行；记录起止时间和实际行数。
 
 ## 直接表情：各 5 次
 

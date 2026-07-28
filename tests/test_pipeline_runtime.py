@@ -31,6 +31,7 @@ from my_model_arch.cpu_fast.pipeline import (
 def _pipeline_without_constructor():
     pipeline = object.__new__(IntegratedRegressionMediaPipeline)
     pipeline._lifecycle_lock = threading.RLock()
+    pipeline.evaluation_stop_requested = False
     pipeline.uses_desktop_input = True
     return pipeline
 
@@ -38,6 +39,7 @@ def _pipeline_without_constructor():
 def _real_action_without_constructor():
     pipeline = object.__new__(RealAction)
     pipeline._lifecycle_lock = threading.RLock()
+    pipeline.evaluation_stop_requested = False
     pipeline.gaze_overlay = None
     pipeline.action_output = "desktop"
     pipeline.uses_desktop_input = True
@@ -1410,6 +1412,52 @@ def test_action_failure_stops_wheel_and_discards_post_failure_callback(
         "wheel.stop" in note and "wheel stop failed after join" in note
         for note in source_error.__notes__
     )
+
+
+
+def test_request_evaluation_stop_closes_camera_without_lifecycle_lock():
+    events = []
+    pipeline = _pipeline_without_constructor()
+    pipeline.end_calibration_signal = False
+    pipeline.evaluation_stop_requested = False
+    pipeline.camera = SimpleNamespace(
+        close=lambda: events.append("camera.close")
+    )
+
+    pipeline.request_evaluation_stop()
+
+    assert pipeline.evaluation_stop_requested is True
+    assert pipeline.end_calibration_signal is True
+    assert events == ["camera.close"]
+
+
+def test_camera_error_from_explicit_evaluation_stop_uses_cancel_cleanup():
+    pipeline = _pipeline_without_constructor()
+    pipeline.quit = False
+    pipeline.end_calibration_signal = False
+    pipeline.evaluation_stop_requested = False
+    pipeline.camera = object()
+    pipeline.render_in_eval = False
+    pipeline.open_windows = []
+    pipeline.call_before_while_loop = lambda: None
+    interrupted = RuntimeError("camera read interrupted by close")
+    cleanup_primary_errors = []
+
+    def evaluate(camera):
+        pipeline.evaluation_stop_requested = True
+        raise interrupted
+
+    def quit_pipeline(primary_error=None):
+        cleanup_primary_errors.append(primary_error)
+        pipeline.quit = True
+
+    pipeline.evaluate = evaluate
+    pipeline.quit_pipeline = quit_pipeline
+
+    pipeline.start_evaluation()
+
+    assert cleanup_primary_errors == [None]
+    assert pipeline.quit is True
 
 
 def test_run_start_racing_terminal_quit_cannot_start_resources(

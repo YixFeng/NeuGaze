@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QTabWidget,
                               QFileDialog, QMessageBox, QMenu, QGroupBox, QFormLayout, QScrollArea,
                               QDialog, QDialogButtonBox, QFrame, QSizePolicy, QWidgetItem,
                               QTreeWidgetItemIterator, QTableWidget, QHeaderView, QCheckBox, QProgressDialog)
-from PySide6.QtCore import QProcess, QThread, Qt, QTimer, QSize, QRect, QPoint, QEvent
+from PySide6.QtCore import QProcess, Qt, QTimer, QSize, QRect, QPoint, QEvent
 from PySide6.QtGui import QAction, QIcon, QPainter, QPen, QColor
 import copy
 import sys
@@ -38,6 +38,7 @@ import warnings
 warnings.filterwarnings("ignore")
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent
+EVALUATION_STOP_TIMEOUT_MS = 5000
 
 class SymbolWidget(QWidget):
     def __init__(self, text="", parent=None):
@@ -342,19 +343,6 @@ class FlowLayout(QLayout):
         self.invalidate()
 
 
-class EvaluationThread(QThread):
-    def __init__(self, pipeline, parent=None):
-        super().__init__(parent)
-        self.pipeline = pipeline
-        self.failure_info = None
-
-    def run(self):
-        try:
-            self.pipeline.start_evaluation()
-        except BaseException:
-            self.failure_info = sys.exc_info()
-
-
 class ConfigWindow(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -370,7 +358,9 @@ class ConfigWindow(QMainWindow):
         )
         self.current_config_path = None  # 添加当前配置文件路径追踪
         self.calibration_process = None
-        self.evaluation_thread = None
+        self.evaluation_process = None
+        self.evaluation_stop_requested = False
+        self.evaluation_stderr = bytearray()
         self.calibration_stdout = bytearray()
         self.calibration_stderr = bytearray()
         self.esc_pressed = False
@@ -995,14 +985,14 @@ class ConfigWindow(QMainWindow):
         button.setText("▼ Camera Selection" if self.camera_section_expanded else "▶ Camera Selection")
 
     def start_evaluation(self):
-        """Start or stop supervised evaluation without blocking Qt."""
-        thread = self.evaluation_thread
-        if thread is not None:
-            if thread.isRunning():
+        """Start or stop evaluation without blocking the Ubuntu GUI."""
+        process = self.evaluation_process
+        if process is not None:
+            if process.state() != QProcess.NotRunning:
                 self.stop_evaluation()
                 return
             raise RuntimeError(
-                "evaluation thread finished without GUI cleanup"
+                "evaluation process finished without GUI cleanup"
             )
 
         try:
@@ -1013,108 +1003,176 @@ class ConfigWindow(QMainWindow):
             QMessageBox.critical(self, "Camera Error", formatted_traceback)
             raise
 
+        if self.camera_platform == "linux":
+            return self._start_linux_evaluation()
+
         self.preview_label.clear()
         self.preview_label.setText(
-            "Evaluation running in background. Configuration tabs remain available."
+            "Evaluation running... Camera in use by algorithm."
         )
         if self.pipeline is None:
             self.initialize_pipeline()
+        try:
+            return self.pipeline.start_evaluation()
+        except Exception:
+            formatted_traceback = traceback.format_exc()
+            self._disable_camera_actions()
+            QMessageBox.critical(
+                self, "Evaluation Error", formatted_traceback
+            )
+            raise
 
-        thread = EvaluationThread(self.pipeline, self)
-        thread.finished.connect(self._finish_evaluation)
-        self.evaluation_thread = thread
+    def _start_linux_evaluation(self):
+        if self.current_config_path is None:
+            raise RuntimeError("Evaluation configuration path is not set")
+        if self.pipeline is not None:
+            raise RuntimeError(
+                "Linux evaluation cannot start while a local pipeline exists"
+            )
+
+        config_path = Path(self.current_config_path).resolve()
+        if not config_path.is_file():
+            raise FileNotFoundError(config_path)
+        try:
+            self.save_config_to_file(config_path)
+        except Exception:
+            self._show_linux_evaluation_error(traceback.format_exc())
+            raise
+
+        process = QProcess(self)
+        self.evaluation_process = process
+        self.evaluation_stop_requested = False
+        self.evaluation_stderr.clear()
+        process.readyReadStandardOutput.connect(
+            self._read_evaluation_stdout
+        )
+        process.readyReadStandardError.connect(
+            self._read_evaluation_stderr
+        )
+        process.finished.connect(self._finish_linux_evaluation)
+        process.setProgram(sys.executable)
+        process.setArguments([
+            "-u",
+            "-m",
+            "my_model_arch.cpu_fast.evaluation_worker",
+            "--config",
+            str(config_path),
+        ])
+        process.setWorkingDirectory(str(REPOSITORY_ROOT))
+        try:
+            process.start()
+            if not process.waitForStarted(5000):
+                raise RuntimeError(
+                    "Evaluation worker failed to start: "
+                    f"{process.errorString()}"
+                )
+        except Exception:
+            formatted_traceback = traceback.format_exc()
+            self.evaluation_process = None
+            self.evaluation_stderr.clear()
+            process.deleteLater()
+            self._show_linux_evaluation_error(formatted_traceback)
+            raise
+
+        self.preview_label.clear()
+        self.preview_label.setText(
+            "Evaluation runs in a separate process. "
+            "Configuration tabs remain available."
+        )
         self.camera_confirm_btn.setEnabled(False)
         self.camera_change_btn.setEnabled(False)
         self.calibrate_btn.setEnabled(False)
         self.evaluate_btn.setText("Stop Evaluation")
         self.evaluate_btn.setEnabled(True)
-        try:
-            thread.start()
-        except BaseException as error:
-            primary_traceback = error.__traceback__
-            self.evaluation_thread = None
-            thread.deleteLater()
-            pipeline = self.pipeline
-            self.pipeline = None
-            if pipeline is not None:
-                try:
-                    pipeline.quit_pipeline()
-                except BaseException as cleanup_error:
-                    error.add_note(
-                        "pipeline cleanup after evaluation thread start "
-                        f"failure raised {type(cleanup_error).__name__}: "
-                        f"{cleanup_error}"
-                    )
-            self._disable_camera_actions()
-            formatted_traceback = "".join(
-                traceback.format_exception(
-                    type(error), error, primary_traceback
-                )
-            )
-            QMessageBox.critical(
-                self, "Evaluation Error", formatted_traceback
-            )
-            raise error.with_traceback(primary_traceback)
 
     def stop_evaluation(self):
-        thread = self.evaluation_thread
-        if thread is None or not thread.isRunning():
+        process = self.evaluation_process
+        if process is None or process.state() == QProcess.NotRunning:
             raise RuntimeError("evaluation is not running")
-        if self.pipeline is None:
-            raise RuntimeError(
-                "evaluation thread is running without a pipeline"
-            )
+        self.evaluation_stop_requested = True
         self.evaluate_btn.setEnabled(False)
         self.evaluate_btn.setText("Stopping Evaluation...")
         self.preview_label.setText("Stopping evaluation and camera...")
-        try:
-            self.pipeline.quit_pipeline()
-        except BaseException:
-            formatted_traceback = traceback.format_exc()
-            self._disable_camera_actions()
-            QMessageBox.critical(
-                self, "Evaluation Stop Error", formatted_traceback
-            )
-            raise
-
-    def _finish_evaluation(self):
-        thread = self.evaluation_thread
-        if thread is None:
-            raise RuntimeError(
-                "evaluation finished without a tracked thread"
-            )
-        if thread.isRunning():
-            raise RuntimeError(
-                "evaluation finished signal arrived while thread is running"
-            )
-        thread.wait()
-        failure_info = thread.failure_info
-        thread.failure_info = None
-        self.evaluation_thread = None
-        self.pipeline = None
-        thread.deleteLater()
-        self.evaluate_btn.setText("Start Evaluation")
-
-        if failure_info is not None:
-            formatted_traceback = "".join(
-                traceback.format_exception(*failure_info)
-            )
-            self.preview_label.setText("Evaluation failed.")
-            self._disable_camera_actions()
-            QMessageBox.critical(
-                self, "Evaluation Error", formatted_traceback
-            )
-            return
-
-        self.preview_label.setText(
-            "Evaluation stopped. Click Start Evaluation to run again, "
-            "or Change Camera to restart preview."
+        process.terminate()
+        QTimer.singleShot(
+            EVALUATION_STOP_TIMEOUT_MS,
+            lambda: self._kill_stuck_evaluation(process),
         )
-        camera_ready = self.camera_config is not None
-        self.camera_confirm_btn.setEnabled(False)
-        self.camera_change_btn.setEnabled(camera_ready)
-        self.calibrate_btn.setEnabled(camera_ready)
-        self.evaluate_btn.setEnabled(camera_ready)
+
+    def _kill_stuck_evaluation(self, process):
+        if self.evaluation_process is not process:
+            return
+        if process.state() == QProcess.NotRunning:
+            return
+        message = (
+            "Evaluation worker did not stop within "
+            f"{EVALUATION_STOP_TIMEOUT_MS / 1000:.1f} seconds; "
+            "sending kill."
+        )
+        self.preview_label.setText(message)
+        print(message, file=sys.stderr, flush=True)
+        process.kill()
+
+    def _read_evaluation_stdout(self):
+        process = self.evaluation_process
+        if process is None:
+            raise RuntimeError("Linux evaluation worker is not running")
+        output = bytes(process.readAllStandardOutput())
+        sys.stdout.buffer.write(output)
+        sys.stdout.buffer.flush()
+
+    def _read_evaluation_stderr(self):
+        process = self.evaluation_process
+        if process is None:
+            raise RuntimeError("Linux evaluation worker is not running")
+        output = bytes(process.readAllStandardError())
+        self.evaluation_stderr.extend(output)
+        sys.stderr.buffer.write(output)
+        sys.stderr.buffer.flush()
+
+    def _finish_linux_evaluation(self, exit_code, exit_status):
+        process = self.evaluation_process
+        if process is None:
+            raise RuntimeError("Linux evaluation worker is not running")
+        try:
+            self._read_evaluation_stdout()
+            self._read_evaluation_stderr()
+            stderr = bytes(self.evaluation_stderr)
+            self.evaluation_process = None
+            self.evaluation_stderr.clear()
+            self.evaluate_btn.setText("Start Evaluation")
+            if exit_status != QProcess.NormalExit or exit_code != 0:
+                raise RuntimeError(
+                    "Evaluation worker failed with "
+                    f"exit code {exit_code}, exit status {exit_status}: "
+                    f"{stderr.decode(errors='replace')}"
+                )
+
+            self.preview_label.setText(
+                "Evaluation stopped. Click Start Evaluation to run again, "
+                "or Change Camera to restart preview."
+            )
+            camera_ready = self.camera_config is not None
+            self.camera_confirm_btn.setEnabled(False)
+            self.camera_change_btn.setEnabled(camera_ready)
+            self.calibrate_btn.setEnabled(camera_ready)
+            self.evaluate_btn.setEnabled(camera_ready)
+        except Exception:
+            self._show_linux_evaluation_error(traceback.format_exc())
+            raise
+        finally:
+            self.evaluation_process = None
+            self.evaluation_stop_requested = False
+            self.evaluation_stderr.clear()
+            process.deleteLater()
+
+    def _show_linux_evaluation_error(self, formatted_traceback):
+        self.preview_label.setText("Evaluation failed.")
+        self.evaluate_btn.setText("Start Evaluation")
+        self._disable_camera_actions()
+        QMessageBox.critical(
+            self, "Evaluation Error", formatted_traceback
+        )
 
     def initialize_pipeline(self):
         """Initialize the pipeline and preserve the original failure."""
@@ -1841,7 +1899,7 @@ class ConfigWindow(QMainWindow):
                 "Calibration is still running. Press ESC+Q to cancel it.",
             )
             return
-        if self.evaluation_thread is not None:
+        if self.evaluation_process is not None:
             event.ignore()
             self.show()
             QMessageBox.warning(
@@ -2346,21 +2404,21 @@ class ConfigWindow(QMainWindow):
         """更新显示凝视点的状态"""
         show_gaze = bool(state)
         self.config['real_action_config']['show_gaze'] = show_gaze
-        if hasattr(self, 'pipeline'):
+        if self.pipeline is not None:
             self.pipeline.set_show_gaze(show_gaze)
 
     def update_mouse_control(self, state):
         """更新鼠标控制的状态"""
         mouse_control = bool(state)
         self.config['real_action_config']['mouse_control'] = mouse_control
-        if hasattr(self, 'pipeline'):
+        if self.pipeline is not None:
             self.pipeline.set_mouse_control(mouse_control)
 
     def update_key_control(self, state):
         """更新键盘控制的状态"""
         key_control = bool(state)
         self.config['real_action_config']['key_control'] = key_control
-        if hasattr(self, 'pipeline'):
+        if self.pipeline is not None:
             self.pipeline.set_key_control(key_control)
 
     def keyPressEvent(self, event):
@@ -2368,9 +2426,10 @@ class ConfigWindow(QMainWindow):
         if event.key() == Qt.Key_Escape:
             self.esc_pressed = True
         elif event.key() == Qt.Key_Q and self.esc_pressed:
-            thread = self.evaluation_thread
-            if thread is not None and thread.isRunning():
-                self.stop_evaluation()
+            process = self.evaluation_process
+            if process is not None:
+                if process.state() != QProcess.NotRunning:
+                    self.stop_evaluation()
             elif self.pipeline is not None:
                 self.pipeline.quit_pipeline()
                 self.pipeline = None
@@ -2390,9 +2449,9 @@ class ConfigWindow(QMainWindow):
                 and self.calibration_process.state() != QProcess.NotRunning
             ):
                 return
-            thread = self.evaluation_thread
-            if thread is not None:
-                if thread.isRunning():
+            process = self.evaluation_process
+            if process is not None:
+                if process.state() != QProcess.NotRunning:
                     self.stop_evaluation()
                 return
             if self.pipeline is not None:

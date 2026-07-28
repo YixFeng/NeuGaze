@@ -47,37 +47,6 @@ class FakeSignal:
             callback(*args)
 
 
-class FakeEvaluationThread:
-    def __init__(self, pipeline, parent=None):
-        self.pipeline = pipeline
-        self.parent = parent
-        self.finished = FakeSignal()
-        self.failure_info = None
-        self.running = False
-        self.deleted = False
-
-    def start(self):
-        self.running = True
-        self.pipeline.start_evaluation()
-
-    def isRunning(self):
-        return self.running
-
-    def wait(self):
-        if self.running:
-            raise RuntimeError("cannot wait for a running fake evaluation")
-
-    def deleteLater(self):
-        self.deleted = True
-
-    def finish(self, failure_info=None):
-        if not self.running:
-            raise RuntimeError("fake evaluation is not running")
-        self.failure_info = failure_info
-        self.running = False
-        self.finished.emit()
-
-
 class FakeCamera:
     def __init__(self, frame=None, events=None):
         self.frame = (
@@ -567,222 +536,37 @@ def test_pipeline_receives_and_save_preserves_robot_configs(
     ]
 
 
-@pytest.mark.parametrize(
-    ("entrypoint", "pipeline_event"),
-    [
-        ("start_calibration", "pipeline.calibrate"),
-        ("start_evaluation", "pipeline.evaluate"),
-    ],
-)
-def test_pipeline_camera_ownership_starts_after_preview_close(
-    window_factory, monkeypatch, entrypoint, pipeline_event
+def test_windows_calibration_closes_preview_before_pipeline_start(
+    window_factory
 ):
     events = []
     window, _ = window_factory()
-    if entrypoint == "start_calibration":
-        window.camera_platform = "win32"
-    else:
-        monkeypatch.setattr(gui, "EvaluationThread", FakeEvaluationThread)
+    window.camera_platform = "win32"
     window.camera = FakeCamera(events=events)
     window.pipeline = SimpleNamespace(
-        start_calibration=lambda: events.append("pipeline.calibrate"),
-        start_evaluation=lambda: events.append("pipeline.evaluate"),
+        start_calibration=lambda: events.append("pipeline.calibrate")
     )
 
-    getattr(window, entrypoint)()
+    window.start_calibration()
 
-    assert events[:2] == ["close", pipeline_event]
+    assert events[:2] == ["close", "pipeline.calibrate"]
     assert window.camera is None
-    if entrypoint == "start_evaluation":
-        window.evaluation_thread.finish()
 
 
-
-def test_evaluation_thread_preserves_original_failure_info():
-    error = RuntimeError("evaluation worker failed")
-
-    def fail():
-        raise error
-
-    thread = gui.EvaluationThread(
-        SimpleNamespace(start_evaluation=fail)
-    )
-    thread.run()
-
-    assert thread.failure_info[0] is RuntimeError
-    assert thread.failure_info[1] is error
-    assert thread.failure_info[2] is error.__traceback__
-
-
-def test_evaluation_thread_start_failure_cleans_pipeline_and_reraises(
-    window_factory, monkeypatch
-):
-    messages = []
-    cleanup_calls = []
-    error = RuntimeError("QThread start failed")
-    window, _ = window_factory()
-    window.pipeline = SimpleNamespace(
-        quit_pipeline=lambda: cleanup_calls.append("quit")
-    )
-
-    class FailingEvaluationThread(FakeEvaluationThread):
-        instance = None
-
-        def __init__(self, pipeline, parent=None):
-            super().__init__(pipeline, parent)
-            FailingEvaluationThread.instance = self
-
-        def start(self):
-            raise error
-
-    monkeypatch.setattr(gui, "EvaluationThread", FailingEvaluationThread)
-    monkeypatch.setattr(
-        QMessageBox,
-        "critical",
-        lambda parent, title, text: messages.append((title, text)),
-    )
-
-    with pytest.raises(RuntimeError) as caught:
-        window.start_evaluation()
-
-    assert caught.value is error
-    assert cleanup_calls == ["quit"]
-    assert window.pipeline is None
-    assert window.evaluation_thread is None
-    assert FailingEvaluationThread.instance.deleted
-    assert len(messages) == 1
-    assert messages[0][1].startswith("Traceback (most recent call last):")
-    assert "RuntimeError: QThread start failed" in messages[0][1]
-    assert not window.evaluate_btn.isEnabled()
-
-
-def test_evaluation_runs_without_disabling_configuration_tabs(
-    window_factory, monkeypatch
-):
+def test_windows_evaluation_keeps_synchronous_pipeline_path(window_factory):
     events = []
     window, _ = window_factory()
+    window.camera_platform = "win32"
+    window.camera = FakeCamera(events=events)
     window.pipeline = SimpleNamespace(
-        start_evaluation=lambda: events.append("evaluate"),
-        quit_pipeline=lambda: events.append("quit"),
+        start_evaluation=lambda: events.append("pipeline.evaluate")
     )
-    monkeypatch.setattr(gui, "EvaluationThread", FakeEvaluationThread)
 
     window.start_evaluation()
 
-    thread = window.evaluation_thread
-    assert events == ["evaluate"]
-    assert thread.isRunning()
-    assert window.tabs.isEnabled()
-    window.tabs.setCurrentIndex(1)
-    assert window.tabs.currentIndex() == 1
-    assert not window.camera_confirm_btn.isEnabled()
-    assert not window.camera_change_btn.isEnabled()
-    assert not window.calibrate_btn.isEnabled()
-    assert window.evaluate_btn.isEnabled()
-    assert window.evaluate_btn.text() == "Stop Evaluation"
-
-    window.start_evaluation()
-
-    assert events == ["evaluate", "quit"]
-    assert window.pipeline is not None
-    assert window.evaluation_thread is thread
-    assert not window.evaluate_btn.isEnabled()
-    assert window.evaluate_btn.text() == "Stopping Evaluation..."
-
-    thread.finish()
-
-    assert window.evaluation_thread is None
-    assert window.pipeline is None
-    assert thread.deleted
-    assert window.camera_change_btn.isEnabled()
-    assert window.calibrate_btn.isEnabled()
-    assert window.evaluate_btn.isEnabled()
-    assert window.evaluate_btn.text() == "Start Evaluation"
-
-
-def test_evaluation_failure_displays_original_traceback_and_disables_actions(
-    window_factory, monkeypatch
-):
-    messages = []
-    window, _ = window_factory()
-    window.pipeline = SimpleNamespace(start_evaluation=lambda: None)
-    monkeypatch.setattr(gui, "EvaluationThread", FakeEvaluationThread)
-    monkeypatch.setattr(
-        QMessageBox,
-        "critical",
-        lambda parent, title, text: messages.append((title, text)),
-    )
-    error = RuntimeError("evaluation frame failed")
-    try:
-        raise error
-    except RuntimeError:
-        failure_info = sys.exc_info()
-
-    window.start_evaluation()
-    thread = window.evaluation_thread
-    thread.finish(failure_info)
-
-    assert window.evaluation_thread is None
-    assert window.pipeline is None
-    assert thread.deleted
-    assert len(messages) == 1
-    assert messages[0][0] == "Evaluation Error"
-    assert messages[0][1].startswith("Traceback (most recent call last):")
-    assert "RuntimeError: evaluation frame failed" in messages[0][1]
-    assert not window.camera_change_btn.isEnabled()
-    assert not window.calibrate_btn.isEnabled()
-    assert not window.evaluate_btn.isEnabled()
-
-
-def test_close_event_is_rejected_while_evaluation_runs(
-    window_factory, monkeypatch
-):
-    warnings = []
-    window, _ = window_factory()
-    window.pipeline = SimpleNamespace(start_evaluation=lambda: None)
-    monkeypatch.setattr(gui, "EvaluationThread", FakeEvaluationThread)
-    monkeypatch.setattr(window, "show", lambda: None)
-    monkeypatch.setattr(
-        QMessageBox,
-        "warning",
-        lambda parent, title, text: warnings.append((title, text)),
-    )
-    window.start_evaluation()
-    thread = window.evaluation_thread
-    event = FakeCloseEvent()
-
-    window.closeEvent(event)
-
-    assert event.ignored
-    assert warnings == [
-        ("Evaluation Running", "Stop Evaluation before closing this window.")
-    ]
-    assert window.evaluation_thread is thread
-    assert window.pipeline is not None
-    thread.finish()
-
-
-def test_hotkey_requests_evaluation_stop_without_dropping_pipeline(
-    window_factory, monkeypatch
-):
-    events = []
-    window, _ = window_factory()
-    window.pipeline = SimpleNamespace(
-        start_evaluation=lambda: events.append("evaluate"),
-        quit_pipeline=lambda: events.append("quit"),
-    )
-    monkeypatch.setattr(gui, "EvaluationThread", FakeEvaluationThread)
-    monkeypatch.setattr(gui.desktop, "are_keys_down", lambda keys: True)
-    window.start_evaluation()
-    thread = window.evaluation_thread
-
-    window.check_hotkeys()
-
-    assert events == ["evaluate", "quit"]
-    assert window.pipeline is not None
-    assert window.evaluation_thread is thread
-    thread.finish()
-
+    assert events[:2] == ["close", "pipeline.evaluate"]
+    assert window.camera is None
+    assert window.evaluation_process is None
 
 
 class FakeProcess:
@@ -850,6 +634,282 @@ class FakeProcess:
 
     def kill(self):
         self.kill_calls += 1
+
+
+
+class FakeEvaluationProcess(FakeProcess):
+    def start(self):
+        super().start()
+        self.process_state = QProcess.Running
+
+    def finish(self, exit_code=0, exit_status=QProcess.NormalExit):
+        self.process_state = QProcess.NotRunning
+        self.finished.emit(exit_code, exit_status)
+
+
+def evaluation_process_factory(events, processes):
+    class ProcessFactory:
+        NotRunning = QProcess.NotRunning
+        NormalExit = QProcess.NormalExit
+
+        def __new__(cls, parent):
+            process = FakeEvaluationProcess(parent, events)
+            processes.append(process)
+            return process
+
+    return ProcessFactory
+
+
+def test_linux_evaluation_runs_in_process_and_keeps_tabs_interactive(
+    window_factory, monkeypatch
+):
+    events = []
+    processes = []
+    window, config_path = window_factory()
+    window.camera = FakeCamera(events=events)
+    window.gaze_widgets["point_radius"].setValue(73)
+    monkeypatch.setattr(
+        gui,
+        "QProcess",
+        evaluation_process_factory(events, processes),
+    )
+
+    window.start_evaluation()
+
+    assert len(processes) == 1
+    process = processes[0]
+    assert events[:3] == ["close", "process.construct", "process.start"]
+    assert window.pipeline is None
+    assert window.evaluation_process is process
+    assert process.program == sys.executable
+    assert process.arguments == [
+        "-u",
+        "-m",
+        "my_model_arch.cpu_fast.evaluation_worker",
+        "--config",
+        str(config_path.resolve()),
+    ]
+    assert process.working_directory == str(Path(gui.__file__).resolve().parent)
+    assert process.wait_calls == [5000]
+    saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert saved["gaze_config"]["point_radius"] == 73
+    assert window.tabs.isEnabled()
+    window.tabs.setCurrentIndex(1)
+    assert window.tabs.currentIndex() == 1
+    window.update_show_gaze(False)
+    window.update_mouse_control(False)
+    window.update_key_control(False)
+    assert window.config["real_action_config"]["show_gaze"] is False
+    assert window.config["real_action_config"]["mouse_control"] is False
+    assert window.config["real_action_config"]["key_control"] is False
+    assert not window.camera_confirm_btn.isEnabled()
+    assert not window.camera_change_btn.isEnabled()
+    assert not window.calibrate_btn.isEnabled()
+    assert window.evaluate_btn.isEnabled()
+    assert window.evaluate_btn.text() == "Stop Evaluation"
+
+    process.finish()
+
+    assert window.evaluation_process is None
+    assert process.delete_later_calls == 1
+    assert window.camera_change_btn.isEnabled()
+    assert window.calibrate_btn.isEnabled()
+    assert window.evaluate_btn.isEnabled()
+    assert window.evaluate_btn.text() == "Start Evaluation"
+
+
+def test_linux_evaluation_stop_is_asynchronous_and_retains_process(
+    window_factory, monkeypatch
+):
+    events = []
+    processes = []
+    window, _ = window_factory()
+    monkeypatch.setattr(
+        gui,
+        "QProcess",
+        evaluation_process_factory(events, processes),
+    )
+    window.start_evaluation()
+    process = processes[0]
+
+    window.start_evaluation()
+
+    assert process.terminate_calls == 1
+    assert window.evaluation_stop_requested is True
+    assert window.evaluation_process is process
+    assert not window.evaluate_btn.isEnabled()
+    assert window.evaluate_btn.text() == "Stopping Evaluation..."
+
+    process.finish()
+
+    assert window.evaluation_process is None
+    assert window.evaluation_stop_requested is False
+    assert process.delete_later_calls == 1
+
+
+
+def test_linux_evaluation_stop_timeout_is_visible_and_kills_process(
+    window_factory, monkeypatch, capsys
+):
+    events = []
+    processes = []
+    timers = []
+    window, _ = window_factory()
+    monkeypatch.setattr(
+        gui,
+        "QProcess",
+        evaluation_process_factory(events, processes),
+    )
+    monkeypatch.setattr(
+        gui.QTimer,
+        "singleShot",
+        lambda milliseconds, callback: timers.append(
+            (milliseconds, callback)
+        ),
+    )
+    window.start_evaluation()
+    process = processes[0]
+
+    window.stop_evaluation()
+
+    assert len(timers) == 1
+    assert timers[0][0] == gui.EVALUATION_STOP_TIMEOUT_MS
+    timers[0][1]()
+    assert process.kill_calls == 1
+    assert "did not stop within 5.0 seconds" in capsys.readouterr().err
+    process.finish()
+
+
+def test_linux_evaluation_failure_shows_worker_traceback_and_disables_actions(
+    window_factory, monkeypatch
+):
+    events = []
+    processes = []
+    messages = []
+    window, _ = window_factory()
+    monkeypatch.setattr(
+        gui,
+        "QProcess",
+        evaluation_process_factory(events, processes),
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "critical",
+        lambda parent, title, text: messages.append((title, text)),
+    )
+    window.start_evaluation()
+    process = processes[0]
+    process.stderr = (
+        b"Traceback (most recent call last):\n"
+        b"RuntimeError: evaluation frame failed\n"
+    )
+
+    with pytest.raises(RuntimeError, match="Evaluation worker failed"):
+        process.finish(17, QProcess.NormalExit)
+
+    assert window.evaluation_process is None
+    assert process.delete_later_calls == 1
+    assert len(messages) == 1
+    assert messages[0][0] == "Evaluation Error"
+    assert "RuntimeError: evaluation frame failed" in messages[0][1]
+    assert not window.camera_change_btn.isEnabled()
+    assert not window.calibrate_btn.isEnabled()
+    assert not window.evaluate_btn.isEnabled()
+
+
+def test_linux_evaluation_failed_start_releases_process_and_reraises(
+    window_factory, monkeypatch
+):
+    events = []
+    messages = []
+    processes = []
+    window, _ = window_factory()
+
+    def construct(parent):
+        process = FakeProcess(parent, events)
+        process.wait_result = False
+        process.error_string = "execvp: evaluation worker was not found"
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(gui, "QProcess", construct)
+    monkeypatch.setattr(
+        QMessageBox,
+        "critical",
+        lambda parent, title, text: messages.append((title, text)),
+    )
+
+    with pytest.raises(RuntimeError, match="evaluation worker was not found"):
+        window.start_evaluation()
+
+    assert len(processes) == 1
+    assert processes[0].delete_later_calls == 1
+    assert window.evaluation_process is None
+    assert window.evaluation_stderr == bytearray()
+    assert len(messages) == 1
+    assert messages[0][0] == "Evaluation Error"
+    assert not window.evaluate_btn.isEnabled()
+
+
+def test_close_event_is_rejected_while_evaluation_process_runs(
+    window_factory, monkeypatch
+):
+    events = []
+    processes = []
+    warnings = []
+    window, _ = window_factory()
+    monkeypatch.setattr(
+        gui,
+        "QProcess",
+        evaluation_process_factory(events, processes),
+    )
+    monkeypatch.setattr(window, "show", lambda: None)
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda parent, title, text: warnings.append((title, text)),
+    )
+    window.start_evaluation()
+    process = processes[0]
+
+    class CloseEvent:
+        ignored = False
+
+        def ignore(self):
+            self.ignored = True
+
+    event = CloseEvent()
+    window.closeEvent(event)
+
+    assert event.ignored
+    assert warnings == [
+        ("Evaluation Running", "Stop Evaluation before closing this window.")
+    ]
+    assert window.evaluation_process is process
+    assert process.terminate_calls == 0
+    process.finish()
+
+
+def test_hotkey_requests_evaluation_process_stop(
+    window_factory, monkeypatch
+):
+    events = []
+    processes = []
+    window, _ = window_factory()
+    monkeypatch.setattr(
+        gui,
+        "QProcess",
+        evaluation_process_factory(events, processes),
+    )
+    monkeypatch.setattr(gui.desktop, "are_keys_down", lambda keys: True)
+    window.start_evaluation()
+    process = processes[0]
+
+    window.check_hotkeys()
+
+    assert process.terminate_calls == 1
+    assert window.evaluation_process is process
+    process.finish()
 
 
 def test_linux_calibration_runs_worker_process_without_local_pipeline(
@@ -1469,10 +1529,10 @@ def test_linux_calibration_success_applies_worker_model_and_releases_process(
     assert process.delete_later_calls == 1
 
 
-def test_linux_calibration_model_is_used_by_the_next_evaluation(
+def test_linux_calibration_model_is_saved_for_evaluation_worker(
     window_factory, monkeypatch, tmp_path
 ):
-    window, _ = window_factory()
+    window, config_path = window_factory()
     repository_root = tmp_path / "repository"
     model_path = (
         repository_root
@@ -1483,47 +1543,39 @@ def test_linux_calibration_model_is_used_by_the_next_evaluation(
     model_path.parent.mkdir(parents=True)
     model_path.write_bytes(b"model")
     monkeypatch.setattr(gui, "REPOSITORY_ROOT", repository_root)
-    process = FakeProcess(window, [])
-    process.stdout = (
-        b'NEUGAZE_CALIBRATION_RESULT={"calibration_time":'
-        b'"20260727_120002","model_path":'
-        b'"model_weights/20260727_120002/model.pkl"}\n'
+    calibration_process = FakeProcess(window, [])
+    calibration_process.stdout = (
+        b"NEUGAZE_CALIBRATION_RESULT={\"calibration_time\":"
+        b"\"20260727_120002\",\"model_path\":"
+        b"\"model_weights/20260727_120002/model.pkl\"}\n"
     )
-    window.calibration_process = process
+    window.calibration_process = calibration_process
     retired = []
-    reused = []
     window.pipeline = SimpleNamespace(
-        quit_pipeline=lambda: retired.append("old pipeline"),
-        start_evaluation=lambda: reused.append("old pipeline"),
+        quit_pipeline=lambda: retired.append("old pipeline")
     )
     monkeypatch.setattr(window, "show", lambda: None)
     monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.No)
-    constructed = []
-
-    class EvaluationPipeline:
-        def __init__(self, **configuration):
-            constructed.append(configuration)
-
-        def start_evaluation(self):
-            pass
-
-    monkeypatch.setitem(
-        sys.modules,
-        "my_model_arch.cpu_fast.pipeline",
-        SimpleNamespace(RealAction=EvaluationPipeline),
-    )
-    monkeypatch.setattr(gui, "EvaluationThread", FakeEvaluationThread)
+    events = []
+    processes = []
 
     window._finish_linux_calibration(0, QProcess.NormalExit)
+    monkeypatch.setattr(
+        gui,
+        "QProcess",
+        evaluation_process_factory(events, processes),
+    )
     window.start_evaluation()
 
     expected = "model_weights/20260727_120002/model.pkl"
+    saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert window.config["integrated_config"]["regression_model_path"] == expected
+    assert saved["integrated_config"]["regression_model_path"] == expected
     assert retired == ["old pipeline"]
-    assert reused == []
-    assert len(constructed) == 1
-    assert constructed[0]["regression_model_path"] == expected
-    window.evaluation_thread.finish()
+    assert window.pipeline is None
+    assert len(processes) == 1
+    assert processes[0].arguments[-1] == str(config_path.resolve())
+    processes[0].finish()
 
 
 def test_linux_calibration_completion_drains_pending_process_output(

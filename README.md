@@ -242,7 +242,7 @@ python config_gui_cpu.py
 
 #### 4️⃣ Start Control
 
-- Click "Start Evaluation". Recognition runs on a background thread, so configuration tabs remain viewable. Camera switching and recalibration controls are disabled while the camera is in use, and the button changes to "Stop Evaluation"
+- Click "Start Evaluation". Recognition runs in a separate process, so configuration tabs remain viewable and interactive. Camera switching and recalibration controls are disabled while the camera is in use, and the button changes to "Stop Evaluation"
 - After one successful calibration, the GUI stores the generated `model.pkl` path in `regression_model_path`; later launches can go directly to "Start Evaluation" without recalibrating every time
 - Open your mouth to show the transparent full-screen four-region selector; keep it open, move your head toward the target direction, then close your mouth to confirm
 - Pucker your lips, raise your inner brows, or close only your left eye to trigger direct robot action labels

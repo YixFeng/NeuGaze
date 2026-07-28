@@ -556,3 +556,23 @@ missing frame、metadata、format、dimensions 与 byte-length 显式合同错�
 | fresh 完整 Xvfb suite | `579 passed / 2 skipped / 1 deselected`，18.78s；两个 skip 均为 compositor 条件分支，Gemini 硬件测试未带开关因此 deselected |
 | Gemini 335 RGB 硬件 | `tests/test_orbbec_hardware.py --run-orbbec`：`1 passed`，8.35s；读取 100 帧、关闭、重开并再读 1 帧 |
 | 真人头姿与 GUI 视觉验收 | 未执行；抬头/低头/左右转头方向、10°/12° 舒适度、闭嘴提交和中立取消仍需用户面对 Gemini 335 验证 |
+
+## Evaluation 独立进程与 GUI 可交互修复（2026-07-28）
+
+- 用户真实运行确认上一阶段的 `QThread` 方案仍无法点击 GUI。该结果推翻了“线程 API 已返回即可证明 Qt 可响应”的假设：MediaPipe/OpenCV/Python 推理循环仍与 Qt 主进程共享解释器和运行库。上一节的 QThread 实现现已被本节完整替代，不再作为当前实现。
+- Ubuntu Evaluation 现由 `QProcess` 启动 `my_model_arch.cpu_fast.evaluation_worker`。GUI 主进程只负责标签页、配置控件、按钮状态及 stdout/stderr 转发；相机、MediaPipe、头姿选择层和动作输出全部由子进程拥有。Windows 仍走原同步 pipeline 路径。
+- Worker 内部采用监督主线程与 `neugaze-evaluation` 线程：Evaluation 线程执行可能阻塞的 Orbbec `wait_for_frames()`；监督主线程接收 `SIGINT`/`SIGTERM`。真实线程栈证明单纯在主线程设置 Python 标志无法中断 Orbbec C 调用，因此新增 `request_evaluation_stop()`，由监督线程关闭相机以解除阻塞，随后 Evaluation 原路径完成 wheel、overlay、camera 和 desktop 清理。
+- `Stop Evaluation` 与 ESC+Q 只发送异步停止，不在 GUI 线程等待。5 秒后 worker 仍存活时会在 Terminal 明确打印超时并发送 `kill`；随后非零退出仍显示完整错误，不伪装成成功。
+- Evaluation 运行期间可切换和操作其他配置标签页。相机确认、切换和重新标定继续禁用，因为它们会争用子进程持有的 Gemini 335；普通配置控件不再错误访问 `None` pipeline。关窗在 worker 完成前仍明确拒绝。
+
+验证记录：
+
+| 验证 | 结果 |
+|---|---|
+| worker、GUI、pipeline focused | `180 passed`，16.44s；覆盖独立 QProcess、专用 Evaluation 线程、SIGTERM 相机中断、异步停止、5 秒超时 kill、原始异常、热键和关窗 |
+| 头姿选择与 GUI 联合回归 | `215 passed / 1 skipped`，16.21s；skip 为需要无 compositor 的条件用例 |
+| fresh 完整 Xvfb suite | `586 passed / 2 skipped / 1 deselected`，19.87s；两个 skip 为 compositor 条件分支，Gemini 硬件用例未带开关因此 deselected |
+| Xvfb + `xcompmgr` 透明层 | `4 passed / 2 skipped / 17 deselected`，2.67s；两个 skip 为无 compositor negative 用例 |
+| 真实 worker + Gemini 335 | Evaluation 正常启动；向精确父 PID 发送与 `QProcess.terminate()` 相同的 SIGTERM 后 exit 0，无 traceback |
+| 真实 ConfigWindow + QProcess + Gemini 335 | Evaluation 连续运行 5 秒时成功切换标签页并调用三个配置控件，输出 `NEUGAZE_GUI_RESPONSIVE`；Stop 后 10 秒门限内正常清理，输出 `NEUGAZE_GUI_EVALUATION_STOPPED`，无错误对话框 |
+| 停止后的相机释放 | `tests/test_orbbec_hardware.py --run-orbbec`：`1 passed`，8.34s；再次读取 100 帧、关闭、重开并读取 1 帧 |
