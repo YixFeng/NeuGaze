@@ -15,10 +15,12 @@ from my_model_arch.cpu_fast import robot_actions
 
 VALID_CONFIG = {
     "actions": {
-        "move_forward_step": "前进一步",
-        "move_backward_step": "后退一步",
+        "move_forward_step": "前进",
+        "move_backward_step": "后退",
         "turn_left": "左转",
         "turn_right": "右转",
+        "strafe_left": "向左横移",
+        "strafe_right": "向右横移",
         "wave": "挥手",
         "dance": "舞蹈",
         "stop": "停止",
@@ -33,7 +35,14 @@ VALID_CONFIG = {
             ],
         },
         "left_click": {"action": "wave"},
-        "num8": {"action": "dance"},
+        "num8": {
+            "wheel": [
+                "wave",
+                "dance",
+                "strafe_left",
+                "strafe_right",
+            ]
+        },
         "extra": {"action": "stop"},
     },
 }
@@ -45,14 +54,14 @@ def valid_config():
 
 
 def test_robot_action_is_immutable_and_prints_one_flushed_line():
-    action = RobotAction("move_forward_step", "前进一步", "wheel")
+    action = RobotAction("move_forward_step", "前进", "wheel")
     stream = StringIO()
 
     emit_robot_action(action, stream=stream)
 
     assert stream.getvalue() == (
         "[ROBOT_ACTION] id=move_forward_step "
-        "label=前进一步 source=wheel\n"
+        "label=前进 source=wheel\n"
     )
     with pytest.raises(FrozenInstanceError):
         action.label = "changed"
@@ -207,6 +216,8 @@ def test_resolve_robot_action_returns_label_and_rejects_unknown_id(valid_config)
                 "回到阈值内的中立死区，同时继续张嘴",
                 "连续 5 个有效帧识别为闭嘴",
                 "人脸或 blendshape 丢失不会提交",
+                "连续 3 个有效帧保持抬眉",
+                "连续 5 个有效帧放松眉毛",
             ),
             (
                 "保持目标方向并闭嘴确认",
@@ -220,6 +231,8 @@ def test_resolve_robot_action_returns_label_and_rejects_unknown_id(valid_config)
                 "return your head to the neutral dead zone while keeping your mouth open",
                 "after 5 valid closed-mouth frames",
                 "Loss of the face or blendshapes never submits",
+                "keep the brows raised for 3 valid frames",
+                "relax them for 5 valid frames",
             ),
             (
                 "Hold the target direction and close your mouth to confirm",
@@ -253,16 +266,23 @@ def test_readmes_document_guarded_head_pose_confirmation(
                 "| **仅闭左眼** | `eyeBlinkLeft > 0.6`",
             ),
             (
-                "| **抬头** | `move_forward_step` | **前进一步** |",
-                "| **低头** | `move_backward_step` | **后退一步** |",
+                "| **抬头** | `move_forward_step` | **前进** |",
+                "| **低头** | `move_backward_step` | **后退** |",
                 "| **向左转头** | `turn_left` | **左转** |",
                 "| **向右转头** | `turn_right` | **右转** |",
+                "| **抬头** | `wave` | **挥手** |",
+                "| **低头** | `dance` | **舞蹈** |",
+                "| **向左转头** | `strafe_left` | **向左横移** |",
+                "| **向右转头** | `strafe_right` | **向右横移** |",
             ),
             (
                 "鼠标左键点击",
                 "W/S键",
                 "### 🎮 控制模式",
                 "保持张嘴并用注视选择",
+                "id=dance label=舞蹈 source=expression",
+                "前进一步",
+                "后退一步",
             ),
         ),
         (
@@ -274,16 +294,23 @@ def test_readmes_document_guarded_head_pose_confirmation(
                 "| **Close only the left eye** | `eyeBlinkLeft > 0.6`",
             ),
             (
-                "| **Up** | `move_forward_step` | **前进一步** |",
-                "| **Down** | `move_backward_step` | **后退一步** |",
+                "| **Up** | `move_forward_step` | **前进** |",
+                "| **Down** | `move_backward_step` | **后退** |",
                 "| **Turn left** | `turn_left` | **左转** |",
                 "| **Turn right** | `turn_right` | **右转** |",
+                "| **Up** | `wave` | **挥手** |",
+                "| **Down** | `dance` | **舞蹈** |",
+                "| **Turn left** | `strafe_left` | **向左横移** |",
+                "| **Turn right** | `strafe_right` | **向右横移** |",
             ),
             (
                 "Left mouse click",
                 "W/S keys",
                 "### 🎮 Control Modes",
                 "select with gaze",
+                "id=dance label=舞蹈 source=expression",
+                "前进一步",
+                "后退一步",
             ),
         ),
     ],
@@ -299,13 +326,19 @@ def test_readmes_document_current_robot_action_contract(
 
     for row in (*expression_rows, *wheel_rows):
         assert row in text
-    for action_id, label in VALID_CONFIG["actions"].items():
-        source = (
-            "wheel"
-            if action_id
-            in VALID_CONFIG["expressions"]["numlock"]["wheel"]
-            else "expression"
-        )
+    expected_outputs = (
+        ("wave", "挥手", "expression"),
+        ("stop", "停止", "expression"),
+        ("move_forward_step", "前进", "wheel"),
+        ("move_backward_step", "后退", "wheel"),
+        ("turn_left", "左转", "wheel"),
+        ("turn_right", "右转", "wheel"),
+        ("wave", "挥手", "wheel"),
+        ("dance", "舞蹈", "wheel"),
+        ("strafe_left", "向左横移", "wheel"),
+        ("strafe_right", "向右横移", "wheel"),
+    )
+    for action_id, label, source in expected_outputs:
         assert (
             f"[ROBOT_ACTION] id={action_id} "
             f"label={label} source={source}"

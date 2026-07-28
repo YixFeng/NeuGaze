@@ -34,10 +34,12 @@ real_action_config:
   key_control: true
 robot_action_config:
   actions:
-    move_forward_step: 前进一步
-    move_backward_step: 后退一步
+    move_forward_step: 前进
+    move_backward_step: 后退
     turn_left: 左转
     turn_right: 右转
+    strafe_left: 向左横移
+    strafe_right: 向右横移
     wave: 挥手
     dance: 舞蹈
     stop: 停止
@@ -51,7 +53,11 @@ robot_action_config:
     left_click:
       action: wave
     num8:
-      action: dance
+      wheel:
+      - wave
+      - dance
+      - strafe_left
+      - strafe_right
     extra:
       action: stop
 integrated_config:

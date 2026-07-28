@@ -634,3 +634,13 @@ missing frame、metadata、format、dimensions 与 byte-length 显式合同错�
   2.66s。
 - README 中英文版和中文真人验收文档已同步。真人舒适度仍需用户重新完成四方向
   各 5 次测试；本轮自动化不代替真人动作验收。
+
+## 抬眉四方向轮盘与动作标签精简（2026-07-28）
+
+- `move_forward_step` 和 `move_backward_step` 的稳定动作 ID 不变，中文终端标签由“前进一步/后退一步”精简为“前进/后退”，避免把后续 reference motion 限定为固定步长。
+- `browInnerUp` / `num8` 不再直接输出 `dance`，而是打开第二个透明全屏四分区轮盘：抬头 → `wave` / 挥手，低头 → `dance` / 舞蹈，向左转头 → `strafe_left` / 向左横移，向右转头 → `strafe_right` / 向右横移。
+- 张嘴轮盘和抬眉轮盘复用同一个直接状态机：方向连续稳定 5 帧锁定，回正并保持开启表情 3 帧后解除表情，连续 5 帧才提交。人脸丢失、表情短暂下降或另一个轮盘的表达式观测都不能提交当前轮盘。
+- 动作合同现固定为九个 ID；未知、缺失或多余 ID 继续在启动时明确失败。Windows 桌面路径未改。
+- README 中英文版与中文真人验收文档已同步。
+- 验证结果：focused 状态机/pipeline/动作/文档 `162 passed / 3 deselected`；fresh 完整 Xvfb `597 passed / 2 skipped / 1 deselected`；带 `xcompmgr` 的透明层正向集成 `4 passed / 2 conditional skips / 20 deselected`。
+- 真实 `DISPLAY=:1` + Gemini 335 Evaluation 中立运行 5 秒，SIGTERM exit 0 且无 `[ROBOT_ACTION]`/取消输出；随后相机再次读取 100 帧、关闭、重开并读取 1 帧，`1 passed`。抬眉与四方向的真人动作识别仍须按中文验收文档执行。

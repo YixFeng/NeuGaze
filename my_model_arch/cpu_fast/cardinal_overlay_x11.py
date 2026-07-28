@@ -13,10 +13,9 @@ _START_TIMEOUT_SECONDS = 5.0
 _STOP_TIMEOUT_SECONDS = 5.0
 _POLL_INTERVAL_MS = 16
 _SELECTION_STABLE_FRAMES = 5
-_NEUTRAL_OPEN_STABLE_FRAMES = 3
-_CLOSE_STABLE_FRAMES = 5
+_NEUTRAL_OPENER_STABLE_FRAMES = 3
+_OPENER_RELEASE_STABLE_FRAMES = 5
 _CANCEL_STABLE_FRAMES = 30
-_JAW_CLOSED_THRESHOLD = 0.2
 
 
 def _physical_screen_size(screen):
@@ -442,10 +441,10 @@ class FullscreenCardinalWheel:
         self._selected_index = None
         self._candidate_index = None
         self._candidate_frames = 0
-        self._neutral_open_frames = 0
-        self._closed_frames = 0
+        self._neutral_opener_frames = 0
+        self._released_frames = 0
         self._cancel_frames = 0
-        self._close_armed = False
+        self._confirmation_armed = False
         self._overlay = CardinalOverlay(subject.screen_size)
 
     def start(self):
@@ -465,10 +464,10 @@ class FullscreenCardinalWheel:
         self._selected_index = None
         self._candidate_index = None
         self._candidate_frames = 0
-        self._neutral_open_frames = 0
-        self._closed_frames = 0
+        self._neutral_opener_frames = 0
+        self._released_frames = 0
         self._cancel_frames = 0
-        self._close_armed = False
+        self._confirmation_armed = False
         self._overlay.show(
             tuple(
                 category.label
@@ -497,32 +496,30 @@ class FullscreenCardinalWheel:
         self,
         *,
         face_detected,
-        mouth_open_recognized,
-        jaw_open,
+        opener_active,
         pitch,
         yaw,
     ):
         if not face_detected:
             self._candidate_index = None
             self._candidate_frames = 0
-            self._neutral_open_frames = 0
-            self._closed_frames = 0
+            self._neutral_opener_frames = 0
+            self._released_frames = 0
             self._cancel_frames = 0
-            self._close_armed = False
+            self._confirmation_armed = False
             self._overlay.raise_if_failed()
             return None
-
-        jaw_open = float(jaw_open)
-        if not math.isfinite(jaw_open):
-            raise RuntimeError(
-                f"jawOpen must be finite, got {jaw_open!r}"
+        if not isinstance(opener_active, bool):
+            raise TypeError(
+                "wheel opener state must be bool when a face is detected"
             )
+
         index = self.get_cardinal_from_head_pose(pitch, yaw)
         if index is not None:
-            self._neutral_open_frames = 0
-            self._closed_frames = 0
+            self._neutral_opener_frames = 0
+            self._released_frames = 0
             self._cancel_frames = 0
-            self._close_armed = False
+            self._confirmation_armed = False
             if index == self._candidate_index:
                 self._candidate_frames += 1
             else:
@@ -532,7 +529,6 @@ class FullscreenCardinalWheel:
                 if index != self._selected_index:
                     self._selected_index = index
                     self.selected_sector = self.categories[index]
-                    self._close_armed = False
                     self._overlay.select(index)
                 else:
                     self._overlay.raise_if_failed()
@@ -543,31 +539,34 @@ class FullscreenCardinalWheel:
         self._candidate_index = None
         self._candidate_frames = 0
         if self.selected_sector is None:
-            if jaw_open < _JAW_CLOSED_THRESHOLD:
+            if opener_active:
+                self._cancel_frames = 0
+            else:
                 self._cancel_frames += 1
                 if self._cancel_frames >= _CANCEL_STABLE_FRAMES:
                     return "cancel"
-            else:
-                self._cancel_frames = 0
             self._overlay.raise_if_failed()
             return None
 
         self._cancel_frames = 0
-        if mouth_open_recognized:
-            self._neutral_open_frames += 1
-            self._closed_frames = 0
-            if self._neutral_open_frames >= _NEUTRAL_OPEN_STABLE_FRAMES:
-                self._close_armed = True
+        if opener_active:
+            self._neutral_opener_frames += 1
+            self._released_frames = 0
+            if (
+                self._neutral_opener_frames
+                >= _NEUTRAL_OPENER_STABLE_FRAMES
+            ):
+                self._confirmation_armed = True
             self._overlay.raise_if_failed()
             return None
 
-        self._neutral_open_frames = 0
-        if self._close_armed and jaw_open < _JAW_CLOSED_THRESHOLD:
-            self._closed_frames += 1
-            if self._closed_frames >= _CLOSE_STABLE_FRAMES:
+        self._neutral_opener_frames = 0
+        if self._confirmation_armed:
+            self._released_frames += 1
+            if self._released_frames >= _OPENER_RELEASE_STABLE_FRAMES:
                 return "submit"
         else:
-            self._closed_frames = 0
+            self._released_frames = 0
         self._overlay.raise_if_failed()
         return None
 

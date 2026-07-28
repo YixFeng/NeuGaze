@@ -163,8 +163,7 @@ def test_fullscreen_wheel_requires_stable_selection_and_explicit_close(
     for _ in range(4):
         assert wheel.observe_control_frame(
             face_detected=True,
-            mouth_open_recognized=False,
-            jaw_open=0.05,
+            opener_active=False,
             pitch=0.0,
             yaw=14.0,
         ) is None
@@ -172,8 +171,7 @@ def test_fullscreen_wheel_requires_stable_selection_and_explicit_close(
 
     assert wheel.observe_control_frame(
         face_detected=True,
-        mouth_open_recognized=False,
-        jaw_open=0.05,
+        opener_active=False,
         pitch=0.0,
         yaw=14.0,
     ) is None
@@ -182,23 +180,20 @@ def test_fullscreen_wheel_requires_stable_selection_and_explicit_close(
     for _ in range(3):
         assert wheel.observe_control_frame(
             face_detected=True,
-            mouth_open_recognized=True,
-            jaw_open=0.7,
+            opener_active=True,
             pitch=0.0,
             yaw=0.0,
         ) is None
     for _ in range(4):
         assert wheel.observe_control_frame(
             face_detected=True,
-            mouth_open_recognized=False,
-            jaw_open=0.05,
+            opener_active=False,
             pitch=0.0,
             yaw=0.0,
         ) is None
     assert wheel.observe_control_frame(
         face_detected=True,
-        mouth_open_recognized=False,
-        jaw_open=0.05,
+        opener_active=False,
         pitch=0.0,
         yaw=0.0,
     ) == "submit"
@@ -227,16 +222,14 @@ def test_tracking_loss_and_turning_mouth_dropout_never_submit(monkeypatch):
     for yaw in (0.0, 3.0, 6.0, 9.0, 11.0):
         assert wheel.observe_control_frame(
             face_detected=True,
-            mouth_open_recognized=False,
-            jaw_open=0.05,
+            opener_active=False,
             pitch=0.0,
             yaw=yaw,
         ) is None
     for _ in range(20):
         assert wheel.observe_control_frame(
             face_detected=False,
-            mouth_open_recognized=None,
-            jaw_open=None,
+            opener_active=None,
             pitch=None,
             yaw=None,
         ) is None
@@ -244,8 +237,7 @@ def test_tracking_loss_and_turning_mouth_dropout_never_submit(monkeypatch):
     for _ in range(5):
         assert wheel.observe_control_frame(
             face_detected=True,
-            mouth_open_recognized=False,
-            jaw_open=0.05,
+            opener_active=False,
             pitch=0.0,
             yaw=14.0,
         ) is None
@@ -253,8 +245,7 @@ def test_tracking_loss_and_turning_mouth_dropout_never_submit(monkeypatch):
     for _ in range(20):
         assert wheel.observe_control_frame(
             face_detected=True,
-            mouth_open_recognized=False,
-            jaw_open=0.05,
+            opener_active=False,
             pitch=0.0,
             yaw=0.0,
         ) is None
@@ -266,23 +257,20 @@ def test_tracking_loss_disarms_previously_armed_close(monkeypatch):
     for _ in range(5):
         wheel.observe_control_frame(
             face_detected=True,
-            mouth_open_recognized=False,
-            jaw_open=0.05,
+            opener_active=False,
             pitch=0.0,
             yaw=-14.0,
         )
     for _ in range(3):
         wheel.observe_control_frame(
             face_detected=True,
-            mouth_open_recognized=True,
-            jaw_open=0.7,
+            opener_active=True,
             pitch=0.0,
             yaw=0.0,
         )
     wheel.observe_control_frame(
         face_detected=False,
-        mouth_open_recognized=None,
-        jaw_open=None,
+        opener_active=None,
         pitch=None,
         yaw=None,
     )
@@ -290,8 +278,7 @@ def test_tracking_loss_disarms_previously_armed_close(monkeypatch):
     for _ in range(10):
         assert wheel.observe_control_frame(
             face_detected=True,
-            mouth_open_recognized=False,
-            jaw_open=0.05,
+            opener_active=False,
             pitch=0.0,
             yaw=0.0,
         ) is None

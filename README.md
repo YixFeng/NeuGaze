@@ -244,8 +244,9 @@ python config_gui_cpu.py
 
 - Click "Start Evaluation". Recognition runs in a separate process, so configuration tabs remain viewable and interactive. Camera switching and recalibration controls are disabled while the camera is in use, and the button changes to "Stop Evaluation"
 - After one successful calibration, the GUI stores the generated `model.pkl` path in `regression_model_path`; later launches can go directly to "Start Evaluation" without recalibrating every time
-- Open your mouth to show the transparent full-screen four-region selector, hold a head direction until it locks, return to neutral while keeping your mouth open, and then close your mouth to confirm
-- Pucker your lips, raise your inner brows, or close only your left eye to trigger direct robot action labels
+- Open your mouth to show the forward/backward/turn selector, hold a head direction until it locks, return to neutral while keeping your mouth open, and then close your mouth to confirm
+- Raise your inner brows to show the wave/dance/strafe selector; return to neutral while keeping the brows raised, then relax them to confirm
+- Pucker your lips or close only your left eye to trigger direct robot action labels
 - Ubuntu prints `[ROBOT_ACTION]` lines and does not emit keyboard or mouse events
 
 Recalibrate when the model file is missing, the user changes, the camera moves substantially, or the screen resolution, scaling, or monitor layout changes. Model-loading errors remain visible; NeuGaze does not silently use an uncalibrated model.
@@ -270,13 +271,13 @@ Ubuntu robot-output contract:
 |-------------|---------------------|------------------------|-------------------------|
 | **Open mouth** | `jawOpen > 0.4`, with no substantial left/right jaw shift | `numlock` | Open the full-screen selector; lock a direction, return to neutral while still open, then close to confirm |
 | **Pucker lips** | `mouthPucker > 0.97` and `mouthFunnel < 0.2` | `left_click` | Emit `wave` / **挥手** |
-| **Raise inner brows** | `browInnerUp > 0.8` | `num8` | Emit `dance` / **舞蹈** |
+| **Raise inner brows** | `browInnerUp > 0.8` | `num8` | Open the full-screen selector; lock a direction, return to neutral while still raised, then relax to confirm |
 | **Close only the left eye** | `eyeBlinkLeft > 0.6` and `eyeBlinkRight < 0.25` | `extra` | Emit `stop` / **停止** |
 
 `left_click`, `num8`, `extra`, and `numlock` are retained internal expression IDs;
 they do not mean that Ubuntu clicks a mouse or sends those keyboard keys. Jaw shifts and
 left/right or bilateral smiles remain detectable but have no direct robot action binding.
-Head pitch and yaw are reserved for four-way selection while the mouth is open.
+Head pitch and yaw are reserved for four-way selection while the mouth or brows keep a selector open.
 
 #### Expression Threshold Adjustment
 
@@ -313,15 +314,14 @@ repeat the output.
 | Internal expression ID | Action ID | Terminal label | Source |
 |------------------------|-----------|----------------|--------|
 | `left_click` | `wave` | **挥手** | `expression` |
-| `num8` | `dance` | **舞蹈** | `expression` |
 | `extra` | `stop` | **停止** | `expression` |
 
 #### Open-mouth plus full-screen head-direction regions
 
 | Head direction | Action ID | Terminal label |
 |----------------|-----------|----------------|
-| **Up** | `move_forward_step` | **前进一步** |
-| **Down** | `move_backward_step` | **后退一步** |
+| **Up** | `move_forward_step` | **前进** |
+| **Down** | `move_backward_step` | **后退** |
 | **Turn left** | `turn_left` | **左转** |
 | **Turn right** | `turn_right` | **右转** |
 
@@ -333,18 +333,32 @@ Usage sequence:
 4. Close your mouth while centered. Exactly one locked action is emitted after 5 valid closed-mouth frames. Loss of the face or blendshapes never submits and disarms closing, so step 3 must be repeated after tracking recovers.
 5. With no locked direction, keeping the head neutral and the mouth closed for 30 valid frames emits only an explicit cancellation line.
 
+#### Raised-brow plus full-screen head-direction regions
+
+| Head direction | Action ID | Terminal label |
+|----------------|-----------|----------------|
+| **Up** | `wave` | **挥手** |
+| **Down** | `dance` | **舞蹈** |
+| **Turn left** | `strafe_left` | **向左横移** |
+| **Turn right** | `strafe_right` | **向右横移** |
+
+Raising the inner brows triggers `num8` and opens the second transparent full-screen selector. A direction must again remain stable for 5 valid processing frames. After it locks, return to the neutral dead zone and keep the brows raised for 3 valid frames, then relax them for 5 valid frames to submit. A temporary brow-recognition drop while turning, loss of the face, or loss of blendshapes never submits. With no locked direction, relaxing the brows while centered for 30 valid frames emits only an explicit cancellation line.
+
 The selector has a fully transparent background and does not obscure the desktop. It draws only subtle separators, a low-opacity blue highlight for the active head direction, and clean `Noto Sans CJK SC` labels on compact dark rounded panels. The window stays on top, passes clicks through, and never takes focus. The full-screen regions are visual direction feedback; gaze coordinates no longer select an action.
 
 #### Terminal output format
 
 ```text
 [ROBOT_ACTION] id=wave label=挥手 source=expression
-[ROBOT_ACTION] id=dance label=舞蹈 source=expression
 [ROBOT_ACTION] id=stop label=停止 source=expression
-[ROBOT_ACTION] id=move_forward_step label=前进一步 source=wheel
-[ROBOT_ACTION] id=move_backward_step label=后退一步 source=wheel
+[ROBOT_ACTION] id=move_forward_step label=前进 source=wheel
+[ROBOT_ACTION] id=move_backward_step label=后退 source=wheel
 [ROBOT_ACTION] id=turn_left label=左转 source=wheel
 [ROBOT_ACTION] id=turn_right label=右转 source=wheel
+[ROBOT_ACTION] id=wave label=挥手 source=wheel
+[ROBOT_ACTION] id=dance label=舞蹈 source=wheel
+[ROBOT_ACTION] id=strafe_left label=向左横移 source=wheel
+[ROBOT_ACTION] id=strafe_right label=向右横移 source=wheel
 ```
 
 No wheel selection produces:
@@ -370,13 +384,24 @@ robot_wheel_config:
   pitch_threshold_degrees: 18.0
 robot_action_config:
   actions:
-    move_forward_step: 前进一步
-    move_backward_step: 后退一步
+    move_forward_step: 前进
+    move_backward_step: 后退
     turn_left: 左转
     turn_right: 右转
+    strafe_left: 向左横移
+    strafe_right: 向右横移
     wave: 挥手
     dance: 舞蹈
     stop: 停止
+  expressions:
+    numlock:
+      wheel: [move_forward_step, move_backward_step, turn_left, turn_right]
+    left_click:
+      action: wave
+    num8:
+      wheel: [wave, dance, strafe_left, strafe_right]
+    extra:
+      action: stop
 ```
 
 The robot selector is a fixed transparent full-screen four-way layout and only accepts
@@ -397,7 +422,7 @@ invalid layout, selection, or threshold fields fail during startup.
 ### 🤖 Robot Control
 
 - **Action-label validation**: Check expression recognition and wheel selection in the terminal
-- **Reference-motion integration**: Map the seven stable action IDs to GR00T/WBC reference motions
+- **Reference-motion integration**: Map the nine stable action IDs to GR00T/WBC reference motions
 
 ### 🤖 Smart Device Integration
 

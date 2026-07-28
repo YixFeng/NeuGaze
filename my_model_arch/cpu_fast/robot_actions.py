@@ -10,6 +10,8 @@ _REQUIRED_ACTION_IDS = (
     "move_backward_step",
     "turn_left",
     "turn_right",
+    "strafe_left",
+    "strafe_right",
     "wave",
     "dance",
     "stop",

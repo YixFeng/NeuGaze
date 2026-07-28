@@ -39,23 +39,38 @@ export NEUGAZE_ORBBEC_SDK_ROOT=/home/yixiao/Users/yixiao/Misc/OrbbecSDK_v2
 | 表情（当前配置） | 次数 | 精确预期 Terminal 输出 | 状态 |
 |---|---:|---|---|
 | 嘟嘴（`mouthPucker`） | 5 | `[ROBOT_ACTION] id=wave label=挥手 source=expression` | 未执行 |
-| 抬眉（`browInnerUp`） | 5 | `[ROBOT_ACTION] id=dance label=舞蹈 source=expression` | 未执行 |
 | 左眼单眨（`eyeBlinkLeft`，右眼不触发） | 5 | `[ROBOT_ACTION] id=stop label=停止 source=expression` | 未执行 |
 
-## 头部方向控制的透明全屏四分区：各 5 次
+## 张嘴轮盘：四个方向各 5 次
 
 每次均按真实身体序列执行：**张嘴打开透明全屏选择层 → 头部从中立位向目标方向移动并保持到高亮锁定 → 头部回正并继续张嘴 → 闭嘴提交**。确认选择层覆盖整个主屏幕，桌面仍可见，只有对角分区线、四个中文动作标签和当前方向的低透明蓝色高亮；窗口不得抢焦点或拦截点击。当前 `numlock` 由 `jawOpen` 触发；选择只使用 MediaPipe 头姿角，不使用注视坐标。默认俯仰阈值为 `18°`、偏航阈值为 `12°`。方向需连续稳定 5 个有效帧；回正后需连续 3 个有效帧重新确认张嘴，再连续 5 个闭嘴帧才提交。转头造成的口型置信度下降以及人脸/blendshape 丢失都不得提交动作。前、后、左、右每个方向都完整重复该序列 5 次；每次等待对应输出后再开始下一次。
 
 | 身体动作 / 方向 | 次数 | 精确预期 Terminal 输出 | 状态 |
 |---|---:|---|---|
-| 抬头 / 前进 | 5 | `[ROBOT_ACTION] id=move_forward_step label=前进一步 source=wheel` | 未执行 |
-| 低头 / 后退 | 5 | `[ROBOT_ACTION] id=move_backward_step label=后退一步 source=wheel` | 未执行 |
+| 抬头 / 前进 | 5 | `[ROBOT_ACTION] id=move_forward_step label=前进 source=wheel` | 未执行 |
+| 低头 / 后退 | 5 | `[ROBOT_ACTION] id=move_backward_step label=后退 source=wheel` | 未执行 |
 | 向左转头 / 左转 | 5 | `[ROBOT_ACTION] id=turn_left label=左转 source=wheel` | 未执行 |
 | 向右转头 / 右转 | 5 | `[ROBOT_ACTION] id=turn_right label=右转 source=wheel` | 未执行 |
 
-### 无选区取消
+## 抬眉轮盘：四个方向各 5 次
 
-张嘴打开选择层后不锁定任何方向，保持头部位于俯仰和偏航阈值以内的中立死区，并持续闭嘴 30 个有效处理帧。预期只出现：
+每次均按真实身体序列执行：**抬内眉打开透明全屏选择层 → 头部从中立位向目标方向移动并保持到高亮锁定 → 头部回正并继续抬眉 → 放松眉毛提交**。方向稳定、回正确认、跟踪丢失保护和选择层视觉要求与张嘴轮盘相同；区别只在于开启和确认表情来自 `browInnerUp`。每个方向完整重复 5 次，每次等待对应输出后再开始下一次。
+
+| 身体动作 / 方向 | 次数 | 精确预期 Terminal 输出 | 状态 |
+|---|---:|---|---|
+| 抬头 / 挥手 | 5 | `[ROBOT_ACTION] id=wave label=挥手 source=wheel` | 未执行 |
+| 低头 / 舞蹈 | 5 | `[ROBOT_ACTION] id=dance label=舞蹈 source=wheel` | 未执行 |
+| 向左转头 / 向左横移 | 5 | `[ROBOT_ACTION] id=strafe_left label=向左横移 source=wheel` | 未执行 |
+| 向右转头 / 向右横移 | 5 | `[ROBOT_ACTION] id=strafe_right label=向右横移 source=wheel` | 未执行 |
+
+### 两个轮盘的无选区取消
+
+分别执行以下两次取消测试：
+
+1. 张嘴打开选择层后不锁定任何方向，头部保持中立，并持续闭嘴 30 个有效处理帧。
+2. 抬眉打开选择层后不锁定任何方向，头部保持中立，并持续放松眉毛 30 个有效处理帧。
+
+每次预期只出现：
 
 ```text
 [ROBOT_ACTION_CANCELLED] reason=no_selection source=wheel
@@ -65,7 +80,7 @@ export NEUGAZE_ORBBEC_SDK_ROOT=/home/yixiao/Users/yixiao/Misc/OrbbecSDK_v2
 
 ### 无系统键鼠副作用
 
-评估前将空白文本编辑器置于可见位置并记下指针位置。执行上述 35 次动作和一次取消时，文本不得出现字符，编辑器不得被点击，指针不得移动，不得滚动或改变窗口焦点。focused 自动化已覆盖 Ubuntu 轮盘打开不移动桌面指针、七个动作不使用桌面输入；真人观察仍须独立记录。
+评估前将空白文本编辑器置于可见位置并记下指针位置。执行上述 50 次动作和两次取消时，文本不得出现字符，编辑器不得被点击，指针不得移动，不得滚动或改变窗口焦点。focused 自动化已覆盖 Ubuntu 轮盘打开不移动桌面指针、九个动作 ID 不使用桌面输入；真人观察仍须独立记录。
 
 ## 退出与资源检查
 
@@ -85,9 +100,10 @@ lsof -nP | rg 'pyorbbecsdk|libOrbbecSDK|/dev/video'
 | 启动前 Xorg、分支、Gemini 335 与诊断 | 未执行 | 待真实 Ubuntu Xorg 会话 |
 | GUI 预览、校准与 Start Evaluation | 未执行 | 待执行 |
 | 中立 2 分钟无输出 | 未执行 | 待执行 |
-| 三个直接表情各 5 次 | 未执行 | 待执行 |
-| 四方向各 5 次 | 未执行 | 待执行 |
-| 无选区取消 | 未执行 | 待执行 |
+| 两个直接表情各 5 次 | 未执行 | 待执行 |
+| 张嘴轮盘四方向各 5 次 | 未执行 | 待执行 |
+| 抬眉轮盘四方向各 5 次 | 未执行 | 待执行 |
+| 两种无选区取消 | 未执行 | 待执行 |
 | 无系统键鼠副作用 | 未执行 | 待执行 |
 | ESC+Q 停止 evaluation、正常关闭 GUI 与资源检查 | 未执行 | 待执行 |
 | SONIC 接入 | 未开始 | 不在本次范围 |

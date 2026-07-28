@@ -2894,8 +2894,6 @@ class RealAction(BindKeys):
         self.gaze_mouse_controller.raise_if_failed()
         t0 = time.time()
         super().call_after_each_eval_loop()
-        if self.action_output == "robot_terminal":
-            self._publish_robot_wheel_observation()
         t1 = time.time()
         overlay = self.gaze_overlay
         if overlay is not None:
@@ -2914,6 +2912,8 @@ class RealAction(BindKeys):
         # recall all variables we have
         # keys_dict, shared_keys_state_dict,shared_keys_time_dict,mouse_dict,head_dict
         self.decode()
+        if self.action_output == "robot_terminal":
+            self._publish_robot_wheel_observation()
         t2 = time.time()
         if self.action_output == "desktop" and self.mouse_dict is not None:
             self.gaze_mouse_controller.update_gaze(
@@ -2925,23 +2925,35 @@ class RealAction(BindKeys):
     def _publish_robot_wheel_observation(self):
         self.robot_wheel_observation_generation += 1
         generation = self.robot_wheel_observation_generation
+        active_opener_id = self.wheel.active_robot_wheel_key
+        opener_id = (
+            active_opener_id
+            if active_opener_id is not None
+            else self.key_keeps_wheel_opening
+        )
         if not self.face_observation_valid:
             self.robot_wheel_observation = (
-                generation, False, None, None, None, None
+                generation, False, opener_id, None, None, None
+            )
+            return
+        if opener_id is None:
+            self.robot_wheel_observation = (
+                generation, True, None, None,
+                self.head_angles["pitch"],
+                self.head_angles["yaw"],
             )
             return
 
-        numlock_state = self.keys_dict.state_dict.get("numlock")
-        if numlock_state is None:
+        opener_state = self.keys_dict.state_dict.get(opener_id)
+        if opener_state is None:
             raise RuntimeError(
-                "robot wheel requires the numlock expression state"
+                f"robot wheel opener {opener_id!r} has no expression state"
             )
-        jaw_open = self.features["jawOpen"]
         self.robot_wheel_observation = (
             generation,
             True,
-            bool(numlock_state["v"]),
-            jaw_open,
+            opener_id,
+            bool(opener_state["v"]),
             self.head_angles["pitch"],
             self.head_angles["yaw"],
         )
@@ -3289,6 +3301,7 @@ class ObserverWithSectorWheel:
         self.selected_sector = None
         self.is_hidden = True
         self.last_robot_observation_generation = None
+        self.active_robot_wheel_key = None
 
     def start(self):
         self.raise_if_failed()
@@ -3296,6 +3309,7 @@ class ObserverWithSectorWheel:
         self.selected_sector = None
         self.is_hidden = True
         self.last_robot_observation_generation = None
+        self.active_robot_wheel_key = None
         if self._thread is not None:
             raise RuntimeError("wheel is already started")
         self.should_run = True
@@ -3449,6 +3463,7 @@ class ObserverWithSectorWheel:
                                     layout_type=self.subject.wheel_layout_type,
                                 )
                                 self.last_robot_observation_generation = None
+                                self.active_robot_wheel_key = key
                                 self.is_hidden = False
                             elif not self.is_hidden:
                                 observation = (
@@ -3462,25 +3477,28 @@ class ObserverWithSectorWheel:
                                     (
                                         generation,
                                         face_detected,
-                                        mouth_open_recognized,
-                                        jaw_open,
+                                        opener_id,
+                                        opener_active,
                                         pitch,
                                         yaw,
                                     ) = observation
                                     self.last_robot_observation_generation = (
                                         generation
                                     )
-                                    decision = (
-                                        self.sector_wheel.observe_control_frame(
-                                            face_detected=face_detected,
-                                            mouth_open_recognized=(
-                                                mouth_open_recognized
-                                            ),
-                                            jaw_open=jaw_open,
-                                            pitch=pitch,
-                                            yaw=yaw,
+                                    if (
+                                        opener_id
+                                        != self.active_robot_wheel_key
+                                    ):
+                                        decision = None
+                                    else:
+                                        decision = (
+                                            self.sector_wheel.observe_control_frame(
+                                                face_detected=face_detected,
+                                                opener_active=opener_active,
+                                                pitch=pitch,
+                                                yaw=yaw,
+                                            )
                                         )
-                                    )
                                     if decision in ("submit", "cancel"):
                                         self.sector_wheel.hide()
                                         selected = (
@@ -3498,6 +3516,7 @@ class ObserverWithSectorWheel:
                                                 action
                                             )
                                         self.is_hidden = True
+                                        self.active_robot_wheel_key = None
                         elif key_is_active:
                             if self.is_hidden:
                                 desktop.move_pointer(

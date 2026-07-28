@@ -2430,8 +2430,8 @@ def _publish_robot_wheel_observation(
     pipeline,
     *,
     face_detected=True,
-    mouth_open_recognized=False,
-    jaw_open=0.05,
+    opener_id="numlock",
+    opener_active=False,
     pitch=0.0,
     yaw=0.0,
 ):
@@ -2440,8 +2440,8 @@ def _publish_robot_wheel_observation(
     pipeline.robot_wheel_observation = (
         generation,
         face_detected,
-        mouth_open_recognized if face_detected else None,
-        jaw_open if face_detected else None,
+        opener_id,
+        opener_active if face_detected else None,
         pitch if face_detected else None,
         yaw if face_detected else None,
     )
@@ -2461,20 +2461,40 @@ def test_robot_wheel_observation_marks_tracking_loss_explicitly():
 def test_robot_wheel_observation_contains_fresh_face_control_values():
     pipeline = _robot_pipeline_without_constructor()
     pipeline.face_observation_valid = True
+    pipeline.key_keeps_wheel_opening = "num8"
     pipeline.keys_dict = SimpleNamespace(
-        state_dict={"numlock": {"v": True}}
+        state_dict={"num8": {"v": True}}
     )
-    pipeline.features = {"jawOpen": 0.73}
     pipeline.head_angles = {"pitch": 4.0, "yaw": -13.0}
 
     pipeline._publish_robot_wheel_observation()
 
     assert pipeline.robot_wheel_observation == (
-        1, True, True, 0.73, 4.0, -13.0
+        1, True, "num8", True, 4.0, -13.0
     )
 
 
-def test_robot_actions_emit_seven_lines_from_expressions_and_head_pose(
+def test_robot_wheel_observation_keeps_visible_wheel_opener():
+    pipeline = _robot_pipeline_without_constructor()
+    pipeline.face_observation_valid = True
+    pipeline.key_keeps_wheel_opening = "num8"
+    pipeline.wheel.active_robot_wheel_key = "numlock"
+    pipeline.keys_dict = SimpleNamespace(
+        state_dict={
+            "numlock": {"v": True},
+            "num8": {"v": False},
+        }
+    )
+    pipeline.head_angles = {"pitch": 2.0, "yaw": 3.0}
+
+    pipeline._publish_robot_wheel_observation()
+
+    assert pipeline.robot_wheel_observation == (
+        1, True, "numlock", True, 2.0, 3.0
+    )
+
+
+def test_robot_mouth_wheel_and_direct_expressions_emit_expected_lines(
     monkeypatch, capsys
 ):
     pipeline = _robot_pipeline_without_constructor()
@@ -2486,7 +2506,7 @@ def test_robot_actions_emit_seven_lines_from_expressions_and_head_pose(
     pipeline.mouse_control = True
     _forbid_robot_desktop_calls(monkeypatch)
 
-    for expression_id in ("left_click", "num8", "extra"):
+    for expression_id in ("left_click", "extra"):
         pipeline.keys_dict = SimpleNamespace(
             state_dict={expression_id: transition("FT", value=True)}
         )
@@ -2494,8 +2514,8 @@ def test_robot_actions_emit_seven_lines_from_expressions_and_head_pose(
         pipeline.decode()
 
     wheel_actions = [
-        RobotAction("move_forward_step", "前进一步", "wheel"),
-        RobotAction("move_backward_step", "后退一步", "wheel"),
+        RobotAction("move_forward_step", "前进", "wheel"),
+        RobotAction("move_backward_step", "后退", "wheel"),
         RobotAction("turn_left", "左转", "wheel"),
         RobotAction("turn_right", "右转", "wheel"),
     ]
@@ -2535,8 +2555,7 @@ def test_robot_actions_emit_seven_lines_from_expressions_and_head_pose(
         for _ in range(5):
             _publish_robot_wheel_observation(
                 pipeline,
-                mouth_open_recognized=False,
-                jaw_open=0.05,
+                opener_active=False,
                 **head_pose,
             )
             wheel.sector_wheel_main_loop()
@@ -2546,15 +2565,13 @@ def test_robot_actions_emit_seven_lines_from_expressions_and_head_pose(
         for _ in range(3):
             _publish_robot_wheel_observation(
                 pipeline,
-                mouth_open_recognized=True,
-                jaw_open=0.7,
+                opener_active=True,
             )
             wheel.sector_wheel_main_loop()
         for _ in range(5):
             _publish_robot_wheel_observation(
                 pipeline,
-                mouth_open_recognized=False,
-                jaw_open=0.05,
+                opener_active=False,
             )
             wheel.sector_wheel_main_loop()
         assert wheel.is_hidden is True
@@ -2564,12 +2581,79 @@ def test_robot_actions_emit_seven_lines_from_expressions_and_head_pose(
 
     assert capsys.readouterr().out.splitlines() == [
         "[ROBOT_ACTION] id=wave label=挥手 source=expression",
-        "[ROBOT_ACTION] id=dance label=舞蹈 source=expression",
         "[ROBOT_ACTION] id=stop label=停止 source=expression",
-        "[ROBOT_ACTION] id=move_forward_step label=前进一步 source=wheel",
-        "[ROBOT_ACTION] id=move_backward_step label=后退一步 source=wheel",
+        "[ROBOT_ACTION] id=move_forward_step label=前进 source=wheel",
+        "[ROBOT_ACTION] id=move_backward_step label=后退 source=wheel",
         "[ROBOT_ACTION] id=turn_left label=左转 source=wheel",
         "[ROBOT_ACTION] id=turn_right label=右转 source=wheel",
+    ]
+
+
+def test_robot_brow_wheel_emits_four_direction_actions(monkeypatch, capsys):
+    pipeline = _robot_pipeline_without_constructor()
+    pipeline.quit = False
+    pipeline.action_queue = queue.Queue()
+    actions = [
+        RobotAction("wave", "挥手", "wheel"),
+        RobotAction("dance", "舞蹈", "wheel"),
+        RobotAction("strafe_left", "向左横移", "wheel"),
+        RobotAction("strafe_right", "向右横移", "wheel"),
+    ]
+    pipeline.wheel_categories = actions
+    pipeline.key_keeps_wheel_opening = "num8"
+    pipeline.wheel_layout_type = "cardinal"
+    pipeline.keys_dict = SimpleNamespace(
+        state_dict={"num8": {"v": True}}
+    )
+    sector_wheel = _fullscreen_head_wheel(monkeypatch, pipeline)
+    wheel = object.__new__(ObserverWithSectorWheel)
+    wheel.should_run = True
+    wheel._worker_error = None
+    wheel.lock = threading.Lock()
+    wheel.is_hidden = True
+    wheel.last_robot_observation_generation = None
+    wheel.active_robot_wheel_key = None
+    wheel.subject = pipeline
+    wheel.sector_wheel = sector_wheel
+    wheel.root = SimpleNamespace(after=lambda *args: None)
+
+    for head_pose, expected_action in (
+        ({"pitch": 11.0, "yaw": 0.0}, actions[0]),
+        ({"pitch": -11.0, "yaw": 0.0}, actions[1]),
+        ({"pitch": 0.0, "yaw": 13.0}, actions[2]),
+        ({"pitch": 0.0, "yaw": -13.0}, actions[3]),
+    ):
+        pipeline.keys_dict.state_dict["num8"]["v"] = True
+        wheel.sector_wheel_main_loop()
+        pipeline.keys_dict.state_dict["num8"]["v"] = False
+        assert wheel.is_hidden is False
+
+        for _ in range(5):
+            _publish_robot_wheel_observation(
+                pipeline, opener_id="num8", opener_active=False,
+                **head_pose
+            )
+            wheel.sector_wheel_main_loop()
+        assert sector_wheel.selected_sector is expected_action
+
+        for _ in range(3):
+            _publish_robot_wheel_observation(
+                pipeline, opener_id="num8", opener_active=True
+            )
+            wheel.sector_wheel_main_loop()
+        for _ in range(5):
+            _publish_robot_wheel_observation(
+                pipeline, opener_id="num8", opener_active=False
+            )
+            wheel.sector_wheel_main_loop()
+        assert wheel.is_hidden is True
+        pipeline._drain_actions()
+
+    assert capsys.readouterr().out.splitlines() == [
+        "[ROBOT_ACTION] id=wave label=挥手 source=wheel",
+        "[ROBOT_ACTION] id=dance label=舞蹈 source=wheel",
+        "[ROBOT_ACTION] id=strafe_left label=向左横移 source=wheel",
+        "[ROBOT_ACTION] id=strafe_right label=向右横移 source=wheel",
     ]
 
 
@@ -2612,12 +2696,11 @@ def test_robot_wheel_consumes_held_head_pose_in_fresh_open_cycles(
         open_wheel()
         observe(
             5,
-            mouth_open_recognized=False,
-            jaw_open=0.05,
+            opener_active=False,
             **head_pose,
         )
-        observe(3, mouth_open_recognized=True, jaw_open=0.7)
-        observe(5, mouth_open_recognized=False, jaw_open=0.05)
+        observe(3, opener_active=True)
+        observe(5, opener_active=False)
         assert wheel.is_hidden is True
         pipeline._drain_actions()
 
@@ -2625,7 +2708,7 @@ def test_robot_wheel_consumes_held_head_pose_in_fresh_open_cycles(
     run_selected_cycle({"pitch": 0.0, "yaw": 14.0})
 
     open_wheel()
-    observe(30, mouth_open_recognized=False, jaw_open=0.05)
+    observe(30, opener_active=False)
     assert wheel.is_hidden is True
     pipeline._drain_actions()
 
@@ -2650,6 +2733,8 @@ def _robot_pipeline_without_constructor():
     pipeline.published_op_xy_generation = 0
     pipeline.key_control = True
     pipeline.robot_action_config = mapping["robot_action_config"]
+    pipeline.key_keeps_wheel_opening = None
+    pipeline.wheel = SimpleNamespace(active_robot_wheel_key=None)
     pipeline.robot_wheel_observation_generation = 0
     pipeline.robot_wheel_observation = None
     return pipeline
@@ -2668,7 +2753,6 @@ def transition(cp, value):
     ("expression_id", "expected_id", "expected_label"),
     [
         ("left_click", "wave", "挥手"),
-        ("num8", "dance", "舞蹈"),
         ("extra", "stop", "停止"),
     ],
 )
@@ -2718,10 +2802,12 @@ def test_default_robot_config_has_exact_action_contract():
     )
     robot = mapping["robot_action_config"]
     assert robot["actions"] == {
-        "move_forward_step": "前进一步",
-        "move_backward_step": "后退一步",
+        "move_forward_step": "前进",
+        "move_backward_step": "后退",
         "turn_left": "左转",
         "turn_right": "右转",
+        "strafe_left": "向左横移",
+        "strafe_right": "向右横移",
         "wave": "挥手",
         "dance": "舞蹈",
         "stop": "停止",
@@ -2736,7 +2822,14 @@ def test_default_robot_config_has_exact_action_contract():
             ]
         },
         "left_click": {"action": "wave"},
-        "num8": {"action": "dance"},
+        "num8": {
+            "wheel": [
+                "wave",
+                "dance",
+                "strafe_left",
+                "strafe_right",
+            ]
+        },
         "extra": {"action": "stop"},
     }
 
@@ -2803,10 +2896,29 @@ def test_robot_numlock_opens_cardinal_wheel_with_robot_actions():
     assert pipeline.wheel_layout_type == "cardinal"
     assert pipeline.key_keeps_wheel_opening == "numlock"
     assert pipeline.wheel_categories == [
-        RobotAction("move_forward_step", "前进一步", "wheel"),
-        RobotAction("move_backward_step", "后退一步", "wheel"),
+        RobotAction("move_forward_step", "前进", "wheel"),
+        RobotAction("move_backward_step", "后退", "wheel"),
         RobotAction("turn_left", "左转", "wheel"),
         RobotAction("turn_right", "右转", "wheel"),
+    ]
+
+
+def test_robot_num8_opens_brow_cardinal_wheel():
+    pipeline = _robot_pipeline_without_constructor()
+    pipeline.keys_dict = SimpleNamespace(
+        state_dict={"num8": transition("FT", value=True)}
+    )
+    pipeline.head_dict = SimpleNamespace(state_dict={})
+
+    pipeline.decode()
+
+    assert pipeline.wheel_layout_type == "cardinal"
+    assert pipeline.key_keeps_wheel_opening == "num8"
+    assert pipeline.wheel_categories == [
+        RobotAction("wave", "挥手", "wheel"),
+        RobotAction("dance", "舞蹈", "wheel"),
+        RobotAction("strafe_left", "向左横移", "wheel"),
+        RobotAction("strafe_right", "向右横移", "wheel"),
     ]
 
 
@@ -2861,6 +2973,7 @@ def test_robot_wheel_counts_each_camera_observation_once():
     wheel.lock = threading.Lock()
     wheel.is_hidden = False
     wheel.last_robot_observation_generation = None
+    wheel.active_robot_wheel_key = "numlock"
     wheel.subject = pipeline
     wheel.sector_wheel = SimpleNamespace(
         observe_control_frame=lambda **kwargs: observations.append(kwargs),
@@ -2894,6 +3007,7 @@ def test_robot_wheel_selection_keeps_robot_action_identity_and_emits_once(
     wheel.selected_sector = None
     wheel.is_hidden = False
     wheel.last_robot_observation_generation = None
+    wheel.active_robot_wheel_key = "numlock"
     wheel.subject = pipeline
     wheel.sector_wheel = SimpleNamespace(
         selected_sector=selected,
@@ -2929,6 +3043,7 @@ def test_robot_wheel_cancel_is_silent_except_for_explicit_cancel_line(capsys):
     wheel.selected_sector = None
     wheel.is_hidden = False
     wheel.last_robot_observation_generation = None
+    wheel.active_robot_wheel_key = "numlock"
     wheel.subject = pipeline
     wheel.sector_wheel = SimpleNamespace(
         selected_sector=None,

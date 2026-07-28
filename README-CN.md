@@ -247,8 +247,9 @@ python config_gui_cpu.py
 
 - 点击"开始评估"；识别在独立子进程运行，配置标签页仍可切换和操作。运行期间相机切换、重新标定等资源冲突按钮会禁用，"开始评估"按钮变为 "Stop Evaluation"
 - 成功完成一次标定后，GUI 会把生成的 `model.pkl` 路径写入 `regression_model_path`；以后重新启动程序可以直接点击"开始评估"，不必每次重新标定
-- 张嘴打开透明全屏四分区选择层，向目标方向移动头部并稳定锁定；随后头部回正、保持张嘴让系统重新确认，再闭嘴提交
-- 嘟嘴、抬内眉或仅闭左眼可直接触发机器人动作词条
+- 张嘴打开前进/后退/左转/右转轮盘，向目标方向移动头部并稳定锁定；随后头部回正、保持张嘴让系统重新确认，再闭嘴提交
+- 抬内眉打开挥手/舞蹈/左右横移轮盘；回正并继续抬眉后，放松眉毛确认
+- 嘟嘴或仅闭左眼可直接触发机器人动作词条
 - Ubuntu 终端打印 `[ROBOT_ACTION]`，不发送键盘或鼠标事件
 
 只有模型文件不存在、换了使用者、摄像头位置明显变化，或屏幕分辨率/缩放及显示器布局改变时，才建议重新标定。模型加载失败会保留原始文件错误，不会自动使用未标定模型。
@@ -272,12 +273,12 @@ NeuGaze 使用 `configs/cpu.yaml` 中的 `expression_evaluator_config` 识别表
 |----------|-----------------|----------------|-----------------|
 | **张嘴** | `jawOpen > 0.4`，且下颌没有明显左右偏移 | `numlock` | 打开透明全屏四分区选择层；稳定选择方向后回正并继续张嘴，最后闭嘴确认 |
 | **嘟嘴** | `mouthPucker > 0.97` 且 `mouthFunnel < 0.2` | `left_click` | 输出 `wave` / **挥手** |
-| **抬内眉** | `browInnerUp > 0.8` | `num8` | 输出 `dance` / **舞蹈** |
+| **抬内眉** | `browInnerUp > 0.8` | `num8` | 打开透明全屏四分区选择层；稳定选择方向后回正并继续抬眉，最后放松眉毛确认 |
 | **仅闭左眼** | `eyeBlinkLeft > 0.6` 且 `eyeBlinkRight < 0.25` | `extra` | 输出 `stop` / **停止** |
 
 `left_click`、`num8`、`extra` 和 `numlock` 是沿用的内部表达式 ID，不代表 Ubuntu
 会点击鼠标或发送对应键盘按键。下颌左右移动和左右/双侧微笑虽然仍可被表情评估器
-识别，但当前没有配置直接机器人动作。头部俯仰和偏航专用于张嘴后的四方向选择。
+识别，但当前没有配置直接机器人动作。头部俯仰和偏航专用于张嘴或抬眉打开的四方向选择。
 
 #### 表情阈值设置
 
@@ -313,15 +314,14 @@ Ubuntu 使用单一的 `robot_terminal` 输出路径，不使用 `game`、`game_
 | 内部表达式 ID | 动作 ID | 终端标签 | 来源 |
 |---------------|---------|----------|------|
 | `left_click` | `wave` | **挥手** | `expression` |
-| `num8` | `dance` | **舞蹈** | `expression` |
 | `extra` | `stop` | **停止** | `expression` |
 
 #### 张嘴加头部方向的全屏四分区选择层
 
 | 头部方向 | 动作 ID | 终端标签 |
 |----------|---------|----------|
-| **抬头** | `move_forward_step` | **前进一步** |
-| **低头** | `move_backward_step` | **后退一步** |
+| **抬头** | `move_forward_step` | **前进** |
+| **低头** | `move_backward_step` | **后退** |
 | **向左转头** | `turn_left` | **左转** |
 | **向右转头** | `turn_right` | **右转** |
 
@@ -333,18 +333,32 @@ Ubuntu 使用单一的 `robot_terminal` 输出路径，不使用 `game`、`game_
 4. 在中立位置连续 5 个有效帧识别为闭嘴后，系统只输出锁定的一个动作词条。人脸或 blendshape 丢失不会提交，并会解除闭嘴确认资格；恢复跟踪后必须重新完成第 3 步。
 5. 尚未锁定任何方向时，在中立位置持续闭嘴 30 个有效帧只会输出显式取消行，不会伪造动作。
 
+#### 抬眉加头部方向的全屏四分区选择层
+
+| 头部方向 | 动作 ID | 终端标签 |
+|----------|---------|----------|
+| **抬头** | `wave` | **挥手** |
+| **低头** | `dance` | **舞蹈** |
+| **向左转头** | `strafe_left` | **向左横移** |
+| **向右转头** | `strafe_right` | **向右横移** |
+
+抬内眉触发 `num8` 并打开第二个透明全屏选择层。方向同样必须连续稳定 5 个有效处理帧；选中后回到中立死区，并连续 3 个有效帧保持抬眉，随后连续 5 个有效帧放松眉毛才会提交。转头时抬眉识别短暂下降、人脸或 blendshape 丢失都不会提交。尚未锁定方向时，在中立位置放松眉毛 30 个有效帧只输出显式取消行。
+
 选择层背景完全透明，不遮挡当前桌面；仅绘制低透明度分区边界。当前头部方向对应的区域显示低透明蓝色高亮，中文动作标签使用 `Noto Sans CJK SC` 字体和深色圆角底板。窗口保持置顶、点击穿透且不获取焦点。全屏分区只提供方向反馈，选择不再使用注视坐标。
 
 #### 终端输出格式
 
 ```text
 [ROBOT_ACTION] id=wave label=挥手 source=expression
-[ROBOT_ACTION] id=dance label=舞蹈 source=expression
 [ROBOT_ACTION] id=stop label=停止 source=expression
-[ROBOT_ACTION] id=move_forward_step label=前进一步 source=wheel
-[ROBOT_ACTION] id=move_backward_step label=后退一步 source=wheel
+[ROBOT_ACTION] id=move_forward_step label=前进 source=wheel
+[ROBOT_ACTION] id=move_backward_step label=后退 source=wheel
 [ROBOT_ACTION] id=turn_left label=左转 source=wheel
 [ROBOT_ACTION] id=turn_right label=右转 source=wheel
+[ROBOT_ACTION] id=wave label=挥手 source=wheel
+[ROBOT_ACTION] id=dance label=舞蹈 source=wheel
+[ROBOT_ACTION] id=strafe_left label=向左横移 source=wheel
+[ROBOT_ACTION] id=strafe_right label=向右横移 source=wheel
 ```
 
 未选中轮盘区域时输出：
@@ -369,13 +383,24 @@ robot_wheel_config:
   pitch_threshold_degrees: 18.0
 robot_action_config:
   actions:
-    move_forward_step: 前进一步
-    move_backward_step: 后退一步
+    move_forward_step: 前进
+    move_backward_step: 后退
     turn_left: 左转
     turn_right: 右转
+    strafe_left: 向左横移
+    strafe_right: 向右横移
     wave: 挥手
     dance: 舞蹈
     stop: 停止
+  expressions:
+    numlock:
+      wheel: [move_forward_step, move_backward_step, turn_left, turn_right]
+    left_click:
+      action: wave
+    num8:
+      wheel: [wave, dance, strafe_left, strafe_right]
+    extra:
+      action: stop
 ```
 
 当前机器人选择层固定为透明全屏四方向布局，并且只接受 `selection: head_pose`。配置不再接受 `radius`；布局、选择方式、阈值字段缺失、未知或非法时，程序会在启动时明确报错。`yaw_threshold_degrees` 和 `pitch_threshold_degrees` 是相对 `head_angles_center` 的角度阈值，合法范围为 `(0, 45]`。头部动作不会映射到 W/S、A/D 或滚轮。
@@ -392,7 +417,7 @@ robot_action_config:
 ### 🤖 机器人控制
 
 - **动作词条验证**: 在终端检查表情识别和轮盘选择是否正确
-- **参考动作接入**: 将七个稳定动作 ID 映射到 GR00T/WBC reference motion
+- **参考动作接入**: 将九个稳定动作 ID 映射到 GR00T/WBC reference motion
 
 ### 🤖 智能设备集成
 
