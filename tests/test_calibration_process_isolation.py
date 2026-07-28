@@ -16,7 +16,11 @@ def test_pyside6_parent_waits_for_opencv_qt5_child_window():
     process.setArguments(
         [
             "-c",
-            """import cv2
+            """from my_model_arch.cpu_fast.calibration_worker import initialize_highgui
+
+initialize_highgui()
+import my_model_arch.cpu_fast.pipeline
+import cv2
 import numpy as np
 
 cv2.namedWindow("calibration-worker-probe", cv2.WINDOW_NORMAL)

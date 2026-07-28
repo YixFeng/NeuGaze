@@ -8,6 +8,81 @@ import yaml
 from my_model_arch.cpu_fast import calibration_worker as worker
 
 
+def test_initialize_highgui_preserves_primary_error_when_cleanup_fails(
+    monkeypatch,
+):
+    events = []
+    primary_error = RuntimeError("waitKey failed")
+    cleanup_error = OSError("destroyWindow failed")
+
+    class FakeCv2:
+        WINDOW_NORMAL = 1
+
+        @staticmethod
+        def namedWindow(name, flags):
+            events.append(("namedWindow", name, flags))
+
+        @staticmethod
+        def waitKey(delay):
+            events.append(("waitKey", delay))
+            raise primary_error
+
+        @staticmethod
+        def destroyWindow(name):
+            events.append(("destroyWindow", name))
+            raise cleanup_error
+
+    monkeypatch.setitem(worker.sys.modules, "cv2", FakeCv2)
+
+    with pytest.raises(RuntimeError) as caught:
+        worker.initialize_highgui()
+
+    assert caught.value is primary_error
+    assert caught.value.__notes__ == [
+        "HighGUI initialization window cleanup also failed: "
+        "OSError('destroyWindow failed')"
+    ]
+    assert events == [
+        ("namedWindow", worker.HIGHGUI_INITIALIZATION_WINDOW, 1),
+        ("waitKey", 1),
+        ("destroyWindow", worker.HIGHGUI_INITIALIZATION_WINDOW),
+    ]
+
+
+def test_initialize_highgui_propagates_cleanup_error(monkeypatch):
+    events = []
+    cleanup_error = OSError("destroyWindow failed")
+
+    class FakeCv2:
+        WINDOW_NORMAL = 1
+
+        @staticmethod
+        def namedWindow(name, flags):
+            events.append(("namedWindow", name, flags))
+
+        @staticmethod
+        def waitKey(delay):
+            events.append(("waitKey", delay))
+            return -1
+
+        @staticmethod
+        def destroyWindow(name):
+            events.append(("destroyWindow", name))
+            raise cleanup_error
+
+    monkeypatch.setitem(worker.sys.modules, "cv2", FakeCv2)
+
+    with pytest.raises(OSError) as caught:
+        worker.initialize_highgui()
+
+    assert caught.value is cleanup_error
+    assert events == [
+        ("namedWindow", worker.HIGHGUI_INITIALIZATION_WINDOW, 1),
+        ("waitKey", 1),
+        ("destroyWindow", worker.HIGHGUI_INITIALIZATION_WINDOW),
+    ]
+
+
 def write_model(root, calibration_time="20260727_120000"):
     path = root / "model_weights" / calibration_time / "model.pkl"
     path.parent.mkdir(parents=True)
@@ -414,3 +489,26 @@ def test_run_calibration_propagates_output_write_failure_after_cleanup(lifecycle
         "desktop.close",
         "result.write",
     ]
+
+
+def test_main_initializes_highgui_before_running_calibration(
+    tmp_path, monkeypatch
+):
+    config_path = tmp_path / "cpu.yaml"
+    events = []
+    monkeypatch.setattr(
+        worker.sys,
+        "argv",
+        ["calibration_worker", "--config", str(config_path)],
+    )
+    monkeypatch.setattr(
+        worker, "initialize_highgui", lambda: events.append("highgui")
+    )
+
+    def run_calibration(path, output):
+        assert output is worker.sys.stdout.buffer
+        events.append(("run", path))
+
+    monkeypatch.setattr(worker, "run_calibration", run_calibration)
+    worker.main()
+    assert events == ["highgui", ("run", config_path)]

@@ -453,3 +453,25 @@ missing frame、metadata、format、dimensions 与 byte-length 显式合同错�
 
 - 第 1 次独立 fresh full run（先执行）：`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 xvfb-run -a /home/yixiao/miniconda3/envs/neugaze/bin/python -m pytest -v`：529 passed / 1 skipped / 1 deselected，12.95s。唯一 skip 为需要 `xcompmgr` 的正向 overlay 用例；未传 `--run-orbbec` 的 Gemini 硬件用例保持 deselected。`/home/yixiao/miniconda3/envs/neugaze/bin/python -m py_compile config_gui_cpu.py my_model_arch/cpu_fast/calibration_worker.py` 与 `git diff --check` 均 exit 0。
 - 第 2 次独立 fresh full run（随后执行，并记录于本地 Task 4 report）：同一 pytest 命令为 529 passed / 1 skipped / 1 deselected，19.38s。12.95s 与 19.38s 是按此顺序完成的两次独立运行，不是同一次“最终”运行的两个耗时。
+
+## 真实 Xorg 校准窗口二次修复（2026-07-28）
+
+- 用户在 Gemini 335 实机上启动校准后仍看不到 `track`；worker 已启动，MediaPipe 与 Orbbec 均初始化成功，但没有结果 marker 或 traceback。
+- 只读运行证据显示 Gemini 335 RGB `1280x720@30` 正常 streaming，而 output frameset queue 持续满；worker 主线程占用约 100% CPU，Xorg 窗口树没有 `track`，说明主线程没有进入取帧循环。
+- 纯 `cv2.namedWindow` 在同一 `DISPLAY=:1` 正常；仅导入 production `pipeline.py` 后再调用 `namedWindow` 则稳定忙循环。进一步二分确认 `torch` 单独正常，`torchvision` import 后 HighGUI 卡死；Orbbec、MediaPipe inference、窗口尺寸和 fullscreen 均不是该二次根因。
+- 原 Xvfb 隔离测试只在子进程导入裸 `cv2`，没有导入 production pipeline/torchvision，因此没有覆盖该真实冲突。
+
+### 修复
+
+- `calibration_worker` 不再在模块导入期加载 `RealAction/pipeline/torchvision`。CLI 先创建并销毁专用 HighGUI 预热窗口，再显式延迟导入 production pipeline；正式 `track` 窗口继续由原 pipeline 创建。
+- 该顺序不增加重试、fallback、备用 renderer 或旧模型路径；预热失败直接产生原始 traceback 和非零 worker exit。
+- 如果事件初始化和预热窗口清理同时失败，保留事件初始化的原始异常与 traceback，并通过异常 note 显式附加清理错误；如果只有清理失败，则直接抛出清理错误。
+
+### 验证
+
+- 正式 Xvfb RED：production-order 子进程因缺少 `initialize_highgui` 退出 1；更早的 pipeline-import 探针在 `namedWindow` 超时，faulthandler 栈停在该调用。
+- worker 协议/生命周期、异常保真与 production-order 隔离组合：32 passed，2.73s。
+- 真实 Xorg、无相机探针依次输出 `highgui-prewarm-ok`、`production-build-ok`、`namedWindow-ok`、`done`，2.47s 内正常退出；修复前相同 production build 在 20s timeout 内卡死。
+- fresh 完整 Xvfb suite：547 passed / 1 skipped / 1 deselected，17.09s；唯一 skip 仍为需要 `xcompmgr` 的正向 overlay 用例。
+- `py_compile`（worker 与两项测试）和 `git diff --check` 均 exit 0；现有 `Log/` 保持未跟踪且未修改。
+- Gemini 335 真人完整校准仍需用户重新执行并确认可见全屏 `track`、模型/配置更新和 ESC+Q 取消；上述探针不等同于真人校准通过。

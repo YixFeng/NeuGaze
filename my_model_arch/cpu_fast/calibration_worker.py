@@ -1,4 +1,4 @@
-"""Run one calibration in a GUI-free Linux worker process."""
+"""Run one calibration in a PySide-free Linux worker process."""
 
 import argparse
 from collections.abc import Mapping
@@ -11,12 +11,13 @@ from typing import BinaryIO
 import yaml
 
 from . import desktop
-from .pipeline import RealAction
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 RESULT_PREFIX = b"NEUGAZE_CALIBRATION_RESULT="
 CALIBRATION_TIME = re.compile(r"\A\d{8}_\d{6}\Z")
+HIGHGUI_INITIALIZATION_WINDOW = "__neugaze_highgui_init__"
+RealAction = None
 
 
 def parse_calibration_result(
@@ -74,8 +75,37 @@ def load_config(config_path: Path) -> Mapping[str, object]:
     return config
 
 
-def build_pipeline(config: Mapping[str, object]) -> RealAction:
-    return RealAction(
+def initialize_highgui() -> None:
+    import cv2
+
+    cv2.namedWindow(HIGHGUI_INITIALIZATION_WINDOW, cv2.WINDOW_NORMAL)
+    try:
+        cv2.waitKey(1)
+    except BaseException as error:
+        try:
+            cv2.destroyWindow(HIGHGUI_INITIALIZATION_WINDOW)
+        except BaseException as cleanup_error:
+            error.add_note(
+                "HighGUI initialization window cleanup also failed: "
+                f"{cleanup_error!r}"
+            )
+        raise
+    cv2.destroyWindow(HIGHGUI_INITIALIZATION_WINDOW)
+
+
+def _real_action_class():
+    if RealAction is not None:
+        return RealAction
+
+    # Importing pipeline loads torchvision. On the deployed OpenCV Qt5 build,
+    # HighGUI must be initialized first or cv2.namedWindow busy-loops.
+    from .pipeline import RealAction as real_action_class
+
+    return real_action_class
+
+
+def build_pipeline(config: Mapping[str, object]):
+    return _real_action_class()(
         **config["real_action_config"],
         gaze_config=config["gaze_config"],
         mouse_control_config=config["mouse_control_config"],
@@ -167,6 +197,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True, type=Path)
     arguments = parser.parse_args()
+    initialize_highgui()
     run_calibration(arguments.config, sys.stdout.buffer)
 
 
