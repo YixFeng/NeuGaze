@@ -1159,14 +1159,12 @@ class IntegratedRegressionMediaPipeline:
     def cap_read_img(self):
         self.frame = self.camera.read()
         milliseconds = time.monotonic_ns() // 1_000_000
-        if (
-            self.milliseconds_list
-            and milliseconds <= self.milliseconds_list[-1]
-        ):
-            raise RuntimeError(
-                "MediaPipe frame timestamp did not advance: "
-                f"previous={self.milliseconds_list[-1]}, "
-                f"current={milliseconds}"
+        if self.milliseconds_list:
+            # MediaPipe requires strictly increasing integer milliseconds.
+            # Consecutive camera frames can share one quantized millisecond.
+            milliseconds = max(
+                milliseconds,
+                self.milliseconds_list[-1] + 1,
             )
         self.milliseconds = milliseconds
         self.milliseconds_list.append(milliseconds)

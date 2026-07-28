@@ -479,15 +479,32 @@ missing frame、metadata、format、dimensions 与 byte-length 显式合同错�
 ## Gemini 335 首次校准帧与 Xorg 全屏修复（2026-07-28）
 
 - 用户实测已进入新校准会话和第 1/9 点，证明独立 worker 与 HighGUI 创建链路已恢复；随后第一帧进入 MediaPipe 时因 `RealAction.milliseconds` 不存在而退出，同时 `track` 仅显示为左上角小窗口。
-- 时间戳根因是平台相机重构只保留了 `camera.read()`，删除了旧实现随成功帧更新 MediaPipe timestamp 的逻辑。现在每次成功读帧后使用 `time.monotonic_ns()` 生成毫秒时间戳，要求它严格递增，并保留最近 10 个值；不递增时直接抛出包含前值和当前值的错误。
+- 时间戳根因是平台相机重构只保留了 `camera.read()`，删除了旧实现随成功帧更新 MediaPipe timestamp 的逻辑。本轮首版虽然恢复了 `time.monotonic_ns()` 毫秒值，却错误地把两个队列帧落在同一整数毫秒视为异常；该结论已被随后实机校准推翻，并按下节修正。
 - 全屏根因由真实 `DISPLAY=:1` 测量确认：Xorg 尚未处理 `moveWindow()` 时，OpenCV Qt5 会静默忽略紧随其后的全屏请求，报告 `fullscreen=0`，图像区约为 `400×210`。现在移动后处理 100 ms 窗口事件，再请求全屏并继续处理 100 ms；随后读取并验证 `WND_PROP_FULLSCREEN`，未进入全屏就明确失败，不继续小窗口校准。
 - 该修复没有自动重试、备用窗口实现或 silent fallback。
 
 ### 验证
 
-- 新增三项可信 RED：窗口事件顺序不符、忽略全屏请求未报错、首次读帧没有 `milliseconds`；修复后三项均通过。另有一项回归测试要求时间戳不递增时保留旧状态并明确失败。
+- 新增三项可信 RED：窗口事件顺序不符、忽略全屏请求未报错、首次读帧没有 `milliseconds`；修复后三项均通过。首版“同毫秒必须失败”的测试合同已在下节删除，不再作为正确证据。
 - 真实 Xorg 修复后稳定测量：X11 物理画布 `4096×2160`，OpenCV Qt5 HiDPI 逻辑窗口 `fullscreen=1.0`、`rect=(0, 0, 2048, 1080)`。
 - Gemini 335 实机 RGB 三帧均为 `1280×720` 并实际进入 `detect_async`；单调时间戳为 `13390960`、`13390988`、`13391021`，原 `AttributeError` 路径未再出现。
 - 校准 pipeline、worker 与进程隔离组合：144 passed，7.24s。
 - fresh 完整 Xvfb suite：550 passed / 1 skipped / 1 deselected，17.02s；唯一 skip 仍为需要 `xcompmgr` 的正向 overlay 用例。
 - 真人 9 点完整数据采集、模型生成和 GUI 回写仍需用户再次执行确认，不能由三帧硬件探针替代。
+
+## Orbbec 队列同毫秒帧修正与加深验证（2026-07-28）
+
+- 用户第二次实测在第 1/9 点得到 `previous=14093958, current=14093958`。这是 Gemini 335 在校准窗口等待 2 秒期间积帧后连续返回队列帧，而不是单调时钟倒退；MediaPipe 只接受严格递增的整数毫秒，首版直接报错策略不正确。
+- 当前转换规则是 `max(time.monotonic_ns() // 1_000_000, previous + 1)`。它明确把纳秒单调时钟量化为 MediaPipe 所需的严格递增整数毫秒序列；保留最近 10 个已提交值，不重试相机、不切换后端、不吞掉相机或 MediaPipe 异常。
+
+### 验证
+
+- 同毫秒 RED/GREEN：固定原始时钟为 5 ms，首版在第二帧抛错；修正后三帧得到精确序列 `[5, 6, 7]`。
+- Gemini 335 无启动等待的 300 帧全部为 `1280×720` 并进入 `detect_async`，时间戳全部递增。
+- Gemini 335 按真实校准时序先等待 2.1 秒再处理 100 帧，前 12 个差值中出现 8 个 `1 ms` 步进，全部 100 帧进入 `detect_async` 并正常清理。
+- 生产组合探针实际执行 HighGUI 预热、完整 pipeline、Gemini 335、全屏窗口、2 秒等待和 100 帧 `detect_async`；结果为 `fullscreen=1.0`、`min_delta=1`、`one_ms_steps=8`，正常退出。
+- 合成完成链路按当前配置生成 9 点 × 25 样本，执行真实 `MultiTaskLassoCV` 累积训练，并确认 `quality_report.json`、`train_data.jsonl`、`model.pkl` 均生成且模型 fitted。
+- 校准 pipeline、worker 与进程隔离组合：145 passed，7.74s。
+- fresh 完整 Xvfb suite：551 passed / 1 skipped / 1 deselected，17.68s；唯一 skip 仍为需要 `xcompmgr` 的正向 overlay 用例。
+- protobuf `SymbolDatabase.GetPrototype()` 行是依赖库弃用警告，不是 worker 退出原因；本轮不隐藏该警告。
+- 真人 9 点的面部采样与 GUI 模型回写仍需用户重试确认；本轮不把硬件探针和合成训练写成真人校准通过。

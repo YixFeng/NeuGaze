@@ -294,27 +294,23 @@ def test_cap_read_img_updates_strictly_increasing_mediapipe_timestamp(
     assert pipeline.milliseconds_list == [1, 3]
 
 
-def test_cap_read_img_rejects_non_increasing_mediapipe_timestamp(
+def test_cap_read_img_advances_timestamp_for_frames_in_same_millisecond(
     monkeypatch,
 ):
     pipeline = _pipeline_without_constructor()
     pipeline.camera = SimpleNamespace(read=lambda: object())
-    pipeline.milliseconds = 5
-    pipeline.milliseconds_list = [5]
+    pipeline.milliseconds_list = []
     monkeypatch.setattr(
         pipeline_module.time,
         "monotonic_ns",
         lambda: 5_000_000,
     )
 
-    with pytest.raises(
-        RuntimeError,
-        match=r"timestamp did not advance: previous=5, current=5",
-    ):
+    for _ in range(3):
         pipeline.cap_read_img()
 
-    assert pipeline.milliseconds == 5
-    assert pipeline.milliseconds_list == [5]
+    assert pipeline.milliseconds == 7
+    assert pipeline.milliseconds_list == [5, 6, 7]
 
 
 def test_camera_read_exception_propagates():
@@ -963,6 +959,69 @@ def test_finish_calibration_preserves_production_failure(
         pipeline.finish_calibration("calibration/current", False, None, None)
 
     assert caught.value is error
+
+
+def test_finish_calibration_trains_and_saves_production_model(
+    tmp_path, monkeypatch
+):
+    pipeline = _pipeline_without_constructor()
+    pipeline.screen_size = (4096, 2160)
+    pipeline.calibrate_num_points = 9
+    pipeline.every_point_has_n_images = 25
+    pipeline.images_freq = 15
+    pipeline.eye_blink_threshold = 0.5
+    pipeline.use_accumulated_training = True
+    pipeline.max_accumulated_datasets = 10
+    pipeline.calibration_time = "20260728_150000"
+    pipeline.regression_model_type = "lassocv"
+    pipeline.regression_model = pipeline_module.MultiTaskLassoCV()
+    pipeline.collect_historical_calibration_data = lambda: []
+    pipeline.show_calibration_success = lambda: None
+    pipeline.show_calibration_failure = lambda message: pytest.fail(message)
+    pipeline.data_list = []
+
+    for point_index in range(9):
+        label = (
+            (point_index % 3 + 1) * 1024,
+            (point_index // 3 + 1) * 540,
+        )
+        for sample_index in range(25):
+            signal = point_index + sample_index / 100
+            landmarks = pipeline_module.np.zeros((478, 3))
+            landmarks[:, 2] = signal
+            pipeline.data_list.append(
+                {
+                    "box": [signal, signal + 1, signal + 2, signal + 3],
+                    "mediapipe_results": landmarks.tolist(),
+                    "yaw": signal,
+                    "pitch": -signal,
+                    "label": label,
+                    "target_point": label,
+                    "quality_score": 0.8,
+                    "image_path": f"images/{point_index}_{sample_index}.png",
+                }
+            )
+
+    monkeypatch.chdir(tmp_path)
+    calibration_path = (
+        tmp_path / "calibration" / pipeline.calibration_time
+    )
+
+    assert pipeline.finish_calibration(
+        f"{calibration_path}/",
+        False,
+        None,
+        None,
+    ) is True
+    assert (calibration_path / "quality_report.json").is_file()
+    assert (calibration_path / "train_data.jsonl").is_file()
+    assert (
+        tmp_path
+        / "model_weights"
+        / pipeline.calibration_time
+        / "model.pkl"
+    ).is_file()
+    assert pipeline.is_model_fitted() is True
 
 
 def test_accumulated_training_preserves_training_failure(tmp_path):
