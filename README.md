@@ -328,7 +328,7 @@ repeat the output.
 Usage sequence:
 
 1. Open your mouth to trigger `numlock` and show a transparent selector over the entire primary screen.
-2. Move your head up, down, left, or right from neutral. After pitch exceeds `10°` or yaw exceeds `12°`, the direction must remain stable for 5 valid processing frames before it locks and highlights. If both axes exceed their thresholds, the larger threshold-normalized movement wins. A temporary `jawOpen` drop while turning cannot submit an action.
+2. Move your head up, down, left, or right from neutral. After pitch exceeds `18°` or yaw exceeds `12°`, the direction must remain stable for 5 valid processing frames before it locks and highlights. If both axes exceed their thresholds, the larger threshold-normalized movement wins. A temporary `jawOpen` drop while turning cannot submit an action.
 3. After the direction highlights, return your head to the neutral dead zone while keeping your mouth open. Closing is armed only after 3 valid neutral frames recognize the mouth as open; the locked highlight remains visible while centered.
 4. Close your mouth while centered. Exactly one locked action is emitted after 5 valid closed-mouth frames. Loss of the face or blendshapes never submits and disarms closing, so step 3 must be repeated after tracking recovers.
 5. With no locked direction, keeping the head neutral and the mouth closed for 30 valid frames emits only an explicit cancellation line.
@@ -367,7 +367,7 @@ robot_wheel_config:
   layout: fullscreen_cardinal
   selection: head_pose
   yaw_threshold_degrees: 12.0
-  pitch_threshold_degrees: 10.0
+  pitch_threshold_degrees: 18.0
 robot_action_config:
   actions:
     move_forward_step: 前进一步

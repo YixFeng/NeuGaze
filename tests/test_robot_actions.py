@@ -317,7 +317,7 @@ def test_readmes_document_current_robot_action_contract(
     assert "fullscreen_cardinal" in text
     assert "selection: head_pose" in text
     assert "yaw_threshold_degrees: 12.0" in text
-    assert "pitch_threshold_degrees: 10.0" in text
+    assert "pitch_threshold_degrees: 18.0" in text
     assert "radius: 400" not in text
     assert "regression_model_path" in text
     for obsolete in obsolete_rows:

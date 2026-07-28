@@ -2157,7 +2157,7 @@ def test_default_yaml_builds_fullscreen_robot_and_fixed_windows_wheel(
         "layout": "fullscreen_cardinal",
         "selection": "head_pose",
         "yaw_threshold_degrees": 12.0,
-        "pitch_threshold_degrees": 10.0,
+        "pitch_threshold_degrees": 18.0,
     }
     assert windows_pipeline.wheel.radius == 1000
 

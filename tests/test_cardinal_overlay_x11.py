@@ -82,7 +82,12 @@ def test_physical_screen_size_rejects_invalid_qt_scale(
         overlay_module._physical_screen_size(screen)
 
 
-def _wheel(monkeypatch, screen_size=(3840, 2160)):
+def _wheel(
+    monkeypatch,
+    screen_size=(3840, 2160),
+    yaw_threshold_degrees=12.0,
+    pitch_threshold_degrees=10.0,
+):
     created = []
 
     def make_overlay(size):
@@ -98,8 +103,8 @@ def _wheel(monkeypatch, screen_size=(3840, 2160)):
     return (
         FullscreenCardinalWheel(
             subject,
-            yaw_threshold_degrees=12.0,
-            pitch_threshold_degrees=10.0,
+            yaw_threshold_degrees=yaw_threshold_degrees,
+            pitch_threshold_degrees=pitch_threshold_degrees,
         ),
         subject,
         created[0],
@@ -124,6 +129,23 @@ def test_fullscreen_wheel_maps_head_pose_with_neutral_dead_zone(
     wheel, _, _ = _wheel(monkeypatch)
 
     assert wheel.get_cardinal_from_head_pose(*head_pose) == expected_index
+
+def test_wider_pitch_dead_zone_preserves_left_and_right_selection(
+    monkeypatch,
+):
+    wheel, _, _ = _wheel(
+        monkeypatch,
+        yaw_threshold_degrees=12.0,
+        pitch_threshold_degrees=18.0,
+    )
+
+    assert wheel.get_cardinal_from_head_pose(17.9, 0.0) is None
+    assert wheel.get_cardinal_from_head_pose(-17.9, 0.0) is None
+    assert wheel.get_cardinal_from_head_pose(18.0, 0.0) == 0
+    assert wheel.get_cardinal_from_head_pose(-18.0, 0.0) == 1
+    assert wheel.get_cardinal_from_head_pose(14.0, 13.0) == 2
+    assert wheel.get_cardinal_from_head_pose(14.0, -13.0) == 3
+
 
 def test_fullscreen_wheel_requires_stable_selection_and_explicit_close(
     monkeypatch,

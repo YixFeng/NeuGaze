@@ -619,3 +619,18 @@ missing frame、metadata、format、dimensions 与 byte-length 显式合同错�
   `[ROBOT_ACTION]` 或取消输出，SIGTERM exit 0；随后硬件测试再次读取 100 帧、
   关闭、重开并读取 1 帧，`1 passed`，8.40s。真人转头/回正/闭嘴序列仍需用户
   按中文验收文档执行，不能由中立硬件探针代替。
+
+## 扩大俯仰中立区（2026-07-28）
+
+- 用户真人测试发现回正时的轻微抬头容易超过原 `10°` 俯仰阈值，连续 5 帧后会
+  把已锁定的左/右方向覆盖为前进，使左右动作难以完成确认。
+- 默认 `pitch_threshold_degrees` 从 `10.0` 提高到 `18.0`；偏航阈值继续为
+  `12.0`。因此抬头/低头需要更明显的动作，左右转头灵敏度不变，垂直中立区扩大
+  到 `(-18°, 18°)`。
+- 回归覆盖 `±17.9°` 仍为中立、`±18°` 才进入上下，以及 `pitch=14°`、
+  `yaw=±13°` 仍选择左右。focused：`160 passed / 3 deselected`，5.60s；
+  fresh 完整 Xvfb：`595 passed / 2 skipped / 1 deselected`，19.91s；
+  `xcompmgr` 正向覆盖层：`4 passed / 2 conditional skips / 20 deselected`，
+  2.66s。
+- README 中英文版和中文真人验收文档已同步。真人舒适度仍需用户重新完成四方向
+  各 5 次测试；本轮自动化不代替真人动作验收。
