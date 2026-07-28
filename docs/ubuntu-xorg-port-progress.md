@@ -576,3 +576,22 @@ missing frame、metadata、format、dimensions 与 byte-length 显式合同错�
 | 真实 worker + Gemini 335 | Evaluation 正常启动；向精确父 PID 发送与 `QProcess.terminate()` 相同的 SIGTERM 后 exit 0，无 traceback |
 | 真实 ConfigWindow + QProcess + Gemini 335 | Evaluation 连续运行 5 秒时成功切换标签页并调用三个配置控件，输出 `NEUGAZE_GUI_RESPONSIVE`；Stop 后 10 秒门限内正常清理，输出 `NEUGAZE_GUI_EVALUATION_STOPPED`，无错误对话框 |
 | 停止后的相机释放 | `tests/test_orbbec_hardware.py --run-orbbec`：`1 passed`，8.34s；再次读取 100 帧、关闭、重开并读取 1 帧 |
+
+## MediaPipe protobuf 弃用警告收窄（2026-07-28）
+
+- 终端中的 `SymbolDatabase.GetPrototype()` 来自 MediaPipe 0.10.14 的
+  `packet_getter.py` 调用 protobuf 4.25 兼容接口，不代表标定、Evaluation
+  或 Gemini 335 读取失败。
+- 校准 worker、Evaluation worker 和配置 GUI 入口现在只过滤
+  `google.protobuf.symbol_database` 发出的这一条完整弃用文本。GUI 原先的
+  `warnings.filterwarnings("ignore")` 全局忽略已删除；其他 warning、相机错误
+  和 traceback 继续原样显示。
+- 无摄像头真实 MediaPipe protobuf roundtrip 成功，`score=0.75`；目标警告
+  未出现，同时故意发出的无关 `UserWarning` 仍出现在 stderr。
+- worker focused：`36 passed`。首次 pytest 调用被系统 ROS 的 Python 3.12
+  插件自动发现及其缺失 `lark` 阻断，使用项目隔离设置
+  `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` 后测试正常通过；该环境问题与代码修改
+  无关。
+- fresh 完整 Xvfb suite：`587 passed / 2 skipped / 1 deselected`，19.44s；
+  两个 skip 为需要 `xcompmgr` 的正向覆盖层用例，Gemini 335 硬件用例因未传
+  `--run-orbbec` 保持 deselected。

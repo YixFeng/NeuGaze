@@ -1,11 +1,30 @@
 import io
 import json
 from pathlib import Path
+import warnings
 
 import pytest
 import yaml
 
 from my_model_arch.cpu_fast import calibration_worker as worker
+
+
+def test_only_known_mediapipe_protobuf_warning_is_filtered():
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        worker.filter_known_mediapipe_protobuf_warning()
+        warnings.warn_explicit(
+            worker.MEDIAPIPE_PROTOBUF_DEPRECATION,
+            UserWarning,
+            "symbol_database.py",
+            55,
+            module="google.protobuf.symbol_database",
+        )
+        warnings.warn("unrelated warning remains visible", UserWarning)
+
+    assert [str(item.message) for item in caught] == [
+        "unrelated warning remains visible"
+    ]
 
 
 def test_initialize_highgui_preserves_primary_error_when_cleanup_fails(

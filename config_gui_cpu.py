@@ -27,15 +27,17 @@ import os
 from pathlib import Path
 from PySide6.QtGui import QImage, QPixmap
 from my_model_arch.cpu_fast import desktop
-from my_model_arch.cpu_fast.calibration_worker import parse_calibration_result
+from my_model_arch.cpu_fast.calibration_worker import (
+    filter_known_mediapipe_protobuf_warning,
+    parse_calibration_result,
+)
 from my_model_arch.cpu_fast.camera import (
     CameraConfig,
     camera_config_from_mapping,
     list_cameras,
     open_camera,
 )
-import warnings
-warnings.filterwarnings("ignore")
+filter_known_mediapipe_protobuf_warning()
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent
 EVALUATION_STOP_TIMEOUT_MS = 5000

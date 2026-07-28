@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import sys
 from typing import BinaryIO
+import warnings
 
 import yaml
 
@@ -17,7 +18,24 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 RESULT_PREFIX = b"NEUGAZE_CALIBRATION_RESULT="
 CALIBRATION_TIME = re.compile(r"\A\d{8}_\d{6}\Z")
 HIGHGUI_INITIALIZATION_WINDOW = "__neugaze_highgui_init__"
+MEDIAPIPE_PROTOBUF_DEPRECATION = (
+    "SymbolDatabase.GetPrototype() is deprecated. Please use "
+    "message_factory.GetMessageClass() instead. "
+    "SymbolDatabase.GetPrototype() will be removed soon."
+)
 RealAction = None
+
+
+def filter_known_mediapipe_protobuf_warning() -> None:
+    # MediaPipe 0.10.14 still calls this protobuf 4.25 API in packet_getter.
+    # Filter only that known third-party deprecation; every other warning stays
+    # visible so worker and camera failures remain diagnosable.
+    warnings.filterwarnings(
+        "ignore",
+        message=rf"\A{re.escape(MEDIAPIPE_PROTOBUF_DEPRECATION)}\Z",
+        category=UserWarning,
+        module=r"google\.protobuf\.symbol_database",
+    )
 
 
 def parse_calibration_result(
@@ -125,6 +143,7 @@ def run_calibration(
     output: BinaryIO,
     repository_root: Path = REPOSITORY_ROOT,
 ) -> tuple[str, str]:
+    filter_known_mediapipe_protobuf_warning()
     root = repository_root.resolve()
     model_root = root / "model_weights"
     preexisting_models = {

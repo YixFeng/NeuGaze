@@ -7,10 +7,15 @@ import sys
 import threading
 
 from . import desktop
-from .calibration_worker import build_pipeline, load_config
+from .calibration_worker import (
+    build_pipeline,
+    filter_known_mediapipe_protobuf_warning,
+    load_config,
+)
 
 
 def run_evaluation(config_path: Path) -> None:
+    filter_known_mediapipe_protobuf_warning()
     state = {
         "pipeline": None,
         "pipeline_cleanup_attempted": False,
