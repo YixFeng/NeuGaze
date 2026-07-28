@@ -595,3 +595,27 @@ missing frame、metadata、format、dimensions 与 byte-length 显式合同错�
 - fresh 完整 Xvfb suite：`587 passed / 2 skipped / 1 deselected`，19.44s；
   两个 skip 为需要 `xcompmgr` 的正向覆盖层用例，Gemini 335 硬件用例因未传
   `--run-orbbec` 保持 deselected。
+
+## 头姿选择防误提交状态机（2026-07-28）
+
+- 用户实测指出左右转头会让 `jawOpen` 短暂跌破阈值；旧轮盘把这一帧
+  `numlock=True→False` 直接解释为闭嘴确认，可能在方向尚未稳定时提交。
+- Ubuntu 机器人轮盘不再依据瞬时表达式下降关闭。方向需连续稳定 5 个新鲜
+  MediaPipe 处理帧才锁定；轮盘线程以 observation generation 去重，不能把同一
+  摄像头帧的多次轮询累计为稳定帧。
+- 锁定后必须回到俯仰/偏航中立死区，并连续 3 个有效帧重新识别到张嘴，随后
+  连续 5 个有效闭嘴帧才提交。转头期间的口型下降不会提交；回正不会清除已锁定
+  高亮。
+- 人脸或 blendshape 丢失会显式发布无效观测、清空临时候选并解除闭嘴确认资格，
+  不会伪造成闭嘴；恢复后必须重新完成“中立位置张嘴”步骤。未锁定方向时，中立
+  闭嘴 30 个有效帧只输出显式取消行。
+- Windows 桌面轮盘路径未改。README 中英文版和中文真人验收文档已同步为
+  “张嘴打开 → 稳定选向 → 回正并继续张嘴 → 闭嘴提交”。
+- focused 状态机、pipeline、动作和文档：`159 passed / 3 deselected`，5.37s。
+  fresh 完整 Xvfb suite：`594 passed / 2 skipped / 1 deselected`，19.37s；
+  带 `xcompmgr` 的覆盖层正向集成：`4 passed / 2 conditional skips / 19 deselected`，
+  2.62s。
+- 真实 `DISPLAY=:1` + Gemini 335 Evaluation 中立运行 5 秒，无任何
+  `[ROBOT_ACTION]` 或取消输出，SIGTERM exit 0；随后硬件测试再次读取 100 帧、
+  关闭、重开并读取 1 帧，`1 passed`，8.40s。真人转头/回正/闭嘴序列仍需用户
+  按中文验收文档执行，不能由中立硬件探针代替。

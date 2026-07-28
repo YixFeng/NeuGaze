@@ -2426,6 +2426,54 @@ def _fullscreen_head_wheel(monkeypatch, pipeline):
     )
 
 
+def _publish_robot_wheel_observation(
+    pipeline,
+    *,
+    face_detected=True,
+    mouth_open_recognized=False,
+    jaw_open=0.05,
+    pitch=0.0,
+    yaw=0.0,
+):
+    pipeline.robot_wheel_observation_generation += 1
+    generation = pipeline.robot_wheel_observation_generation
+    pipeline.robot_wheel_observation = (
+        generation,
+        face_detected,
+        mouth_open_recognized if face_detected else None,
+        jaw_open if face_detected else None,
+        pitch if face_detected else None,
+        yaw if face_detected else None,
+    )
+
+
+def test_robot_wheel_observation_marks_tracking_loss_explicitly():
+    pipeline = _robot_pipeline_without_constructor()
+    pipeline.face_observation_valid = False
+
+    pipeline._publish_robot_wheel_observation()
+
+    assert pipeline.robot_wheel_observation == (
+        1, False, None, None, None, None
+    )
+
+
+def test_robot_wheel_observation_contains_fresh_face_control_values():
+    pipeline = _robot_pipeline_without_constructor()
+    pipeline.face_observation_valid = True
+    pipeline.keys_dict = SimpleNamespace(
+        state_dict={"numlock": {"v": True}}
+    )
+    pipeline.features = {"jawOpen": 0.73}
+    pipeline.head_angles = {"pitch": 4.0, "yaw": -13.0}
+
+    pipeline._publish_robot_wheel_observation()
+
+    assert pipeline.robot_wheel_observation == (
+        1, True, True, 0.73, 4.0, -13.0
+    )
+
+
 def test_robot_actions_emit_seven_lines_from_expressions_and_head_pose(
     monkeypatch, capsys
 ):
@@ -2467,6 +2515,7 @@ def test_robot_actions_emit_seven_lines_from_expressions_and_head_pose(
     wheel.current_categories = None
     wheel.selected_sector = None
     wheel.is_hidden = True
+    wheel.last_robot_observation_generation = None
     wheel.subject = pipeline
     wheel.sector_wheel = sector_wheel
     wheel.root = SimpleNamespace(after=lambda *args: None)
@@ -2478,17 +2527,36 @@ def test_robot_actions_emit_seven_lines_from_expressions_and_head_pose(
         ({"pitch": 0.0, "yaw": 13.0}, wheel_actions[2]),
         ({"pitch": 0.0, "yaw": -13.0}, wheel_actions[3]),
     ):
-        wheel.is_hidden = True
         pipeline.keys_dict.state_dict["numlock"]["v"] = True
         wheel.sector_wheel_main_loop()
         assert wheel.is_hidden is False
-
-        pipeline.head_angles = head_pose
-        sector_wheel.check_head_pose()
-        assert sector_wheel.selected_sector is expected_action
-
         pipeline.keys_dict.state_dict["numlock"]["v"] = False
-        wheel.sector_wheel_main_loop()
+
+        for _ in range(5):
+            _publish_robot_wheel_observation(
+                pipeline,
+                mouth_open_recognized=False,
+                jaw_open=0.05,
+                **head_pose,
+            )
+            wheel.sector_wheel_main_loop()
+        assert sector_wheel.selected_sector is expected_action
+        assert wheel.is_hidden is False
+
+        for _ in range(3):
+            _publish_robot_wheel_observation(
+                pipeline,
+                mouth_open_recognized=True,
+                jaw_open=0.7,
+            )
+            wheel.sector_wheel_main_loop()
+        for _ in range(5):
+            _publish_robot_wheel_observation(
+                pipeline,
+                mouth_open_recognized=False,
+                jaw_open=0.05,
+            )
+            wheel.sector_wheel_main_loop()
         assert wheel.is_hidden is True
         pipeline._drain_actions()
 
@@ -2524,23 +2592,42 @@ def test_robot_wheel_consumes_held_head_pose_in_fresh_open_cycles(
     wheel._worker_error = None
     wheel.lock = threading.Lock()
     wheel.is_hidden = True
+    wheel.last_robot_observation_generation = None
     wheel.subject = pipeline
     wheel.sector_wheel = sector_wheel
     wheel.root = SimpleNamespace(after=lambda *args: None)
 
-    def run_cycle(head_pose):
-        pipeline.head_angles = head_pose
+    def open_wheel():
         pipeline.keys_dict.state_dict["numlock"]["v"] = True
         wheel.sector_wheel_main_loop()
-        assert wheel.is_hidden is False
         pipeline.keys_dict.state_dict["numlock"]["v"] = False
-        wheel.sector_wheel_main_loop()
+        assert wheel.is_hidden is False
+
+    def observe(count, **observation):
+        for _ in range(count):
+            _publish_robot_wheel_observation(pipeline, **observation)
+            wheel.sector_wheel_main_loop()
+
+    def run_selected_cycle(head_pose):
+        open_wheel()
+        observe(
+            5,
+            mouth_open_recognized=False,
+            jaw_open=0.05,
+            **head_pose,
+        )
+        observe(3, mouth_open_recognized=True, jaw_open=0.7)
+        observe(5, mouth_open_recognized=False, jaw_open=0.05)
         assert wheel.is_hidden is True
         pipeline._drain_actions()
 
-    run_cycle({"pitch": 0.0, "yaw": 14.0})
-    run_cycle({"pitch": 0.0, "yaw": 14.0})
-    run_cycle({"pitch": 0.0, "yaw": 0.0})
+    run_selected_cycle({"pitch": 0.0, "yaw": 14.0})
+    run_selected_cycle({"pitch": 0.0, "yaw": 14.0})
+
+    open_wheel()
+    observe(30, mouth_open_recognized=False, jaw_open=0.05)
+    assert wheel.is_hidden is True
+    pipeline._drain_actions()
 
     assert capsys.readouterr().out.splitlines() == [
         "[ROBOT_ACTION] id=turn_left label=左转 source=wheel",
@@ -2563,6 +2650,8 @@ def _robot_pipeline_without_constructor():
     pipeline.published_op_xy_generation = 0
     pipeline.key_control = True
     pipeline.robot_action_config = mapping["robot_action_config"]
+    pipeline.robot_wheel_observation_generation = 0
+    pipeline.robot_wheel_observation = None
     return pipeline
 
 
@@ -2757,27 +2846,58 @@ def test_robot_wheel_open_does_not_move_desktop_pointer(monkeypatch):
     assert updates == [(categories, "cardinal")]
 
 
+def test_robot_wheel_counts_each_camera_observation_once():
+    pipeline = _robot_pipeline_without_constructor()
+    pipeline.keys_dict = SimpleNamespace(
+        state_dict={"numlock": {"v": False}}
+    )
+    pipeline.key_keeps_wheel_opening = "numlock"
+    pipeline.quit = False
+    pipeline.wheel_categories = ["a", "b", "c", "d"]
+    _publish_robot_wheel_observation(pipeline)
+    observations = []
+    wheel = object.__new__(ObserverWithSectorWheel)
+    wheel.should_run = True
+    wheel.lock = threading.Lock()
+    wheel.is_hidden = False
+    wheel.last_robot_observation_generation = None
+    wheel.subject = pipeline
+    wheel.sector_wheel = SimpleNamespace(
+        observe_control_frame=lambda **kwargs: observations.append(kwargs),
+    )
+    wheel.root = SimpleNamespace(after=lambda *args: None)
+
+    wheel.sector_wheel_main_loop()
+    wheel.sector_wheel_main_loop()
+
+    assert len(observations) == 1
+
+
 def test_robot_wheel_selection_keeps_robot_action_identity_and_emits_once(
     capsys
 ):
     pipeline = _robot_pipeline_without_constructor()
     selected = RobotAction("turn_left", "左转", "wheel")
     pipeline.action_queue = queue.Queue()
-    pipeline.keys_dict = SimpleNamespace(state_dict={"numlock": {"v": False}})
+    pipeline.keys_dict = SimpleNamespace(
+        state_dict={"numlock": {"v": False}}
+    )
     pipeline.key_keeps_wheel_opening = "numlock"
     pipeline.quit = False
     pipeline.wheel_categories = [selected] * 4
     pipeline.wheel_layout_type = "cardinal"
+    _publish_robot_wheel_observation(pipeline)
     wheel = object.__new__(ObserverWithSectorWheel)
     wheel.should_run = True
     wheel.lock = threading.Lock()
     wheel.current_categories = None
     wheel.selected_sector = None
     wheel.is_hidden = False
+    wheel.last_robot_observation_generation = None
     wheel.subject = pipeline
     wheel.sector_wheel = SimpleNamespace(
         selected_sector=selected,
-        check_head_pose=lambda: None,
+        observe_control_frame=lambda **kwargs: "submit",
         hide=lambda: setattr(wheel, "should_run", False),
     )
     wheel.root = SimpleNamespace(after=lambda *args: None)
@@ -2795,20 +2915,24 @@ def test_robot_wheel_selection_keeps_robot_action_identity_and_emits_once(
 def test_robot_wheel_cancel_is_silent_except_for_explicit_cancel_line(capsys):
     pipeline = _robot_pipeline_without_constructor()
     pipeline.action_queue = queue.Queue()
-    pipeline.keys_dict = SimpleNamespace(state_dict={"numlock": {"v": False}})
+    pipeline.keys_dict = SimpleNamespace(
+        state_dict={"numlock": {"v": False}}
+    )
     pipeline.key_keeps_wheel_opening = "numlock"
     pipeline.quit = False
     pipeline.wheel_categories = []
+    _publish_robot_wheel_observation(pipeline)
     wheel = object.__new__(ObserverWithSectorWheel)
     wheel.should_run = True
     wheel.lock = threading.Lock()
     wheel.current_categories = None
     wheel.selected_sector = None
     wheel.is_hidden = False
+    wheel.last_robot_observation_generation = None
     wheel.subject = pipeline
     wheel.sector_wheel = SimpleNamespace(
         selected_sector=None,
-        check_head_pose=lambda: None,
+        observe_control_frame=lambda **kwargs: "cancel",
         hide=lambda: setattr(wheel, "should_run", False),
     )
     wheel.root = SimpleNamespace(after=lambda *args: None)

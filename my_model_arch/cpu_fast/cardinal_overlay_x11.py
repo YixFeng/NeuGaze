@@ -12,6 +12,11 @@ from .gaze_overlay_x11 import _x11_compositor_owner_exists
 _START_TIMEOUT_SECONDS = 5.0
 _STOP_TIMEOUT_SECONDS = 5.0
 _POLL_INTERVAL_MS = 16
+_SELECTION_STABLE_FRAMES = 5
+_NEUTRAL_OPEN_STABLE_FRAMES = 3
+_CLOSE_STABLE_FRAMES = 5
+_CANCEL_STABLE_FRAMES = 30
+_JAW_CLOSED_THRESHOLD = 0.2
 
 
 def _physical_screen_size(screen):
@@ -435,6 +440,12 @@ class FullscreenCardinalWheel:
         self.categories = ()
         self.selected_sector = None
         self._selected_index = None
+        self._candidate_index = None
+        self._candidate_frames = 0
+        self._neutral_open_frames = 0
+        self._closed_frames = 0
+        self._cancel_frames = 0
+        self._close_armed = False
         self._overlay = CardinalOverlay(subject.screen_size)
 
     def start(self):
@@ -452,6 +463,12 @@ class FullscreenCardinalWheel:
         self.categories = tuple(categories)
         self.selected_sector = None
         self._selected_index = None
+        self._candidate_index = None
+        self._candidate_frames = 0
+        self._neutral_open_frames = 0
+        self._closed_frames = 0
+        self._cancel_frames = 0
+        self._close_armed = False
         self._overlay.show(
             tuple(
                 category.label
@@ -476,20 +493,83 @@ class FullscreenCardinalWheel:
             return 0 if pitch > 0 else 1
         return 2 if yaw > 0 else 3
 
-    def check_head_pose(self):
-        head_angles = self.subject.head_angles
-        index = self.get_cardinal_from_head_pose(
-            head_angles["pitch"],
-            head_angles["yaw"],
-        )
-        self.selected_sector = (
-            self.categories[index] if index is not None else None
-        )
-        if index != self._selected_index:
-            self._selected_index = index
-            self._overlay.select(index)
-        else:
+    def observe_control_frame(
+        self,
+        *,
+        face_detected,
+        mouth_open_recognized,
+        jaw_open,
+        pitch,
+        yaw,
+    ):
+        if not face_detected:
+            self._candidate_index = None
+            self._candidate_frames = 0
+            self._neutral_open_frames = 0
+            self._closed_frames = 0
+            self._cancel_frames = 0
+            self._close_armed = False
             self._overlay.raise_if_failed()
+            return None
+
+        jaw_open = float(jaw_open)
+        if not math.isfinite(jaw_open):
+            raise RuntimeError(
+                f"jawOpen must be finite, got {jaw_open!r}"
+            )
+        index = self.get_cardinal_from_head_pose(pitch, yaw)
+        if index is not None:
+            self._neutral_open_frames = 0
+            self._closed_frames = 0
+            self._cancel_frames = 0
+            self._close_armed = False
+            if index == self._candidate_index:
+                self._candidate_frames += 1
+            else:
+                self._candidate_index = index
+                self._candidate_frames = 1
+            if self._candidate_frames >= _SELECTION_STABLE_FRAMES:
+                if index != self._selected_index:
+                    self._selected_index = index
+                    self.selected_sector = self.categories[index]
+                    self._close_armed = False
+                    self._overlay.select(index)
+                else:
+                    self._overlay.raise_if_failed()
+            else:
+                self._overlay.raise_if_failed()
+            return None
+
+        self._candidate_index = None
+        self._candidate_frames = 0
+        if self.selected_sector is None:
+            if jaw_open < _JAW_CLOSED_THRESHOLD:
+                self._cancel_frames += 1
+                if self._cancel_frames >= _CANCEL_STABLE_FRAMES:
+                    return "cancel"
+            else:
+                self._cancel_frames = 0
+            self._overlay.raise_if_failed()
+            return None
+
+        self._cancel_frames = 0
+        if mouth_open_recognized:
+            self._neutral_open_frames += 1
+            self._closed_frames = 0
+            if self._neutral_open_frames >= _NEUTRAL_OPEN_STABLE_FRAMES:
+                self._close_armed = True
+            self._overlay.raise_if_failed()
+            return None
+
+        self._neutral_open_frames = 0
+        if self._close_armed and jaw_open < _JAW_CLOSED_THRESHOLD:
+            self._closed_frames += 1
+            if self._closed_frames >= _CLOSE_STABLE_FRAMES:
+                return "submit"
+        else:
+            self._closed_frames = 0
+        self._overlay.raise_if_failed()
+        return None
 
     def hide(self):
         self._overlay.hide()

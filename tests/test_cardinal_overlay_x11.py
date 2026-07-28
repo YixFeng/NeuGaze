@@ -125,10 +125,10 @@ def test_fullscreen_wheel_maps_head_pose_with_neutral_dead_zone(
 
     assert wheel.get_cardinal_from_head_pose(*head_pose) == expected_index
 
-def test_fullscreen_wheel_shows_labels_and_tracks_latest_head_pose(
+def test_fullscreen_wheel_requires_stable_selection_and_explicit_close(
     monkeypatch,
 ):
-    wheel, subject, overlay = _wheel(monkeypatch)
+    wheel, _, overlay = _wheel(monkeypatch)
     actions = (
         RobotAction("move_forward_step", "前进一步", "wheel"),
         RobotAction("move_backward_step", "后退一步", "wheel"),
@@ -138,19 +138,141 @@ def test_fullscreen_wheel_shows_labels_and_tracks_latest_head_pose(
 
     wheel.start()
     wheel.update_categories(actions)
-    subject.head_angles = {"pitch": 0.0, "yaw": 14.0}
-    wheel.check_head_pose()
+    for _ in range(4):
+        assert wheel.observe_control_frame(
+            face_detected=True,
+            mouth_open_recognized=False,
+            jaw_open=0.05,
+            pitch=0.0,
+            yaw=14.0,
+        ) is None
+    assert wheel.selected_sector is None
+
+    assert wheel.observe_control_frame(
+        face_detected=True,
+        mouth_open_recognized=False,
+        jaw_open=0.05,
+        pitch=0.0,
+        yaw=14.0,
+    ) is None
+    assert wheel.selected_sector is actions[2]
+
+    for _ in range(3):
+        assert wheel.observe_control_frame(
+            face_detected=True,
+            mouth_open_recognized=True,
+            jaw_open=0.7,
+            pitch=0.0,
+            yaw=0.0,
+        ) is None
+    for _ in range(4):
+        assert wheel.observe_control_frame(
+            face_detected=True,
+            mouth_open_recognized=False,
+            jaw_open=0.05,
+            pitch=0.0,
+            yaw=0.0,
+        ) is None
+    assert wheel.observe_control_frame(
+        face_detected=True,
+        mouth_open_recognized=False,
+        jaw_open=0.05,
+        pitch=0.0,
+        yaw=0.0,
+    ) == "submit"
+
     wheel.hide()
     wheel.stop()
-
-    assert wheel.selected_sector is actions[2]
-    assert overlay.calls == [
+    assert [
+        call for call in overlay.calls if call[0] != "raise_if_failed"
+    ] == [
         ("start", None),
         ("show", ("前进一步", "后退一步", "左转", "右转")),
         ("select", 2),
         ("hide", None),
         ("stop", None),
     ]
+
+
+def test_tracking_loss_and_turning_mouth_dropout_never_submit(monkeypatch):
+    wheel, _, _ = _wheel(monkeypatch)
+    actions = tuple(
+        RobotAction(f"action_{index}", str(index), "wheel")
+        for index in range(4)
+    )
+    wheel.update_categories(actions)
+
+    for yaw in (0.0, 3.0, 6.0, 9.0, 11.0):
+        assert wheel.observe_control_frame(
+            face_detected=True,
+            mouth_open_recognized=False,
+            jaw_open=0.05,
+            pitch=0.0,
+            yaw=yaw,
+        ) is None
+    for _ in range(20):
+        assert wheel.observe_control_frame(
+            face_detected=False,
+            mouth_open_recognized=None,
+            jaw_open=None,
+            pitch=None,
+            yaw=None,
+        ) is None
+
+    for _ in range(5):
+        assert wheel.observe_control_frame(
+            face_detected=True,
+            mouth_open_recognized=False,
+            jaw_open=0.05,
+            pitch=0.0,
+            yaw=14.0,
+        ) is None
+    assert wheel.selected_sector is actions[2]
+    for _ in range(20):
+        assert wheel.observe_control_frame(
+            face_detected=True,
+            mouth_open_recognized=False,
+            jaw_open=0.05,
+            pitch=0.0,
+            yaw=0.0,
+        ) is None
+
+
+def test_tracking_loss_disarms_previously_armed_close(monkeypatch):
+    wheel, _, _ = _wheel(monkeypatch)
+    wheel.update_categories(tuple(str(index) for index in range(4)))
+    for _ in range(5):
+        wheel.observe_control_frame(
+            face_detected=True,
+            mouth_open_recognized=False,
+            jaw_open=0.05,
+            pitch=0.0,
+            yaw=-14.0,
+        )
+    for _ in range(3):
+        wheel.observe_control_frame(
+            face_detected=True,
+            mouth_open_recognized=True,
+            jaw_open=0.7,
+            pitch=0.0,
+            yaw=0.0,
+        )
+    wheel.observe_control_frame(
+        face_detected=False,
+        mouth_open_recognized=None,
+        jaw_open=None,
+        pitch=None,
+        yaw=None,
+    )
+
+    for _ in range(10):
+        assert wheel.observe_control_frame(
+            face_detected=True,
+            mouth_open_recognized=False,
+            jaw_open=0.05,
+            pitch=0.0,
+            yaw=0.0,
+        ) is None
 
 
 def test_fullscreen_wheel_rejects_nonfinite_head_pose(monkeypatch):

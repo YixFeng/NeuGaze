@@ -198,6 +198,50 @@ def test_resolve_robot_action_returns_label_and_rejects_unknown_id(valid_config)
 
 
 @pytest.mark.parametrize(
+    ("filename", "required_rows", "obsolete_rows"),
+    [
+        (
+            "README-CN.md",
+            (
+                "方向必须连续稳定 5 个有效处理帧",
+                "回到阈值内的中立死区，同时继续张嘴",
+                "连续 5 个有效帧识别为闭嘴",
+                "人脸或 blendshape 丢失不会提交",
+            ),
+            (
+                "保持目标方向并闭嘴确认",
+                "中立死区会清除选区",
+            ),
+        ),
+        (
+            "README.md",
+            (
+                "stable for 5 valid processing frames",
+                "return your head to the neutral dead zone while keeping your mouth open",
+                "after 5 valid closed-mouth frames",
+                "Loss of the face or blendshapes never submits",
+            ),
+            (
+                "Hold the target direction and close your mouth to confirm",
+                "Returning to the neutral dead zone clears the selection",
+            ),
+        ),
+    ],
+)
+def test_readmes_document_guarded_head_pose_confirmation(
+    filename, required_rows, obsolete_rows
+):
+    text = (Path(__file__).parents[1] / filename).read_text(
+        encoding="utf-8"
+    )
+
+    for row in required_rows:
+        assert row in text
+    for row in obsolete_rows:
+        assert row not in text
+
+
+@pytest.mark.parametrize(
     ("filename", "expression_rows", "wheel_rows", "obsolete_rows"),
     [
         (

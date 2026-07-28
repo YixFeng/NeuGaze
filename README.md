@@ -244,7 +244,7 @@ python config_gui_cpu.py
 
 - Click "Start Evaluation". Recognition runs in a separate process, so configuration tabs remain viewable and interactive. Camera switching and recalibration controls are disabled while the camera is in use, and the button changes to "Stop Evaluation"
 - After one successful calibration, the GUI stores the generated `model.pkl` path in `regression_model_path`; later launches can go directly to "Start Evaluation" without recalibrating every time
-- Open your mouth to show the transparent full-screen four-region selector; keep it open, move your head toward the target direction, then close your mouth to confirm
+- Open your mouth to show the transparent full-screen four-region selector, hold a head direction until it locks, return to neutral while keeping your mouth open, and then close your mouth to confirm
 - Pucker your lips, raise your inner brows, or close only your left eye to trigger direct robot action labels
 - Ubuntu prints `[ROBOT_ACTION]` lines and does not emit keyboard or mouse events
 
@@ -268,7 +268,7 @@ Ubuntu robot-output contract:
 
 | User action | MediaPipe condition | Internal expression ID | Current Ubuntu behavior |
 |-------------|---------------------|------------------------|-------------------------|
-| **Open mouth** | `jawOpen > 0.4`, with no substantial left/right jaw shift | `numlock` | Open the transparent full-screen four-region selector; hold, select by head direction, and close to confirm |
+| **Open mouth** | `jawOpen > 0.4`, with no substantial left/right jaw shift | `numlock` | Open the full-screen selector; lock a direction, return to neutral while still open, then close to confirm |
 | **Pucker lips** | `mouthPucker > 0.97` and `mouthFunnel < 0.2` | `left_click` | Emit `wave` / **挥手** |
 | **Raise inner brows** | `browInnerUp > 0.8` | `num8` | Emit `dance` / **舞蹈** |
 | **Close only the left eye** | `eyeBlinkLeft > 0.6` and `eyeBlinkRight < 0.25` | `extra` | Emit `stop` / **停止** |
@@ -328,9 +328,10 @@ repeat the output.
 Usage sequence:
 
 1. Open your mouth to trigger `numlock` and show a transparent selector over the entire primary screen.
-2. Keep your mouth open and move your head up, down, left, or right from neutral. The corresponding region highlights after pitch exceeds `10°` or yaw exceeds `12°`. If both axes exceed their thresholds, the larger threshold-normalized movement wins.
-3. Hold the target direction and close your mouth to confirm; exactly one selected action label is emitted.
-4. Returning to the neutral dead zone clears the selection. Closing there emits an explicit cancellation line and no action.
+2. Move your head up, down, left, or right from neutral. After pitch exceeds `10°` or yaw exceeds `12°`, the direction must remain stable for 5 valid processing frames before it locks and highlights. If both axes exceed their thresholds, the larger threshold-normalized movement wins. A temporary `jawOpen` drop while turning cannot submit an action.
+3. After the direction highlights, return your head to the neutral dead zone while keeping your mouth open. Closing is armed only after 3 valid neutral frames recognize the mouth as open; the locked highlight remains visible while centered.
+4. Close your mouth while centered. Exactly one locked action is emitted after 5 valid closed-mouth frames. Loss of the face or blendshapes never submits and disarms closing, so step 3 must be repeated after tracking recovers.
+5. With no locked direction, keeping the head neutral and the mouth closed for 30 valid frames emits only an explicit cancellation line.
 
 The selector has a fully transparent background and does not obscure the desktop. It draws only subtle separators, a low-opacity blue highlight for the active head direction, and clean `Noto Sans CJK SC` labels on compact dark rounded panels. The window stays on top, passes clicks through, and never takes focus. The full-screen regions are visual direction feedback; gaze coordinates no longer select an action.
 

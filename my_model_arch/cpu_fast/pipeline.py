@@ -2184,6 +2184,7 @@ class BindKeys(IntegratedRegressionMediaPipeline):
                  **kwargs):
         super().__init__(**kwargs)
         self.features = None
+        self.face_observation_valid = False
         self.keys_dict = StateRecordDict()  # only for bool value
         self.head_dict = StateRecordDict()  # only for bool value
         self.mouse_dict = None
@@ -2269,7 +2270,8 @@ class BindKeys(IntegratedRegressionMediaPipeline):
 
     def bind_keys(self):
         face_blendshapes = self.mp_result.face_blendshapes
-        if len(face_blendshapes) == 1:
+        self.face_observation_valid = len(face_blendshapes) == 1
+        if self.face_observation_valid:
             face_blendshapes = face_blendshapes[0]
             face_blendshapes_names = [face_blendshapes_category.category_name for face_blendshapes_category in
                                       face_blendshapes]
@@ -2468,6 +2470,8 @@ class RealAction(BindKeys):
         self.op_xy = (None, None)
         self.op_xy_generation = 0
         self.published_op_xy_generation = 0
+        self.robot_wheel_observation_generation = 0
+        self.robot_wheel_observation = None
         if self.action_output == "robot_terminal":
             wheel_runtime_config = self.robot_wheel_config
         else:
@@ -2890,6 +2894,8 @@ class RealAction(BindKeys):
         self.gaze_mouse_controller.raise_if_failed()
         t0 = time.time()
         super().call_after_each_eval_loop()
+        if self.action_output == "robot_terminal":
+            self._publish_robot_wheel_observation()
         t1 = time.time()
         overlay = self.gaze_overlay
         if overlay is not None:
@@ -2914,6 +2920,31 @@ class RealAction(BindKeys):
                 self.mouse_dict['x'], self.mouse_dict['y']
             )
         self._drain_actions()
+
+
+    def _publish_robot_wheel_observation(self):
+        self.robot_wheel_observation_generation += 1
+        generation = self.robot_wheel_observation_generation
+        if not self.face_observation_valid:
+            self.robot_wheel_observation = (
+                generation, False, None, None, None, None
+            )
+            return
+
+        numlock_state = self.keys_dict.state_dict.get("numlock")
+        if numlock_state is None:
+            raise RuntimeError(
+                "robot wheel requires the numlock expression state"
+            )
+        jaw_open = self.features["jawOpen"]
+        self.robot_wheel_observation = (
+            generation,
+            True,
+            bool(numlock_state["v"]),
+            jaw_open,
+            self.head_angles["pitch"],
+            self.head_angles["yaw"],
+        )
 
 
     def set_key_control(self,key_control):
@@ -3257,12 +3288,14 @@ class ObserverWithSectorWheel:
         self.current_categories = None
         self.selected_sector = None
         self.is_hidden = True
+        self.last_robot_observation_generation = None
 
     def start(self):
         self.raise_if_failed()
         self.current_categories = None
         self.selected_sector = None
         self.is_hidden = True
+        self.last_robot_observation_generation = None
         if self._thread is not None:
             raise RuntimeError("wheel is already started")
         self.should_run = True
@@ -3406,22 +3439,76 @@ class ObserverWithSectorWheel:
                     key = self.subject.key_keeps_wheel_opening
                     if categories is not None and key is not None:
                         new_categories = self.subject.wheel_categories
-                        if self.subject.keys_dict.state_dict[key]['v']:
-                            if self.is_hidden:
-                                if self.subject.action_output == "desktop":
-                                    desktop.move_pointer(
-                                        *self.subject.mid_point, relative=False
+                        key_is_active = (
+                            self.subject.keys_dict.state_dict[key]["v"]
+                        )
+                        if self.subject.action_output == "robot_terminal":
+                            if self.is_hidden and key_is_active:
+                                self.sector_wheel.update_categories(
+                                    new_categories,
+                                    layout_type=self.subject.wheel_layout_type,
+                                )
+                                self.last_robot_observation_generation = None
+                                self.is_hidden = False
+                            elif not self.is_hidden:
+                                observation = (
+                                    self.subject.robot_wheel_observation
+                                )
+                                if (
+                                    observation is not None
+                                    and observation[0]
+                                    != self.last_robot_observation_generation
+                                ):
+                                    (
+                                        generation,
+                                        face_detected,
+                                        mouth_open_recognized,
+                                        jaw_open,
+                                        pitch,
+                                        yaw,
+                                    ) = observation
+                                    self.last_robot_observation_generation = (
+                                        generation
                                     )
+                                    decision = (
+                                        self.sector_wheel.observe_control_frame(
+                                            face_detected=face_detected,
+                                            mouth_open_recognized=(
+                                                mouth_open_recognized
+                                            ),
+                                            jaw_open=jaw_open,
+                                            pitch=pitch,
+                                            yaw=yaw,
+                                        )
+                                    )
+                                    if decision in ("submit", "cancel"):
+                                        self.sector_wheel.hide()
+                                        selected = (
+                                            self.sector_wheel.selected_sector
+                                            if decision == "submit"
+                                            else None
+                                        )
+                                        action = (
+                                            self.subject.make_wheel_action(
+                                                selected
+                                            )
+                                        )
+                                        if action is not None:
+                                            self.subject.action_queue.put(
+                                                action
+                                            )
+                                        self.is_hidden = True
+                        elif key_is_active:
+                            if self.is_hidden:
+                                desktop.move_pointer(
+                                    *self.subject.mid_point, relative=False
+                                )
                                 self.sector_wheel.update_categories(
                                     new_categories,
                                     layout_type=self.subject.wheel_layout_type,
                                 )
                                 self.is_hidden = False
-                            elif self.subject.action_output == "robot_terminal":
-                                self.sector_wheel.check_head_pose()
                         elif not self.is_hidden:
-                            if self.subject.action_output == "robot_terminal":
-                                self.sector_wheel.check_head_pose()
                             self.sector_wheel.hide()
                             selected = self.sector_wheel.selected_sector
                             action = self.subject.make_wheel_action(selected)
