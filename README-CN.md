@@ -12,7 +12,7 @@
 QQ 群 ：809133143
 *一个结合面部表情识别、头部动作追踪和凝视估计的非侵入式计算机控制系统，专为免手操作的人机交互而设计。*
 
-当前 Ubuntu 24.04 Xorg 版本使用面部动作与头部方向选择输出机器人动作词条，为后续接入 GR00T Whole-Body Control 与 SONIC reference motion 做验证；Ubuntu 不发送游戏键位。
+当前 Ubuntu 24.04 Xorg 版本使用面部动作与头部方向选择输出机器人动作词条，可选择在 Terminal 验证，或通过本机 ZeroMQ IPC 驱动 SONIC 中预加载的 reference motion；Ubuntu 不发送游戏键位。
 
 
 
@@ -91,7 +91,7 @@ NeuGaze 使用一条共享 Python 管线，并按平台、摄像头和测试用�
 | 校准与状态 | scikit-learn、FilterPy、jsonlines、PyYAML | 校准回归、注视平滑、记录和配置解析 |
 | GUI 与桌面集成 | PySide6；Ubuntu 使用 `python-xlib`；Windows 使用 PyWin32 | 配置界面、透明层、轮盘和平台桌面接口 |
 | 摄像头 | Gemini 335 使用 `pyorbbecsdk2`；Linux 普通视频设备使用 OpenCV/V4L2 | 从明确选择的后端读取 RGB 图像 |
-| 机器人词条输出 | 仅 Python 标准库 | Ubuntu 打印经过校验的机器人动作词条；不需要 SONIC |
+| 机器人词条输出 | Python 标准库；连接 SONIC 时使用 `pyzmq` | Ubuntu 可打印动作词条或请求 SONIC 播放 reference motion |
 | 开发测试 | pytest；隔离 X11 测试使用 Xvfb/Xauth | 可选自动化测试，不属于 NeuGaze 日常运行依赖 |
 
 `requirements-ubuntu.txt` 是可复现的完整 Ubuntu 运行锁。Torchaudio 和 tqdm 没有被主 GUI 路径直接导入，但在运行环境与模型转换环境完成拆分及全新安装验证前仍保留固定版本。当前安全的精简方式，是在日常运行时不安装测试依赖和 Xvfb/Xauth。摄像头后端及模型转换包的拆分需要单独执行全新安装验证；不要手工删改运行锁。
@@ -259,8 +259,8 @@ python config_gui_cpu.py
 ## 😊 表情与控制配置
 
 NeuGaze 使用 `configs/cpu.yaml` 中的 `expression_evaluator_config` 识别表情，再由
-`robot_action_config` 将识别结果映射为机器人动作词条。Ubuntu 当前只输出终端词条，
-用于验证识别和轮盘选择；尚未直接调用 SONIC 或 WBC。
+`robot_action_config` 将识别结果映射为机器人动作词条。`robot_action_output_config`
+显式选择只打印到 Terminal，或通过本机 IPC 请求 SONIC 执行动作。
 
 ### 🎭 表情检测
 
@@ -304,8 +304,9 @@ left_click:
 
 ### 🤖 Ubuntu 机器人动作输出
 
-Ubuntu 使用单一的 `robot_terminal` 输出路径，不使用 `game`、`game_cs`、`game_wz`
-或 `type` 的键位表，也不会发送桌面键盘/鼠标事件。
+Ubuntu 使用机器人动作输出路径，不使用 `game`、`game_cs`、`game_wz` 或 `type` 的
+键位表。默认 `terminal` 只打印；`sonic_ipc` 等待 SONIC 明确确认后再打印成功行，
+也不会发送桌面键盘/鼠标事件。
 
 #### 直接表情动作
 
@@ -367,8 +368,8 @@ Ubuntu 使用单一的 `robot_terminal` 输出路径，不使用 `game`、`game_
 [ROBOT_ACTION_CANCELLED] reason=no_selection source=wheel
 ```
 
-这些标签是下一步接入 GR00T Whole-Body Control / SONIC reference motion 的稳定动作
-标识；当前版本只打印，不启动机器人控制器。
+这些标签也是 NeuGaze 与 SONIC 之间的稳定动作标识。SONIC 持有动作 ID 到 reference
+motion 目录的映射；NeuGaze 不传输 CSV 或逐帧姿态。
 
 ### ⚙️ 高级配置
 
@@ -381,6 +382,8 @@ robot_wheel_config:
   selection: head_pose
   yaw_threshold_degrees: 12.0
   pitch_threshold_degrees: 18.0
+robot_action_output_config:
+  type: terminal
 robot_action_config:
   actions:
     move_forward_step: 前进
@@ -402,6 +405,21 @@ robot_action_config:
     extra:
       action: stop
 ```
+
+连接本机 SONIC 时改为：
+
+```yaml
+robot_action_output_config:
+  type: sonic_ipc
+  endpoint: ipc:///tmp/neugaze-sonic.sock
+  timeout_ms: 1000
+```
+
+`stop` 由仅闭左眼触发，在 `sonic_ipc` 模式下发送
+`reset_reference_motion`。它与用户在 SONIC reference-motion 模式测试的 `R` 一致：
+停止播放、回到第 0 帧并重新初始化朝向；不是 planner momentum reset，也不是实体机器人的
+物理急停。完整 MuJoCo 命令见
+[`docs/neugaze-sonic-mujoco-test.md`](docs/neugaze-sonic-mujoco-test.md)。
 
 当前机器人选择层固定为透明全屏四方向布局，并且只接受 `selection: head_pose`。配置不再接受 `radius`；布局、选择方式、阈值字段缺失、未知或非法时，程序会在启动时明确报错。`yaw_threshold_degrees` 和 `pitch_threshold_degrees` 是相对 `head_angles_center` 的角度阈值，合法范围为 `(0, 45]`。头部动作不会映射到 W/S、A/D 或滚轮。
 

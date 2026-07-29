@@ -16,3 +16,4 @@ ncnn==1.0.20260526
 PyYAML==6.0.3
 python-xlib==0.33
 pyorbbecsdk2==2.1.1
+pyzmq==27.1.0

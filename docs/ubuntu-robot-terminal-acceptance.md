@@ -4,8 +4,8 @@
 
 ## 安全范围
 
-- 当前 Ubuntu 路径只向启动 GUI 的 Terminal 打印 `[ROBOT_ACTION]` 或 `[ROBOT_ACTION_CANCELLED]`；没有 SONIC、ZMQ 或实体机器人连接。
-- `stop` 只打印 `id=stop`，不是实体机器人的物理急停；SONIC/实体安全链路未开始。
+- 本文明确使用 `robot_action_output_config.type: terminal`，只向启动 GUI 的 Terminal 打印 `[ROBOT_ACTION]` 或 `[ROBOT_ACTION_CANCELLED]`；SONIC 联调另见 `docs/neugaze-sonic-mujoco-test.md`。
+- Terminal 模式中的 `stop` 只打印 `id=stop`，不是实体机器人的物理急停。
 - 只能明确选择 Orbbec SDK 或 OpenCV/V4L2；所选后端失败必须直接报错，不能切换后端。
 - 任一失败先保留首次 Terminal 原始输出、截图和时间；不得先调阈值、重启或改配置，再把首次结果倒记为“通过”。
 
@@ -106,4 +106,4 @@ lsof -nP | rg 'pyorbbecsdk|libOrbbecSDK|/dev/video'
 | 两种无选区取消 | 未执行 | 待执行 |
 | 无系统键鼠副作用 | 未执行 | 待执行 |
 | ESC+Q 停止 evaluation、正常关闭 GUI 与资源检查 | 未执行 | 待执行 |
-| SONIC 接入 | 未开始 | 不在本次范围 |
+| SONIC 接入 | 另行验收 | 见 `docs/neugaze-sonic-mujoco-test.md` |

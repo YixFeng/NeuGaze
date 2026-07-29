@@ -2337,6 +2337,7 @@ class RealAction(BindKeys):
                  head_angles_center=None, head_angles_scale=None,
                  expression_evaluator_config=None,
                  robot_action_config=None,
+                 robot_action_output_config=None,
                  robot_wheel_config=None,
                  action_platform=None,
                  **kwargs):
@@ -2453,6 +2454,25 @@ class RealAction(BindKeys):
             self.robot_action_config = validate_robot_action_config(
                 robot_action_config
             )
+            from .sonic_action_client import (
+                SonicActionClient,
+                validate_robot_action_output_config,
+            )
+
+            if robot_action_output_config is None:
+                robot_action_output_config = {"type": "terminal"}
+            self.robot_action_output_config = (
+                validate_robot_action_output_config(
+                    robot_action_output_config
+                )
+            )
+            if self.robot_action_output_config["type"] == "sonic_ipc":
+                self.sonic_action_client = SonicActionClient(
+                    endpoint=self.robot_action_output_config["endpoint"],
+                    timeout_ms=self.robot_action_output_config["timeout_ms"],
+                )
+            else:
+                self.sonic_action_client = None
             self.robot_wheel_config = validated_robot_wheel_config
             self.configuration = {"robot": {}}
             self.sys_mode = "robot"
@@ -2813,6 +2833,8 @@ class RealAction(BindKeys):
         if self.action_output == "robot_terminal":
             if not isinstance(action, RobotAction):
                 raise TypeError("Ubuntu robot output requires RobotAction")
+            if self.sonic_action_client is not None:
+                self.sonic_action_client.send(action)
             emit_robot_action(action)
             return
         if isinstance(action, RobotAction):

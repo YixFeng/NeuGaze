@@ -2737,6 +2737,7 @@ def _robot_pipeline_without_constructor():
     )
     pipeline = _real_action_without_constructor()
     pipeline.action_output = "robot_terminal"
+    pipeline.sonic_action_client = None
     pipeline.uses_desktop_input = False
     pipeline.op_xy = (None, None)
     pipeline.op_xy_generation = 0

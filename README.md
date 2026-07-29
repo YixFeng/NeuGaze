@@ -12,7 +12,7 @@
 
 *A non-invasive computer control system that combines facial expression recognition, head movement tracking, and gaze estimation, designed for hands-free human-computer interaction.*
 
-The current Ubuntu 24.04 Xorg path combines facial actions with head-direction selection and prints robot action labels for the planned GR00T Whole-Body Control and SONIC reference-motion integration. Ubuntu does not emit game keys.
+The current Ubuntu 24.04 Xorg path combines facial actions with head-direction selection. It can print robot actions for validation or drive preloaded SONIC reference motions through local ZeroMQ IPC. Ubuntu does not emit game keys.
 
 
 ## 📋 Table of Contents
@@ -88,7 +88,7 @@ NeuGaze has one shared Python pipeline, plus platform-, camera-, and test-specif
 | Calibration and state | scikit-learn, FilterPy, jsonlines, PyYAML | Calibration regression, gaze smoothing, records, and configuration |
 | GUI and desktop | PySide6; `python-xlib` on Ubuntu; PyWin32 on Windows | Configuration GUI, overlay, wheel, and platform desktop integration |
 | Camera | `pyorbbecsdk2` for Gemini 335; OpenCV/V4L2 for standard Linux video devices | RGB frame acquisition from the explicitly selected backend |
-| Robot terminal output | Python standard library only | Printing validated robot action terms on Ubuntu; no SONIC dependency |
+| Robot action output | Python standard library; `pyzmq` for SONIC | Print validated actions or request preloaded SONIC reference motions |
 | Development tests | pytest; Xvfb/Xauth for isolated X11 tests | Optional automated testing, not normal NeuGaze runtime |
 
 `requirements-ubuntu.txt` is the reproducible full Ubuntu runtime lock. Torchaudio and tqdm are not directly imported by the main GUI path, but they remain pinned until the runtime and model-conversion environments are split and clean-install tested. Today, the safe reduction is to leave test requirements and Xvfb/Xauth uninstalled during normal runtime. Camera/backend and conversion-package splits require a separate clean-install change; do not hand-edit the runtime lock.
@@ -257,8 +257,8 @@ Recalibrate when the model file is missing, the user changes, the camera moves s
 
 NeuGaze recognizes expressions through `expression_evaluator_config` in
 `configs/cpu.yaml`, then maps them to robot action labels through
-`robot_action_config`. Ubuntu currently prints labels to validate recognition and
-wheel selection; it does not call SONIC or WBC yet.
+`robot_action_config`. `robot_action_output_config` explicitly selects Terminal
+validation or local SONIC IPC.
 
 ### 🎭 Expression Detection
 
@@ -303,8 +303,9 @@ left_click:
 
 ### 🤖 Ubuntu Robot Action Output
 
-Ubuntu has one `robot_terminal` output path. It does not use the `game`, `game_cs`,
-`game_wz`, or `type` key tables and does not emit desktop keyboard/mouse events.
+Ubuntu uses the robot action path instead of the `game`, `game_cs`, `game_wz`, or
+`type` key tables. `terminal` prints locally; `sonic_ipc` prints success only after
+SONIC accepts the request. Neither mode emits desktop keyboard/mouse events.
 
 #### Direct expression actions
 
@@ -367,8 +368,8 @@ No wheel selection produces:
 [ROBOT_ACTION_CANCELLED] reason=no_selection source=wheel
 ```
 
-These labels are stable action identifiers for the planned GR00T Whole-Body Control /
-SONIC reference-motion integration. The current version only prints them.
+These labels are stable NeuGaze-to-SONIC identifiers. SONIC owns the mapping to
+reference-motion directories; NeuGaze does not transmit CSV files or pose frames.
 
 ### ⚙️ Advanced Configuration
 
@@ -382,6 +383,8 @@ robot_wheel_config:
   selection: head_pose
   yaw_threshold_degrees: 12.0
   pitch_threshold_degrees: 18.0
+robot_action_output_config:
+  type: terminal
 robot_action_config:
   actions:
     move_forward_step: 前进
