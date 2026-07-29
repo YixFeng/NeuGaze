@@ -26,6 +26,8 @@ robot_wheel_config:
   selection: head_pose
   yaw_threshold_degrees: 12.0
   pitch_threshold_degrees: 18.0
+robot_action_output_config:
+  type: terminal
 real_action_config:
   scroll_coef: 1.0
   sys_mode: game_cs

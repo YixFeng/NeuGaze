@@ -211,6 +211,11 @@ def write_config(path):
         "key_config": {"left_click": "left_click"},
         "robot_wheel_config": {"radius": 400},
         "robot_action_config": {"actions": {}, "expressions": {}},
+        "robot_action_output_config": {
+            "type": "sonic_ipc",
+            "endpoint": "ipc:///tmp/neugaze-sonic-test.sock",
+            "timeout_ms": 750,
+        },
         "head_angles_center": {"yaw": 0.0},
         "head_angles_scale": {"yaw": 88.0},
         "expression_evaluator_config": {"expressions": {}},
@@ -308,6 +313,9 @@ def test_run_calibration_cleans_pipeline_and_desktop_before_result(lifecycle):
             "configuration": config["key_config"],
             "robot_wheel_config": config["robot_wheel_config"],
             "robot_action_config": config["robot_action_config"],
+            "robot_action_output_config": config[
+                "robot_action_output_config"
+            ],
             "head_angles_center": config["head_angles_center"],
             "head_angles_scale": config["head_angles_scale"],
             "expression_evaluator_config": config[

@@ -131,6 +131,7 @@ def build_pipeline(config: Mapping[str, object]):
         configuration=config["key_config"],
         robot_wheel_config=config.get("robot_wheel_config"),
         robot_action_config=config.get("robot_action_config"),
+        robot_action_output_config=config.get("robot_action_output_config"),
         head_angles_center=config["head_angles_center"],
         head_angles_scale=config["head_angles_scale"],
         expression_evaluator_config=config["expression_evaluator_config"],

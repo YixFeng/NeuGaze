@@ -43,10 +43,12 @@
 - [x] 确认 SONIC 已依赖 libzmq；已在 `neugaze` conda 环境安装 `pyzmq==27.1.0`。
 - [x] SONIC：实现独立动作命令端点、动作映射与启动校验。
 - [x] NeuGaze：实现 `terminal` / `sonic_ipc` 显式输出模式。
-- [x] 自动化测试：NeuGaze 相关回归 211 项通过；SONIC 新测试 2 项通过；SONIC 完整构建通过。
+- [x] 自动化测试：初始集成 NeuGaze 相关回归 211 项通过；SONIC 新测试 2 项通过；SONIC 完整构建通过。
+- [x] 用户确认独立 `send_sonic_action.py` 能驱动 MuJoCo，证明 SONIC endpoint 与动作映射可用。
+- [x] 修复 evaluation worker 漏传 `robot_action_output_config` 导致配置被隐式当作 Terminal 的问题；移除该隐式默认并完成 247 项相关回归测试。
 - [x] SONIC 全量测试入口已检查；既有 `FK.TestFKAndGlobalVelocities` 因仓库缺少 `reference/bones_072925_test/` 测试夹具而无法继续，该问题与本次集成无关。
 - [x] 编写 MuJoCo 联调文档和独立动作发送脚本。
-- [ ] 用户按文档完成 MuJoCo + 摄像头真人联调。
+- [ ] 用户使用修复后的 evaluation worker 重新完成摄像头真人联调。
 
 ## 工作区保护
 

@@ -2357,6 +2357,8 @@ class RealAction(BindKeys):
         if self.action_output == "robot_terminal":
             if robot_action_config is None:
                 raise ValueError("robot_action_config is required")
+            if robot_action_output_config is None:
+                raise ValueError("robot_action_output_config is required")
             if robot_wheel_config is None:
                 raise ValueError("robot_wheel_config.layout is required")
             if not isinstance(robot_wheel_config, Mapping):
@@ -2459,8 +2461,6 @@ class RealAction(BindKeys):
                 validate_robot_action_output_config,
             )
 
-            if robot_action_output_config is None:
-                robot_action_output_config = {"type": "terminal"}
             self.robot_action_output_config = (
                 validate_robot_action_output_config(
                     robot_action_output_config

@@ -2066,6 +2066,7 @@ def _real_action_constructor_kwargs(monkeypatch):
         "gaze_config": {},
         "mouse_control_config": {},
         "wheel_config": {},
+        "robot_action_output_config": {"type": "terminal"},
         "head_angles_center": {},
         "head_angles_scale": {},
         "expression_evaluator_config": {},
@@ -2111,6 +2112,18 @@ def test_real_action_routes_platforms_and_rejects_missing_config(
     )
     assert windows_pipeline.action_output == "desktop"
     assert windows_pipeline.sys_mode == "game_cs"
+
+    missing_output_config = dict(common)
+    missing_output_config.pop("robot_action_output_config")
+    with pytest.raises(
+        ValueError, match="robot_action_output_config is required"
+    ):
+        RealAction(
+            action_platform="linux",
+            robot_action_config=robot_config,
+            robot_wheel_config=mapping["robot_wheel_config"],
+            **missing_output_config,
+        )
 
     with pytest.raises(ValueError, match="robot_action_config is required"):
         RealAction(action_platform="linux", **common)
